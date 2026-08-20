@@ -1,0 +1,6 @@
+{
+  "slug": "request-symbol-rescan",
+  "version": 1,
+  "verify_jwt": true,
+  "entrypoint_path": "/tmp/user_fn_qxlfnscmrhwfcpattqxa_076798cc-16f5-4537-879b-9fa43204debd_1/source/index.ts"
+}

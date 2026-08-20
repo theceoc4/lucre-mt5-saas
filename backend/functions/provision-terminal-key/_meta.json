@@ -1,0 +1,6 @@
+{
+  "slug": "provision-terminal-key",
+  "version": 1,
+  "verify_jwt": true,
+  "entrypoint_path": "/tmp/user_fn_qxlfnscmrhwfcpattqxa_ee1bde17-dca4-44c2-bd20-42ac28e744c7_1/source/index.ts"
+}

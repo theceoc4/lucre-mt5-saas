@@ -1,0 +1,6 @@
+{
+  "slug": "report-bars",
+  "version": 2,
+  "verify_jwt": false,
+  "entrypoint_path": "/tmp/user_fn_qxlfnscmrhwfcpattqxa_3fa36c2e-c5ce-4b76-b9e5-ad87d08728d5_2/source/source/index.ts"
+}

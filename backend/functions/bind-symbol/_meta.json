@@ -1,0 +1,6 @@
+{
+  "slug": "bind-symbol",
+  "version": 2,
+  "verify_jwt": true,
+  "entrypoint_path": "/tmp/user_fn_qxlfnscmrhwfcpattqxa_0accea35-4cb5-4a02-841f-9bd8ada82508_2/source/source/index.ts"
+}

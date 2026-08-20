@@ -1,0 +1,649 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lucre Hub — Signal & Position Analytics</title>
+<meta name="description" content="Lucre Hub is a MetaTrader 5 signal and position analytics dashboard: track executed and blocked signals, win rate by strategy, live P/L, and the adaptive risk engine." />
+
+<link rel="icon" type="image/svg+xml" href="./assets/favicon.svg" />
+<link rel="icon" type="image/png" sizes="32x32" href="./assets/favicon-32.png" />
+<link rel="icon" type="image/png" sizes="16x16" href="./assets/favicon-16.png" />
+<link rel="apple-touch-icon" href="./assets/apple-touch-icon.png" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
+
+<link rel="stylesheet" href="./base.css" />
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+
+<!-- ============ Auth gate ============ -->
+<div class="auth-gate" id="auth-gate" aria-hidden="true">
+  <div class="auth-card">
+    <div class="brand" style="margin-bottom: var(--space-6);">
+      <span class="brand-mark" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <circle cx="16" cy="16" r="15" fill="var(--color-accent)"/>
+          <path d="M8 21.8L13.3 14.7L16.9 19.1L24 10.2" stroke="var(--color-accent-ink)" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <span class="brand-wordmark"><span class="brand-lucre">Lucre</span><span class="brand-hub">Hub</span></span>
+    </div>
+
+    <div class="auth-tabs" role="tablist">
+      <button class="auth-tab active" type="button" data-auth-tab="signin" role="tab">Sign in</button>
+      <button class="auth-tab" type="button" data-auth-tab="signup" role="tab">Create account</button>
+    </div>
+
+    <form id="auth-form" novalidate>
+      <div class="field">
+        <label for="auth-email">Email</label>
+        <input id="auth-email" name="email" type="email" autocomplete="email" required />
+      </div>
+      <div class="field">
+        <label for="auth-password">Password</label>
+        <input id="auth-password" name="password" type="password" autocomplete="current-password" minlength="6" required />
+      </div>
+      <p class="auth-message" id="auth-message" role="status"></p>
+      <button class="btn-accent auth-submit" type="submit" id="auth-submit">Sign in</button>
+    </form>
+    <p class="auth-footnote">Your MT5 account data is scoped to you only — row-level security keeps every trader's terminals, positions, and signals private.</p>
+  </div>
+</div>
+
+<!-- ============ Connect account modal ============ -->
+<div class="modal-overlay" id="modal-connect-account" aria-hidden="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>Connect an MT5 account</h3>
+      <button class="icon-btn" type="button" data-modal-close aria-label="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="modal-sub">This registers the terminal in your dashboard. Once saved, use the key icon next to the terminal picker to generate its EA connection key — the account starts as <strong>disconnected</strong> until the EA syncs.</p>
+    <form id="form-connect-account" novalidate>
+      <div class="field">
+        <label for="terminal-label">Label</label>
+        <input id="terminal-label" name="label" type="text" placeholder="Prop-Live-04" required />
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="terminal-broker">Broker</label>
+          <input id="terminal-broker" name="broker" type="text" placeholder="IC Markets" />
+        </div>
+        <div class="field">
+          <label for="terminal-login">Account login</label>
+          <input id="terminal-login" name="account_login" type="text" placeholder="51234567" />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="terminal-server">Server</label>
+          <input id="terminal-server" name="server" type="text" placeholder="ICMarkets-Live04" />
+        </div>
+        <div class="field field-checkbox">
+          <label for="terminal-live"><input id="terminal-live" name="is_live" type="checkbox" checked /> Live account</label>
+        </div>
+      </div>
+      <p class="auth-message" id="connect-account-message" role="status"></p>
+      <button class="btn-accent auth-submit" type="submit">Connect account</button>
+    </form>
+  </div>
+</div>
+
+<!-- ============ Add strategy modal ============ -->
+<div class="modal-overlay" id="modal-add-strategy" aria-hidden="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3 id="add-strategy-title">Add a strategy</h3>
+      <button class="icon-btn" type="button" data-modal-close aria-label="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="modal-sub" id="add-strategy-sub">Pick a ready-made strategy, choose which of your bound pairs it applies to, and name this configuration. Add as many separate configurations as you like — each one runs independently.</p>
+    <form id="form-add-strategy" novalidate>
+      <input type="hidden" name="edit_id" id="strategy-edit-id" value="" />
+      <div class="field">
+        <label for="strategy-kind">Strategy</label>
+        <select id="strategy-kind" name="kind">
+          <option value="vwap_reversion">VWAP Reversion (scalping)</option>
+          <option value="orb_breakout">Opening Range Breakout</option>
+          <option value="bb_fade">Bollinger Band Fade</option>
+          <option value="ema_trend">EMA/ADX Trend</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="strategy-name">Configuration name</label>
+        <input id="strategy-name" name="name" type="text" placeholder="e.g. VWAP Reversion — Majors" required />
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="strategy-symbol-picker">Symbols</label>
+          <div class="symbol-picker-row">
+            <select id="strategy-symbol-picker"></select>
+            <button class="btn-secondary btn-xs" type="button" id="button-add-strategy-symbol">Add</button>
+          </div>
+          <div class="symbol-chip-list" id="strategy-symbols-chips"></div>
+          <p class="field-hint" id="strategy-symbols-hint">No pairs added yet — pick one above and click Add.</p>
+        </div>
+        <div class="field">
+          <label for="strategy-delivery">Delivery mode</label>
+          <select id="strategy-delivery" name="delivery_mode">
+            <option value="manual_confirm">Manual confirm (tap-to-execute)</option>
+            <option value="auto">Auto</option>
+          </select>
+          <label for="strategy-lot" style="margin-top: var(--space-3);">Starting lot size</label>
+          <input id="strategy-lot" name="max_lot_size" type="number" step="0.01" min="0.01" value="0.01" />
+        </div>
+      </div>
+      <p class="auth-message" id="add-strategy-message" role="status"></p>
+      <div class="field-row" style="align-items:center;">
+        <button class="btn-accent auth-submit" type="submit" id="add-strategy-submit">Add strategy</button>
+        <button class="btn-danger btn-xs" type="button" id="button-delete-strategy" hidden>Delete strategy</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ Terminal API key modal ============ -->
+<div class="modal-overlay" id="modal-terminal-key" aria-hidden="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>Terminal API key</h3>
+      <button class="icon-btn" type="button" data-modal-close aria-label="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="modal-sub">Your MT5 Expert Advisor uses this key to authenticate to the sync endpoint. Generating a new key immediately invalidates the previous one — you'll need to update the EA with the new key.</p>
+    <p class="modal-sub" id="terminal-key-meta">No key generated yet for this terminal.</p>
+    <div class="key-display" id="terminal-key-display" hidden>
+      <code id="terminal-key-value"></code>
+      <button class="btn-secondary btn-xs" type="button" id="button-copy-key">Copy</button>
+    </div>
+    <p class="key-warning" id="terminal-key-warning" hidden>Copy this now — it won't be shown again.</p>
+    <p class="auth-message" id="terminal-key-message" role="status"></p>
+    <button class="btn-accent auth-submit" type="button" id="button-generate-key">Generate new key</button>
+  </div>
+</div>
+
+<!-- ============ New manual order modal ============ -->
+<div class="modal-overlay" id="modal-new-order" aria-hidden="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>New manual order</h3>
+      <button class="icon-btn" type="button" data-modal-close aria-label="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="modal-sub">Places a market order on the active terminal through its Expert Advisor. Subject to this terminal's lot size, open position, and daily loss caps.</p>
+    <form id="form-new-order" novalidate>
+      <div class="field-row">
+        <div class="field">
+          <label for="order-symbol">Symbol</label>
+          <select id="order-symbol" name="symbol" required></select>
+        </div>
+        <div class="field">
+          <label for="order-side">Side</label>
+          <select id="order-side" name="side">
+            <option value="buy">Buy</option>
+            <option value="sell">Sell</option>
+          </select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="order-volume">Volume (lots)</label>
+          <input id="order-volume" name="volume" type="number" step="0.01" min="0.01" placeholder="0.10" required />
+        </div>
+        <div class="field">
+          <label for="order-deviation">Max deviation (points)</label>
+          <input id="order-deviation" name="max_deviation_points" type="number" step="1" min="0" placeholder="20" />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="order-sl">Stop loss (optional)</label>
+          <input id="order-sl" name="sl" type="number" step="any" placeholder="Price" />
+        </div>
+        <div class="field">
+          <label for="order-tp">Take profit (optional)</label>
+          <input id="order-tp" name="tp" type="number" step="any" placeholder="Price" />
+        </div>
+      </div>
+      <p class="auth-message" id="new-order-message" role="status"></p>
+      <button class="btn-accent auth-submit" type="submit">Place order</button>
+    </form>
+  </div>
+</div>
+
+<!-- ============ Modify position modal ============ -->
+<div class="modal-overlay" id="modal-modify-position" aria-hidden="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>Modify position</h3>
+      <button class="icon-btn" type="button" data-modal-close aria-label="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="modal-sub">Leave a field blank to keep its current value, or check "Clear" to remove it entirely.</p>
+    <form id="form-modify-position" novalidate>
+      <input type="hidden" name="position_id" id="modify-position-id" />
+      <div class="field-row">
+        <div class="field">
+          <label for="modify-sl">Stop loss</label>
+          <input id="modify-sl" name="sl" type="number" step="any" placeholder="Keep current" />
+          <div class="field field-checkbox" style="margin-bottom:0;">
+            <label for="modify-sl-clear"><input id="modify-sl-clear" name="clear_sl" type="checkbox" /> Clear stop loss</label>
+          </div>
+        </div>
+        <div class="field">
+          <label for="modify-tp">Take profit</label>
+          <input id="modify-tp" name="tp" type="number" step="any" placeholder="Keep current" />
+          <div class="field field-checkbox" style="margin-bottom:0;">
+            <label for="modify-tp-clear"><input id="modify-tp-clear" name="clear_tp" type="checkbox" /> Clear take profit</label>
+          </div>
+        </div>
+      </div>
+      <p class="auth-message" id="modify-position-message" role="status"></p>
+      <button class="btn-accent auth-submit" type="submit">Save changes</button>
+    </form>
+  </div>
+</div>
+
+<div class="page" id="dashboard-root">
+  <div class="shell">
+
+    <!-- Top nav -->
+    <header class="topnav">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <circle cx="16" cy="16" r="15" fill="var(--color-accent)"/>
+            <path d="M8 21.8L13.3 14.7L16.9 19.1L24 10.2" stroke="var(--color-accent-ink)" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+        <span class="brand-wordmark"><span class="brand-lucre">Lucre</span><span class="brand-hub">Hub</span></span>
+      </div>
+
+      <nav class="nav-pills" id="nav-pills" aria-label="Primary">
+        <a class="nav-pill active" href="#" data-view="dashboard" data-testid="link-dashboard">Dashboard</a>
+        <a class="nav-pill" href="#" data-view="pairs" data-testid="link-pairs">Pairs</a>
+      </nav>
+
+      <div class="nav-actions">
+        <button class="icon-btn nav-menu-toggle" id="nav-menu-toggle" aria-label="Open navigation menu" aria-expanded="false" aria-controls="nav-pills" data-testid="button-nav-menu-toggle">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" class="nav-menu-icon-open"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" class="nav-menu-icon-close" hidden><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+        <button class="icon-btn" aria-label="Settings" data-testid="button-settings">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.64 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.64a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.36 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+        </button>
+        <button class="icon-btn" aria-label="Notifications, 1 unread" data-testid="button-notifications">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 8a6 6 0 0 1 12 0c0 3.5 1 5 2 6H4c1-1 2-2.5 2-6z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
+          <span class="dot" aria-hidden="true"></span>
+        </button>
+        <div class="account-menu-wrap">
+          <button class="avatar-badge" id="account-menu-button" aria-label="Account menu" data-testid="text-avatar-initials">?</button>
+          <div class="account-menu" id="account-menu" aria-hidden="true">
+            <span class="account-menu-email" id="account-menu-email">—</span>
+            <button class="account-menu-item" id="button-sign-out" type="button">Sign out</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Profile + greeting -->
+    <div class="profile-row">
+      <div class="profile-card">
+        <div class="avatar-badge" aria-hidden="true" id="profile-avatar">—</div>
+        <div class="profile-meta">
+          <span class="label" id="terminal-status-label">No account connected</span>
+          <span class="name" data-testid="text-account-name" id="text-account-name">Connect your MT5 terminal</span>
+        </div>
+        <select class="terminal-select" id="terminal-select" aria-label="Select terminal" hidden></select>
+        <button class="icon-btn" id="button-terminal-key" aria-label="Terminal API key" data-testid="button-terminal-key" hidden>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 4l3 3M19 7l2 2"/></svg>
+        </button>
+        <button class="btn-accent" data-testid="button-connect-account" id="button-connect-account">Connect account</button>
+      </div>
+
+      <div class="greeting-row">
+        <div class="greeting">
+          <h1 data-testid="text-greeting" id="text-greeting">Hey there 👋</h1>
+          <p id="text-greeting-sub">Connect an MT5 account to start seeing live data.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Account balance widget (v1.0.11) -- always visible at the top of the
+         dashboard regardless of active tab, sourced from mt5_terminals'
+         live equity/balance/margin_level (heartbeat + realtime updates). -->
+    <section class="balance-widget" id="balance-widget" hidden aria-label="Account balance">
+      <div class="balance-metric">
+        <span class="balance-label">Balance</span>
+        <span class="balance-value" id="balance-widget-balance">—</span>
+      </div>
+      <div class="balance-metric">
+        <span class="balance-label">Equity</span>
+        <span class="balance-value" id="balance-widget-equity">—</span>
+      </div>
+      <div class="balance-metric">
+        <span class="balance-label">Margin level</span>
+        <span class="balance-value" id="balance-widget-margin">—</span>
+      </div>
+    </section>
+    <div class="banner-warning" id="banner-autotrading" hidden role="alert">
+      AutoTrading is OFF on the terminal — new orders and signal-driven trades will be rejected until it's enabled in MT5.
+    </div>
+
+    <div class="view" id="view-dashboard">
+
+    <!-- Main row -->
+    <div class="main-row">
+      <section class="card card-pad stat-card" aria-label="All signals summary">
+        <div class="card-title-row">
+          <span class="icon-badge" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+          </span>
+        </div>
+        <h3 style="margin-top: var(--space-4); font-size: var(--text-base); font-weight: 700;">All Signals</h3>
+        <p class="desc">Explore what's happening across your connected MT5 accounts.</p>
+        <a href="#" class="help-link" data-testid="link-need-help">Need help?</a>
+        <div class="big-number" data-testid="text-signal-total" id="text-signal-total">0</div>
+        <div class="legend-list">
+          <div class="legend-row"><span class="legend-dot lime"></span><strong>Executed</strong>&nbsp;<span id="count-executed">0</span> signals</div>
+          <div class="legend-row"><span class="legend-dot light"></span><strong>Blocked</strong>&nbsp;<span id="count-blocked">0</span> signals</div>
+          <div class="legend-row"><span class="legend-dot grey"></span><strong>Expired</strong>&nbsp;<span id="count-expired">0</span> signals</div>
+        </div>
+      </section>
+
+      <section class="card card-pad chart-card" aria-label="Signal volume and P/L chart">
+        <div class="card-title-row">
+          <div>
+            <div class="chart-month" data-testid="text-chart-month" id="text-chart-month">August 2026</div>
+            <div class="week-labels"><span>W1</span><span>W2</span><span>W3</span><span>W4</span><span>W5</span></div>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <div class="chart-empty-overlay" id="chart-empty-overlay">
+            <p>No signals yet. Once your EA is connected and generating signals, daily volume shows up here.</p>
+          </div>
+          <canvas id="volumeChart" role="img" aria-label="Daily executed and blocked signals"></canvas>
+        </div>
+      </section>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tab-row-wrap">
+      <nav class="tab-row" role="tablist" aria-label="Analytics views">
+        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="signals" data-testid="tab-signals">Signals</a>
+        <a class="tab active" href="javascript:void(0)" role="tab" aria-selected="true" data-tab="overview" data-testid="tab-overview">Overview</a>
+        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="positions" data-testid="tab-positions">Positions</a>
+        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="sessions" data-testid="tab-sessions">Sessions</a>
+        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="blocked" data-testid="tab-blocked">Blocked</a>
+        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="risk-score" data-testid="tab-risk-score">Risk Score</a>
+        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="win-rate" data-testid="tab-win-rate">Win Rate</a>
+        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="duration" data-testid="tab-duration">Duration</a>
+        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="news-events" data-testid="tab-news-events">News Events</a>
+        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="strategy-status" data-testid="tab-strategy-status">Strategy Status</a>
+      </nav>
+    </div>
+
+    <!-- Tab panels -->
+    <div class="tab-panel active" data-tab-panel="overview" role="tabpanel">
+    <!-- Bottom grid -->
+    <div class="bottom-grid">
+
+      <section class="card card-pad" aria-label="Strategy performance">
+        <div class="card-title-row">
+          <h3>Strategy performance</h3>
+          <button class="expand-btn" aria-label="Add strategy" data-testid="button-expand-strategy" id="button-add-strategy">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </div>
+        <div class="mini-table" id="strategy-list">
+          <p class="empty-state-text" id="strategy-empty-state">No strategies yet. Connect an account, then add your first strategy.</p>
+        </div>
+      </section>
+
+      <section class="card card-pad gauge-card" aria-label="Win rate">
+        <div class="card-title-row" style="width:100%;">
+          <h3>Win Rate</h3>
+        </div>
+        <div class="gauge-number" data-testid="text-winrate-value" id="text-winrate-value">—</div>
+        <div class="gauge-sub" id="text-winrate-sub">No trades yet</div>
+        <div class="gauge-svg-wrap">
+          <svg width="140" height="80" viewBox="0 0 120 70" aria-hidden="true">
+            <path d="M10 60 A50 50 0 0 1 110 60" fill="none" stroke="var(--color-surface-sunken)" stroke-width="10" stroke-linecap="round"/>
+            <path d="M10 60 A50 50 0 0 1 110 60" fill="none" stroke="var(--color-accent)" stroke-width="10" stroke-linecap="round" stroke-dasharray="0 157.08" id="winrate-gauge-arc"/>
+          </svg>
+        </div>
+        <div class="footer-link" style="width:100%;"><span>Avg R:R</span><span id="text-avg-rr">—</span></div>
+      </section>
+
+      <section class="card card-pad" aria-label="Profit and loss over time">
+        <div class="card-title-row">
+          <h3>P/L Over Time</h3>
+          <div class="pl-filters">
+            <select id="pl-timeframe-select" class="dropdown-pill" data-testid="select-pl-timeframe" aria-label="P/L timeframe">
+              <option value="7d">7 Days</option>
+              <option value="30d" selected>30 Days</option>
+              <option value="90d">90 Days</option>
+              <option value="all">All Time</option>
+            </select>
+            <select id="pl-source-select" class="dropdown-pill" data-testid="select-pl-source" aria-label="P/L trade source">
+              <option value="all" selected>All Trades</option>
+              <option value="auto">Auto Only</option>
+              <option value="manual">Manual Only</option>
+            </select>
+          </div>
+        </div>
+        <div class="bar-card-legend">
+          <div class="legend-inline">
+            <div class="legend-row"><span class="legend-dot lime"></span>Cumulative P/L</div>
+          </div>
+          <div class="pl-summary-value" id="pl-summary-value">—</div>
+        </div>
+        <div class="mini-chart-wrap">
+          <canvas id="plChart" role="img" aria-label="Cumulative profit and loss over the selected period"></canvas>
+        </div>
+        <div class="footer-link"><span>Positions Closed</span><span>→</span></div>
+      </section>
+
+      <section class="card card-pad" aria-label="Risk engine">
+        <div class="card-title-row" style="width:100%;">
+          <h3>Risk Engine</h3>
+        </div>
+        <div class="risk-stats">
+          <div class="risk-stat-row">
+            <span class="label"><span class="legend-dot light"></span>Blocked</span>
+            <strong data-testid="text-risk-blocked" id="text-risk-blocked">0 signals</strong>
+          </div>
+          <div class="risk-stat-row">
+            <span class="label"><span class="legend-dot grey"></span>Downweighted</span>
+            <strong data-testid="text-risk-downweighted" id="text-risk-downweighted">0 combos</strong>
+          </div>
+        </div>
+        <div class="gauge-svg-wrap" style="align-self:center;">
+          <svg width="140" height="80" viewBox="0 0 120 70" aria-hidden="true">
+            <path d="M10 60 A50 50 0 0 1 110 60" fill="none" stroke="var(--color-surface-sunken)" stroke-width="10" stroke-linecap="round"/>
+            <path d="M10 60 A50 50 0 0 1 110 60" fill="none" stroke="var(--color-accent)" stroke-width="10" stroke-linecap="round" stroke-dasharray="0 157.08" id="risk-gauge-arc"/>
+          </svg>
+        </div>
+        <div class="footer-link" style="width:100%;">
+          <span id="text-risk-trend">Adaptive risk engine warms up once trade history exists</span>
+        </div>
+      </section>
+
+      <section class="card card-pad card-span-2" aria-label="Open positions">
+        <div class="card-title-row">
+          <h3>Open Positions</h3>
+          <button class="btn-secondary btn-xs" type="button" id="button-new-order">New order</button>
+        </div>
+        <div class="mini-table" id="positions-list">
+          <p class="empty-state-text" id="positions-empty-state">No open positions. Connect an account and place an order to see it here.</p>
+        </div>
+      </section>
+
+      <section class="card card-pad card-span-2" aria-label="Signal queue">
+        <div class="card-title-row">
+          <h3>Signal Queue</h3>
+        </div>
+        <div class="mini-table" id="signal-queue-list">
+          <p class="empty-state-text" id="signal-queue-empty-state">No pending signals right now.</p>
+        </div>
+      </section>
+
+    </div>
+    </div>
+
+    <div class="tab-panel" data-tab-panel="signals" role="tabpanel" hidden>
+      <section class="card card-pad" aria-label="All signals">
+        <div class="card-title-row">
+          <h3>All Signals</h3>
+        </div>
+        <div class="mini-table" id="tab-signals-list">
+          <p class="empty-state-text">No signals yet. Once your EA is connected and generating signals, they'll show up here.</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="tab-panel" data-tab-panel="positions" role="tabpanel" hidden>
+      <section class="card card-pad" aria-label="Open positions detail">
+        <div class="card-title-row">
+          <h3>Open Positions</h3>
+        </div>
+        <div class="mini-table" id="tab-positions-list">
+          <p class="empty-state-text">No open positions. Connect an account and place an order to see it here.</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="tab-panel" data-tab-panel="sessions" role="tabpanel" hidden>
+      <section class="card card-pad" aria-label="Performance by trading session">
+        <div class="card-title-row">
+          <h3>Performance by Session</h3>
+        </div>
+        <p class="desc">Closed-trade win rate and average R-multiple, broken out by Asia, London, New York, and session overlap.</p>
+        <div class="mini-table" id="tab-sessions-list">
+          <p class="empty-state-text">No closed trades yet. Session breakdowns appear once trades close.</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="tab-panel" data-tab-panel="blocked" role="tabpanel" hidden>
+      <section class="card card-pad" aria-label="Blocked and downweighted signals">
+        <div class="card-title-row">
+          <h3>Blocked Signals</h3>
+        </div>
+        <p class="desc">Signals the adaptive risk engine blocked or downweighted before delivery.</p>
+        <div class="mini-table" id="tab-blocked-list">
+          <p class="empty-state-text">No blocked signals. The risk engine hasn't intervened on anything yet.</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="tab-panel" data-tab-panel="risk-score" role="tabpanel" hidden>
+      <section class="card card-pad" aria-label="Scenario risk scores">
+        <div class="card-title-row">
+          <h3>Scenario Risk Scores</h3>
+        </div>
+        <p class="desc">Nightly-computed, Bayesian-shrunk win rate per strategy/symbol/session/regime scenario — the numbers the agent policy engine acts on.</p>
+        <div class="mini-table" id="tab-risk-score-list">
+          <p class="empty-state-text">No scenario data yet. Scores appear after enough closed trades accumulate per scenario.</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="tab-panel" data-tab-panel="win-rate" role="tabpanel" hidden>
+      <section class="card card-pad" aria-label="Win rate by symbol">
+        <div class="card-title-row">
+          <h3>Win Rate by Symbol</h3>
+        </div>
+        <div class="mini-table" id="tab-winrate-list">
+          <p class="empty-state-text">No trades yet.</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="tab-panel" data-tab-panel="duration" role="tabpanel" hidden>
+      <section class="card card-pad" aria-label="Trade duration breakdown">
+        <div class="card-title-row">
+          <h3>Trade Duration</h3>
+        </div>
+        <p class="desc">How long closed trades stay open, from fill to close.</p>
+        <div class="mini-table" id="tab-duration-list">
+          <p class="empty-state-text">No closed trades yet.</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="tab-panel" data-tab-panel="news-events" role="tabpanel" hidden>
+      <section class="card card-pad" aria-label="Economic calendar">
+        <div class="card-title-row">
+          <h3>News Events</h3>
+        </div>
+        <p class="desc">Most recent high/medium/low-impact economic events the risk engine watches for news proximity. Scroll for older events.</p>
+        <div class="mini-table mini-table-scroll" id="tab-news-events-list">
+          <p class="empty-state-text">No calendar events loaded yet.</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="tab-panel" data-tab-panel="strategy-status" role="tabpanel" hidden>
+      <section class="card card-pad" aria-label="Strategy status">
+        <div class="card-title-row">
+          <h3>Strategy Status</h3>
+        </div>
+        <div class="mini-table" id="tab-strategy-status-list">
+          <p class="empty-state-text">No strategies yet. Add your first one to get started.</p>
+        </div>
+      </section>
+    </div>
+
+    </div>
+
+    <div class="view" id="view-pairs" hidden>
+      <div class="pairs-view-head">
+        <h2>Pairs</h2>
+        <p class="desc">Toggle signal delivery per pair, set timeframes and auto SL/TP, and fire quick manual orders.</p>
+      </div>
+
+      <div class="card card-pad symbol-mapping-card" id="symbol-mapping-card">
+        <div class="symbol-mapping-head">
+          <div>
+            <h3>Broker symbol mapping</h3>
+            <p class="desc" id="symbol-mapping-status">Connect an account to see broker symbol mapping.</p>
+          </div>
+          <div class="symbol-mapping-actions">
+            <button type="button" class="btn-icon" id="button-add-pair" data-testid="button-add-pair" disabled aria-label="Add a new pair">+</button>
+            <button type="button" class="btn-secondary" id="button-rescan-symbols" data-testid="button-rescan-symbols" disabled>Rescan Symbols</button>
+          </div>
+        </div>
+        <form id="add-pair-row" class="add-pair-row" hidden>
+          <input type="text" id="add-pair-input" data-testid="input-add-pair" placeholder="e.g. USDSEK" autocomplete="off" autocapitalize="characters" maxlength="20" />
+          <button type="submit" class="btn-primary btn-xs" id="button-submit-pair" data-testid="button-submit-pair">Submit</button>
+          <button type="button" class="btn-secondary btn-xs" id="button-cancel-pair" data-testid="button-cancel-pair">Cancel</button>
+        </form>
+        <p class="field-hint" id="add-pair-status" hidden></p>
+        <div id="symbol-mapping-body"></div>
+      </div>
+
+      <div class="pair-grid" id="pair-grid"></div>
+    </div>
+
+  </div>
+</div>
+
+<button class="theme-toggle" data-theme-toggle aria-label="Switch to dark mode" data-testid="button-theme-toggle">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+</button>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="./app.js"></script>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

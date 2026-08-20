@@ -1,0 +1,6 @@
+{
+  "slug": "ea-stream",
+  "version": 1,
+  "verify_jwt": false,
+  "entrypoint_path": "/tmp/user_fn_qxlfnscmrhwfcpattqxa_cd550b5b-db61-4e8a-a023-b72b65a9ab67_1/source/index.ts"
+}

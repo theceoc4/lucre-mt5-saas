@@ -1,0 +1,6 @@
+{
+  "slug": "strategy-signal-engine",
+  "version": 1,
+  "verify_jwt": false,
+  "entrypoint_path": "/tmp/user_fn_qxlfnscmrhwfcpattqxa_085d4957-f763-43b8-9d73-9153bb197b06_1/source/source/index.ts"
+}

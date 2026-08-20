@@ -1,0 +1,6 @@
+{
+  "slug": "calendar-sync",
+  "version": 1,
+  "verify_jwt": false,
+  "entrypoint_path": "/tmp/user_fn_qxlfnscmrhwfcpattqxa_fc5672c1-dd55-4d8b-b413-753f4c856943_1/source/index.ts"
+}

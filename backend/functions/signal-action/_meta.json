@@ -1,0 +1,6 @@
+{
+  "slug": "signal-action",
+  "version": 4,
+  "verify_jwt": true,
+  "entrypoint_path": "/tmp/user_fn_qxlfnscmrhwfcpattqxa_9b6be521-7f93-4435-9aab-25c12e20e89c_4/source/source/index.ts"
+}

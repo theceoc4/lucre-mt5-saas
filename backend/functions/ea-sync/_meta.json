@@ -1,0 +1,6 @@
+{
+  "slug": "ea-sync",
+  "version": 6,
+  "verify_jwt": false,
+  "entrypoint_path": "/tmp/user_fn_qxlfnscmrhwfcpattqxa_e55772e3-f135-4897-826e-13c5924a8aef_6/source/index.ts"
+}

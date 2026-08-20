@@ -1,0 +1,6 @@
+{
+  "slug": "position-action",
+  "version": 3,
+  "verify_jwt": true,
+  "entrypoint_path": "/tmp/user_fn_qxlfnscmrhwfcpattqxa_d1574a21-8a34-45e1-8174-6def00009b01_3/source/index.ts"
+}

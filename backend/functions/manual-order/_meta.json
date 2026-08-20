@@ -1,0 +1,6 @@
+{
+  "slug": "manual-order",
+  "version": 3,
+  "verify_jwt": true,
+  "entrypoint_path": "/tmp/user_fn_qxlfnscmrhwfcpattqxa_3c3e6856-ba29-4a2b-a5f3-778571f18a24_3/source/index.ts"
+}
