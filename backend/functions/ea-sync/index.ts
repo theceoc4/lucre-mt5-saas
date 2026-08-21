@@ -224,6 +224,11 @@ Deno.serve(async (req: Request) => {
 
         if (position && result.close_price !== undefined && result.profit !== undefined) {
           const outcome = result.profit > 0 ? "win" : result.profit < 0 ? "loss" : "breakeven";
+          // v1.0.19 -- prefer the position's own stored context (migration
+          // 038) and fall back to the closing command's, rather than the
+          // other way around, so a close command that for any reason lacks
+          // context (e.g. a future close path that doesn't set it) still
+          // inherits what was captured when the position was opened.
           const { error: tradeHistoryError } = await admin.from("trade_history").insert({
             terminal_id: terminal.id,
             strategy_id: position.strategy_id,
@@ -237,10 +242,10 @@ Deno.serve(async (req: Request) => {
             close_time: result.close_time ?? nowIso,
             profit: result.profit,
             r_multiple: result.r_multiple ?? null,
-            session: command.session,
-            htf_regime: command.htf_regime,
-            near_news_event: command.near_news_event,
-            news_event_id: command.news_event_id,
+            session: position.session ?? command.session,
+            htf_regime: position.htf_regime ?? command.htf_regime,
+            near_news_event: position.near_news_event ?? command.near_news_event,
+            news_event_id: position.news_event_id ?? command.news_event_id,
             source: command.source === "dashboard_close" ? "manual_order" : command.source,
             outcome,
           });
@@ -277,6 +282,14 @@ Deno.serve(async (req: Request) => {
     if (!position) continue; // already closed, or never tracked (shouldn't happen)
 
     const outcome = deal.profit > 0 ? "win" : deal.profit < 0 ? "loss" : "breakeven";
+    // v1.0.19 -- this path (a position closed outside the command flow, e.g.
+    // SL/TP hit) previously hard-coded session/htf_regime/near_news_event/
+    // news_event_id to null since it had no command row to read them from.
+    // Migration 038 gives positions their own copy of that context (set
+    // when the position was first opened/reported), so it can be carried
+    // forward here too -- this was the single biggest reason scenario_stats
+    // never accumulated rows, since most closes happen via SL/TP, not a
+    // dashboard/EA close command.
     const { error: closedDealError } = await admin.from("trade_history").upsert(
       {
         terminal_id: terminal.id,
@@ -291,10 +304,10 @@ Deno.serve(async (req: Request) => {
         close_time: deal.close_time,
         profit: deal.profit,
         r_multiple: null,
-        session: null,
-        htf_regime: null,
-        near_news_event: null,
-        news_event_id: null,
+        session: position.session ?? null,
+        htf_regime: position.htf_regime ?? null,
+        near_news_event: position.near_news_event ?? false,
+        news_event_id: position.news_event_id ?? null,
         source: position.source,
         outcome,
       },
@@ -331,9 +344,62 @@ Deno.serve(async (req: Request) => {
         })
         .eq("id", existing.id);
     } else {
+      // v1.0.19 -- look up the "open" ea_commands row this position
+      // resulted from (matched by mt5_ticket, set once the EA reports the
+      // executed ticket back in step 2 above) so the session/htf_regime/
+      // near_news_event/news_event_id context generated at signal time by
+      // strategy-signal-engine survives on the position itself. Without
+      // this, that context was only ever reachable while the *same*
+      // command row was still around, which the closed_deals and
+      // self-healing reconciler close paths never look at -- so
+      // trade_history rows created via those two paths always got
+      // session/htf_regime=null and could never feed scenario_stats.
+      // Manually-opened positions (no matching open command) legitimately
+      // have no strategy context and keep these fields null.
+      let openContext: {
+        strategy_id: string | null;
+        session: string | null;
+        htf_regime: string | null;
+        near_news_event: boolean;
+        news_event_id: string | null;
+        source: string;
+      } = {
+        strategy_id: p.strategy_id ?? null,
+        session: null,
+        htf_regime: null,
+        near_news_event: false,
+        news_event_id: null,
+        source: "manual_order",
+      };
+      const { data: openCommand } = await admin
+        .from("ea_commands")
+        .select("strategy_id, session, htf_regime, near_news_event, news_event_id, source")
+        .eq("terminal_id", terminal.id)
+        .eq("mt5_ticket", p.mt5_ticket)
+        .eq("command_type", "open")
+        .order("requested_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (openCommand) {
+        openContext = {
+          strategy_id: openCommand.strategy_id ?? p.strategy_id ?? null,
+          session: openCommand.session ?? null,
+          htf_regime: openCommand.htf_regime ?? null,
+          near_news_event: openCommand.near_news_event ?? false,
+          news_event_id: openCommand.news_event_id ?? null,
+          // v1.0.19 -- previously every EA-reported position was hardcoded
+          // 'manual_order' here regardless of how it was actually opened,
+          // which silently mis-tagged every auto-signal position and broke
+          // the dashboard's "Auto Only"/"Manual Only" P/L filter. Now
+          // inherited from the originating command, same as trade_history
+          // already does on the close side.
+          source: openCommand.source === "dashboard_close" ? "manual_order" : openCommand.source ?? "manual_order",
+        };
+      }
+
       await admin.from("positions").insert({
         terminal_id: terminal.id,
-        strategy_id: p.strategy_id ?? null,
+        strategy_id: openContext.strategy_id,
         mt5_ticket: p.mt5_ticket,
         symbol: p.symbol,
         side: p.side,
@@ -343,9 +409,13 @@ Deno.serve(async (req: Request) => {
         sl: p.sl ?? null,
         tp: p.tp ?? null,
         unrealized_pl: p.unrealized_pl,
-        source: "manual_order",
+        source: openContext.source,
         status: "open",
         open_time: p.open_time,
+        session: openContext.session,
+        htf_regime: openContext.htf_regime,
+        near_news_event: openContext.near_news_event,
+        news_event_id: openContext.news_event_id,
         updated_at: nowIso,
       });
     }
@@ -370,7 +440,7 @@ Deno.serve(async (req: Request) => {
     const { data: trackedPositions } = await admin
       .from("positions")
       .select(
-        "id, mt5_ticket, symbol, side, volume, open_price, current_price, open_time, strategy_id, source, status, closing_since"
+        "id, mt5_ticket, symbol, side, volume, open_price, current_price, open_time, strategy_id, source, status, closing_since, session, htf_regime, near_news_event, news_event_id"
       )
       .eq("terminal_id", terminal.id)
       .in("status", ["open", "closing"]);
@@ -401,6 +471,14 @@ Deno.serve(async (req: Request) => {
       if (closingForMs < RECONCILE_GRACE_MS) continue;
 
       const approxClosePrice = pos.current_price ?? pos.open_price;
+      // v1.0.19 -- session/htf_regime/near_news_event/news_event_id are now
+      // carried forward from the position (migration 038) instead of being
+      // hard-coded null, for consistency/analysis purposes (e.g. "which
+      // regime tends to produce unreported closes"). This is safe even
+      // though these are placeholder $0/breakeven rows: migration 039 makes
+      // compute_scenario_stats/throttle_sweep/the trade-close trigger all
+      // require profit_verified = true, so these unverified rows are still
+      // fully excluded from the adaptive throttle ladder's calculations.
       const { error: reconcileError } = await admin.from("trade_history").upsert(
         {
           terminal_id: terminal.id,
@@ -415,10 +493,10 @@ Deno.serve(async (req: Request) => {
           close_time: nowIso,
           profit: 0,
           r_multiple: null,
-          session: null,
-          htf_regime: null,
-          near_news_event: false,
-          news_event_id: null,
+          session: pos.session ?? null,
+          htf_regime: pos.htf_regime ?? null,
+          near_news_event: pos.near_news_event ?? false,
+          news_event_id: pos.news_event_id ?? null,
           source: pos.source,
           outcome: "breakeven",
           close_reason: "reconciled_missing_ea_report",

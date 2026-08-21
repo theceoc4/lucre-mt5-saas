@@ -7,6 +7,76 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.19 — Root-cause fix for scenario-stats cold start, honest Risk Engine numbers, true multi-select symbol picker, reordered nav, and an account history modal (2026-08-21)
+
+### Root cause: scenario stats / adaptive throttle ladder never warmed up
+- Traced the "24 pending verification" / empty win-rate / "0 signals downweighted"
+  symptoms back to `scenario_stats` (and the `agent_policies` throttle ladder it
+  feeds) never accumulating rows. `compute_scenario_stats()` requires
+  `trade_history` rows with a non-null `strategy_id` + `session` + `htf_regime`,
+  but `session`/`htf_regime`/news context was only ever attached to the
+  *opening* `ea_commands` row at signal time and never copied onto `positions`
+  itself — so only one of three close paths (the executed-close-command path)
+  could ever populate it. The closed-deals report handler and the stuck-position
+  reconciler had no way to recover that context, leaving most closed trades
+  without scenario context and the ladder permanently cold.
+- Backend fix (see `backend/schema/migrations/038_position_scenario_context.sql`):
+  `positions` now stores its own `session`, `htf_regime`, `near_news_event`,
+  `news_event_id`, captured the first time a position is seen from its
+  originating "open" `ea_commands` row (matched by `mt5_ticket`). `ea-sync`
+  (`backend/functions/ea-sync/index.ts`, redeployed as function version 7)
+  populates and propagates these columns through every close path so
+  scenario context survives regardless of which path closed the trade.
+- `backend/schema/migrations/039_scenario_stats_profit_verified_filter.sql`
+  adds a `profit_verified = true` filter to `compute_scenario_stats()`,
+  `throttle_sweep()`, and `trg_recompute_scenario_on_trade_close()`, so
+  placeholder `profit = 0` rows for trades the EA never actually reported a
+  result for can no longer silently drag scenario stats toward zero.
+
+### Fixed: Risk Engine always showing 0 signals downweighted
+- `renderRiskEngine()` previously derived the downweighted count from
+  `state.agentPolicies` (the same scenario-level throttle ladder above) —
+  a table that stays empty until scenario stats warm up, which per the root
+  cause above could take indefinitely long. It now counts directly from the
+  dashboard's own signal feed (`state.signals.filter(s => s.policy_decision
+  === 'downweight')`), which already carries a per-signal decision and needs
+  no separate table to warm up.
+
+### Clarified: "N pending verification"
+- Added a shared `pendingVerificationLink()` helper producing a clickable,
+  underlined "N pending verification" snippet with an explanatory tooltip,
+  wired into every metrics view that reports a pending count (strategy win
+  rates, the main Win Rate card, Sessions/Win Rate/Duration tabs). Clicking
+  the link opens the new Account History modal (below) pre-filtered to
+  pending trades, so there's finally a concrete place to go look.
+
+### Added: scrollable Account History modal
+- The dashboard's dead "Positions Closed →" footer link now opens a new
+  Account History modal listing every closed trade in a scrollable list,
+  with "All trades" / "Pending verification" filter tabs and an explainer
+  paragraph when viewing the pending filter. Any pending-verification link
+  anywhere on the dashboard opens this modal pre-filtered via a shared
+  `data-open-account-history` delegated click handler.
+
+### Changed: symbol/pair picker is now a real multi-select
+- Replaced the single-select pair/symbol dropdown in Add Strategy with a
+  custom checkbox-based popover (`.symbol-multiselect`): open it, check as
+  many pairs as you want across categories, then hit Add once to add them
+  all together — no more one-at-a-time selecting. (Deliberately not a
+  native `<select multiple>`, which was removed in v1.0.12 because it needs
+  Cmd/Ctrl to multi-select and doesn't multi-select on many mobile browsers.)
+- Fixed the category order shuffling on every reopen (FX/Metals/Indices/
+  Crypto no longer reorder themselves based on selection history) — the
+  checklist now renders groups in one fixed, stable order every time.
+
+### Changed: second nav bar (Signals/Overview/Positions/Sessions/…)
+- Overview is now the first tab in DOM order and remains the default view
+  on load, matching how it's already treated as the default (`main.js`
+  already called `setActiveTab('overview')` on load — only the tab order
+  itself needed correcting).
+
+---
+
 ## v1.0.15 — Real fix for stuck positions/zero metrics, honest "pending verification" labeling, and a cleaner strategy row (2026-08-20)
 
 v1.0.14 wired up live subscriptions and metric math, but the underlying data

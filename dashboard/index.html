@@ -121,13 +121,28 @@
       </div>
       <div class="field-row">
         <div class="field">
-          <label for="strategy-symbol-picker">Symbols</label>
+          <label id="strategy-symbol-picker-label">Symbols</label>
+          <!-- v1.0.19 -- checkbox-based multi-select popover, replacing the
+               single-pick <select> (itself a v1.0.12 replacement for an even
+               earlier native <select multiple>, which required holding
+               Cmd/Ctrl and didn't multi-select on mobile at all). This lets
+               several pairs be checked in one pass, then added together with
+               a single "Add" click, while remaining fully usable on touch. -->
           <div class="symbol-picker-row">
-            <select id="strategy-symbol-picker"></select>
+            <div class="symbol-multiselect" id="strategy-symbol-multiselect">
+              <button type="button" class="symbol-multiselect-toggle" id="strategy-symbol-toggle"
+                aria-haspopup="listbox" aria-expanded="false" aria-labelledby="strategy-symbol-picker-label">
+                <span id="strategy-symbol-toggle-label">Select pairs…</span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+              </button>
+              <div class="symbol-multiselect-panel" id="strategy-symbol-panel" role="listbox" aria-multiselectable="true" hidden>
+                <div class="symbol-multiselect-list" id="strategy-symbol-checklist"></div>
+              </div>
+            </div>
             <button class="btn-secondary btn-xs" type="button" id="button-add-strategy-symbol">Add</button>
           </div>
           <div class="symbol-chip-list" id="strategy-symbols-chips"></div>
-          <p class="field-hint" id="strategy-symbols-hint">No pairs added yet — pick one above and click Add.</p>
+          <p class="field-hint" id="strategy-symbols-hint">No pairs added yet — check one or more above, then click Add.</p>
         </div>
         <div class="field">
           <label for="strategy-delivery">Delivery mode</label>
@@ -250,6 +265,32 @@
       <p class="auth-message" id="modify-position-message" role="status"></p>
       <button class="btn-accent auth-submit" type="submit">Save changes</button>
     </form>
+  </div>
+</div>
+
+<!-- ============ Account history modal (v1.0.19) ============ -->
+<!-- Scrollable, filterable list of every trade in trade_history for the
+     active terminal. Opened from the "Positions Closed →" link on the P&L
+     card. Doubles as the "where do I view pending-verification trades"
+     answer surfaced elsewhere in the dashboard -- clicking any "pending
+     verification" note opens this modal pre-filtered to that tab. -->
+<div class="modal-overlay" id="modal-account-history" aria-hidden="true">
+  <div class="modal-card modal-card-wide">
+    <div class="modal-head">
+      <h3>Account history</h3>
+      <button class="icon-btn" type="button" data-modal-close aria-label="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="modal-sub">Every closed trade on this account, most recent first.</p>
+    <div class="account-history-filters" role="tablist" aria-label="Account history filter">
+      <button type="button" class="account-history-filter active" data-history-filter="all" role="tab" aria-selected="true">All trades</button>
+      <button type="button" class="account-history-filter" data-history-filter="pending" role="tab" aria-selected="false">Pending verification</button>
+    </div>
+    <p class="field-hint" id="account-history-pending-explainer" hidden>Pending trades closed without your MT5 terminal confirming a final profit/loss (e.g. a brief connectivity gap), so they're excluded from win rate, P&amp;L and session stats until verified. They'll clear automatically once your EA reports the real result on its next sync.</p>
+    <div class="account-history-list" id="account-history-list">
+      <p class="empty-state-text">Connect an account to see history.</p>
+    </div>
   </div>
 </div>
 
@@ -378,9 +419,13 @@
 
     <!-- Tabs -->
     <div class="tab-row-wrap">
+      <!-- v1.0.19 -- Overview moved first in DOM order to match its role as
+           the default view (setActiveTab('overview') already runs on load
+           in main.js; this reorder just makes the visual tab order match
+           that behavior instead of showing Signals first). -->
       <nav class="tab-row" role="tablist" aria-label="Analytics views">
-        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="signals" data-testid="tab-signals">Signals</a>
         <a class="tab active" href="javascript:void(0)" role="tab" aria-selected="true" data-tab="overview" data-testid="tab-overview">Overview</a>
+        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="signals" data-testid="tab-signals">Signals</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="positions" data-testid="tab-positions">Positions</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="sessions" data-testid="tab-sessions">Sessions</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="blocked" data-testid="tab-blocked">Blocked</a>
@@ -450,7 +495,7 @@
         <div class="mini-chart-wrap">
           <canvas id="plChart" role="img" aria-label="Cumulative profit and loss over the selected period"></canvas>
         </div>
-        <div class="footer-link"><span>Positions Closed</span><span>→</span></div>
+        <div class="footer-link footer-link-action" id="link-open-account-history" role="button" tabindex="0"><span>Positions Closed</span><span>→</span></div>
       </section>
 
       <section class="card card-pad" aria-label="Risk engine">
@@ -464,7 +509,7 @@
           </div>
           <div class="risk-stat-row">
             <span class="label"><span class="legend-dot grey"></span>Downweighted</span>
-            <strong data-testid="text-risk-downweighted" id="text-risk-downweighted">0 combos</strong>
+            <strong data-testid="text-risk-downweighted" id="text-risk-downweighted">0 signals</strong>
           </div>
         </div>
         <div class="gauge-svg-wrap" style="align-self:center;">

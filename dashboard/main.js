@@ -336,41 +336,101 @@ const STRATEGY_KIND_SIGNAL_FAMILY = {
   ema_trend: 'momentum',
 };
 
+// v1.0.19 -- checkbox-based multi-select popover. Renders a checkbox per
+// remaining pair, grouped in the fixed asset-class order from
+// groupSymbolsByClass(). The "Add" button (below) reads every currently
+// checked box and adds them all to strategySelectedSymbols in one action,
+// so several pairs can be picked before a single Add click — no repeated
+// open/select/Add cycles, and no Cmd/Ctrl or mobile multi-touch tricks
+// required.
 function populateStrategySymbolSelect() {
-  const picker = document.getElementById('strategy-symbol-picker');
-  if (!picker) return;
+  const toggle = document.getElementById('strategy-symbol-toggle');
+  const toggleLabel = document.getElementById('strategy-symbol-toggle-label');
+  const checklist = document.getElementById('strategy-symbol-checklist');
+  if (!toggle || !checklist) return;
   const available = getAvailableSymbols();
   const remaining = available.filter((s) => !strategySelectedSymbols.includes(s.symbol));
 
   if (available.length === 0) {
-    picker.innerHTML = '<option value="" disabled>No mapped pairs yet — bind one on the Pairs page first</option>';
-    picker.disabled = true;
+    checklist.innerHTML = '<p class="symbol-multiselect-empty">No mapped pairs yet — bind one on the Pairs page first</p>';
+    toggle.disabled = true;
+    toggleLabel.textContent = 'No pairs available';
     return;
   }
 
   if (remaining.length === 0) {
-    picker.innerHTML = '<option value="" disabled>All bound pairs added</option>';
-    picker.disabled = true;
+    checklist.innerHTML = '<p class="symbol-multiselect-empty">All bound pairs added</p>';
+    toggle.disabled = true;
+    toggleLabel.textContent = 'All bound pairs added';
     return;
   }
 
-  picker.disabled = false;
-  const byClass = new Map();
-  remaining.forEach((s) => {
-    const label = ASSET_CLASS_LABELS[s.asset_class] || s.asset_class;
-    if (!byClass.has(label)) byClass.set(label, []);
-    byClass.get(label).push(s.symbol);
-  });
-
-  picker.innerHTML = Array.from(byClass.entries())
+  toggle.disabled = false;
+  toggleLabel.textContent = 'Select pairs…';
+  checklist.innerHTML = groupSymbolsByClass(remaining)
     .map(
-      ([label, symbols]) =>
-        `<optgroup label="${label}">${symbols
-          .map((sym) => `<option value="${sym}">${sym}</option>`)
-          .join('')}</optgroup>`
+      ({ label, symbols }) => `
+        <div class="symbol-multiselect-group">
+          <div class="symbol-multiselect-group-label">${label}</div>
+          ${symbols
+            .map(
+              (sym) => `
+            <label class="symbol-multiselect-item">
+              <input type="checkbox" value="${sym}" data-symbol-checkbox />
+              <span>${sym}</span>
+            </label>`
+            )
+            .join('')}
+        </div>`
     )
     .join('');
 }
+
+function updateStrategySymbolToggleLabel() {
+  const toggleLabel = document.getElementById('strategy-symbol-toggle-label');
+  const checklist = document.getElementById('strategy-symbol-checklist');
+  if (!toggleLabel || !checklist) return;
+  const checkedCount = checklist.querySelectorAll('[data-symbol-checkbox]:checked').length;
+  if (checkedCount === 0) {
+    if (toggleLabel.textContent !== 'All bound pairs added' && toggleLabel.textContent !== 'No pairs available') {
+      toggleLabel.textContent = 'Select pairs…';
+    }
+  } else {
+    toggleLabel.textContent = `${checkedCount} pair${checkedCount === 1 ? '' : 's'} checked`;
+  }
+}
+
+function closeStrategySymbolPanel() {
+  const panel = document.getElementById('strategy-symbol-panel');
+  const toggle = document.getElementById('strategy-symbol-toggle');
+  if (panel) panel.hidden = true;
+  if (toggle) toggle.setAttribute('aria-expanded', 'false');
+}
+
+document.getElementById('strategy-symbol-toggle')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const panel = document.getElementById('strategy-symbol-panel');
+  const toggle = document.getElementById('strategy-symbol-toggle');
+  if (!panel || !toggle || toggle.disabled) return;
+  const isOpen = !panel.hidden;
+  if (isOpen) {
+    closeStrategySymbolPanel();
+  } else {
+    panel.hidden = false;
+    toggle.setAttribute('aria-expanded', 'true');
+  }
+});
+
+document.getElementById('strategy-symbol-checklist')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (e.target.matches('[data-symbol-checkbox]')) updateStrategySymbolToggleLabel();
+});
+
+document.getElementById('strategy-symbol-panel')?.addEventListener('click', (e) => e.stopPropagation());
+
+// Close the panel on any outside click, mirroring the account-menu/nav-menu
+// click-outside pattern already used elsewhere in this app (see app.js).
+document.addEventListener('click', () => closeStrategySymbolPanel());
 
 function renderStrategySymbolChips() {
   const list = document.getElementById('strategy-symbols-chips');
@@ -379,7 +439,7 @@ function renderStrategySymbolChips() {
 
   if (strategySelectedSymbols.length === 0) {
     list.innerHTML = '';
-    if (hint) hint.textContent = 'No pairs added yet — pick one above and click Add.';
+    if (hint) hint.textContent = 'No pairs added yet — check one or more above, then click Add.';
     return;
   }
 
@@ -402,13 +462,16 @@ document.getElementById('strategy-symbols-chips')?.addEventListener('click', (e)
 });
 
 document.getElementById('button-add-strategy-symbol')?.addEventListener('click', () => {
-  const picker = document.getElementById('strategy-symbol-picker');
-  if (!picker || !picker.value) return;
-  if (!strategySelectedSymbols.includes(picker.value)) {
-    strategySelectedSymbols.push(picker.value);
-  }
+  const checklist = document.getElementById('strategy-symbol-checklist');
+  if (!checklist) return;
+  const checked = [...checklist.querySelectorAll('[data-symbol-checkbox]:checked')].map((el) => el.value);
+  if (checked.length === 0) return;
+  checked.forEach((sym) => {
+    if (!strategySelectedSymbols.includes(sym)) strategySelectedSymbols.push(sym);
+  });
   renderStrategySymbolChips();
   populateStrategySymbolSelect();
+  closeStrategySymbolPanel();
 });
 
 function resetStrategyModalToAddMode() {
@@ -622,6 +685,41 @@ document.getElementById('button-copy-key')?.addEventListener('click', async () =
 // bug: a manual order placed here can now only ever reference an exact,
 // broker-resolved canonical symbol, never a mistyped or unmapped one.
 const ASSET_CLASS_LABELS = { fx: 'Forex', metal: 'Metals', index: 'Indices', crypto: 'Crypto' };
+// v1.0.19 -- fixed display order for asset-class optgroups, independent of
+// which symbols happen to be present/remaining. See groupSymbolsByClass()
+// for why this matters.
+const ASSET_CLASS_ORDER = ['fx', 'metal', 'index', 'crypto'];
+
+// v1.0.19 -- shared by populateOrderSymbolSelect() and
+// populateStrategySymbolSelect(). Both previously grouped symbols into a
+// Map keyed by asset class using plain forEach insertion order. Because the
+// underlying symbol list is fetched sorted alphabetically by canonical
+// symbol (not by asset class), the category that happened to contain the
+// alphabetically-first *remaining* symbol determined the Map's insertion
+// order. In populateStrategySymbolSelect() specifically, `remaining` shrinks
+// every time a pair is added to the strategy, so removing e.g. the
+// alphabetically-first Forex pair could make a Crypto pair become the new
+// first-scanned symbol -- silently reshuffling Crypto to the top (or
+// wherever) each time the dropdown was reopened, with no relation to the
+// user's actions. Grouping here always returns categories in the fixed
+// ASSET_CLASS_ORDER (with any unrecognized class appended alphabetically at
+// the end) so the dropdown's category order never changes based on which
+// pairs have already been picked.
+function groupSymbolsByClass(symbolList) {
+  const byClass = new Map();
+  symbolList.forEach((s) => {
+    if (!byClass.has(s.asset_class)) byClass.set(s.asset_class, []);
+    byClass.get(s.asset_class).push(s.symbol);
+  });
+  const orderedClasses = [
+    ...ASSET_CLASS_ORDER.filter((c) => byClass.has(c)),
+    ...[...byClass.keys()].filter((c) => !ASSET_CLASS_ORDER.includes(c)).sort(),
+  ];
+  return orderedClasses.map((assetClass) => ({
+    label: ASSET_CLASS_LABELS[assetClass] || assetClass,
+    symbols: byClass.get(assetClass),
+  }));
+}
 
 function populateOrderSymbolSelect() {
   const select = document.getElementById('order-symbol');
@@ -635,16 +733,9 @@ function populateOrderSymbolSelect() {
   }
 
   select.disabled = false;
-  const byClass = new Map();
-  available.forEach((s) => {
-    const label = ASSET_CLASS_LABELS[s.asset_class] || s.asset_class;
-    if (!byClass.has(label)) byClass.set(label, []);
-    byClass.get(label).push(s.symbol);
-  });
-
-  select.innerHTML = Array.from(byClass.entries())
+  select.innerHTML = groupSymbolsByClass(available)
     .map(
-      ([label, symbols]) =>
+      ({ label, symbols }) =>
         `<optgroup label="${label}">${symbols
           .map((sym) => `<option value="${sym}">${sym}</option>`)
           .join('')}</optgroup>`
@@ -1952,6 +2043,17 @@ function getPendingVerificationCount() {
   return state.tradeHistory.filter((t) => t.profit_verified === false).length;
 }
 
+// v1.0.19 -- shared clickable/underlined "N pending verification" snippet
+// used everywhere the metrics widgets mention pending trades. Clicking it
+// opens the Account History modal pre-filtered to "Pending verification"
+// so there's always a clear answer to "where do I go look" instead of a
+// dead-end count with no explanation.
+const PENDING_VERIFICATION_TOOLTIP =
+  "Closed without your MT5 terminal confirming a final profit/loss (e.g. a brief connectivity gap). Excluded from every stat until verified -- click to view, or wait for your EA's next sync to clear it automatically.";
+function pendingVerificationLink(count, label) {
+  return `<span class="pending-verification-link" data-open-account-history="pending" title="${PENDING_VERIFICATION_TOOLTIP}">${label ?? `${count} pending verification`}</span>`;
+}
+
 function renderStrategyWinRates() {
   // Attach a computed win rate + trade count onto each strategy row, if we have trade history.
   strategyList.querySelectorAll('.mini-table-row').forEach((row) => {
@@ -1964,14 +2066,14 @@ function renderStrategyWinRates() {
     if (!statsEl) return;
     if (trades.length === 0) {
       statsEl.innerHTML = pendingCount > 0
-        ? `<div class="count">${pendingCount} pending verification</div>`
+        ? `<div class="count">${pendingVerificationLink(pendingCount)}</div>`
         : '';
       return;
     }
     const wins = trades.filter((t) => (t.profit ?? 0) > 0).length;
     const pct = Math.round((wins / trades.length) * 100);
     const countLabel = pendingCount > 0
-      ? `${trades.length} trades · ${pendingCount} pending`
+      ? `${trades.length} trades · ${pendingVerificationLink(pendingCount, `${pendingCount} pending`)}`
       : `${trades.length} trades`;
     statsEl.innerHTML = `<div class="pct">${pct}%</div><div class="count">${countLabel}</div>`;
   });
@@ -1983,7 +2085,7 @@ function renderWinRate() {
   const pending = getPendingVerificationCount();
   if (total === 0) {
     textWinrateValue.textContent = '—';
-    textWinrateSub.textContent = pending > 0 ? `${pending} trades pending verification` : 'No trades yet';
+    textWinrateSub.innerHTML = pending > 0 ? `${pendingVerificationLink(pending, `${pending} trades pending verification`)}` : 'No trades yet';
     textAvgRr.textContent = '—';
     winrateGaugeArc.setAttribute('stroke-dasharray', '0 157.08');
     return;
@@ -1994,8 +2096,8 @@ function renderWinRate() {
     verified.reduce((sum, t) => sum + (t.r_multiple ?? 0), 0) / total;
 
   textWinrateValue.textContent = `${pct}%`;
-  textWinrateSub.textContent = pending > 0
-    ? `${pct >= 55 ? 'On target' : 'Below target'} · ${pending} pending verification`
+  textWinrateSub.innerHTML = pending > 0
+    ? `${pct >= 55 ? 'On target' : 'Below target'} · ${pendingVerificationLink(pending)}`
     : pct >= 55 ? 'On target' : 'Below target';
   textAvgRr.textContent = avgRr.toFixed(1);
 
@@ -2025,10 +2127,17 @@ async function loadAgentPolicies() {
 
 function renderRiskEngine() {
   const blocked = state.signals.filter((s) => s.policy_decision === 'block').length;
-  const downweighted = state.agentPolicies.filter((p) => p.decision === 'downweight').length;
+  // v1.0.19 -- previously read state.agentPolicies (the scenario-level
+  // adaptive throttle ladder table), which stays empty until scenario_stats
+  // has accumulated verified trades per session/htf_regime/news scenario --
+  // a cold-start condition that could persist indefinitely. The dashboard's
+  // own signal feed already carries a per-signal policy_decision (including
+  // 'downweight'), so count directly from state.signals for an accurate,
+  // immediately-available number instead of waiting on the ladder to warm up.
+  const downweighted = state.signals.filter((s) => s.policy_decision === 'downweight').length;
 
   textRiskBlocked.textContent = `${blocked.toLocaleString()} signals`;
-  textRiskDownweighted.textContent = `${downweighted.toLocaleString()} combos`;
+  textRiskDownweighted.textContent = `${downweighted.toLocaleString()} signals`;
 
   if (state.signals.length === 0) {
     textRiskTrend.textContent = 'Adaptive risk engine warms up once trade history exists';
@@ -2207,7 +2316,7 @@ function renderSessionsTab() {
   const pending = getPendingVerificationCount();
   if (closed.length === 0) {
     list.innerHTML = pending > 0
-      ? `<p class="empty-state-text">${pending} trade${pending === 1 ? '' : 's'} pending verification (missing EA-reported profit data). Session breakdowns will appear once verified trades close.</p>`
+      ? `<p class="empty-state-text">${pendingVerificationLink(pending, `${pending} trade${pending === 1 ? '' : 's'} pending verification`)} (missing EA-reported profit data). Session breakdowns will appear once verified trades close.</p>`
       : '<p class="empty-state-text">No closed trades yet. Session breakdowns appear once trades close.</p>';
     return;
   }
@@ -2247,7 +2356,7 @@ function renderWinRateTab() {
   const pending = getPendingVerificationCount();
   if (closed.length === 0) {
     list.innerHTML = pending > 0
-      ? `<p class="empty-state-text">${pending} trade${pending === 1 ? '' : 's'} pending verification (missing EA-reported profit data).</p>`
+      ? `<p class="empty-state-text">${pendingVerificationLink(pending, `${pending} trade${pending === 1 ? '' : 's'} pending verification`)} (missing EA-reported profit data).</p>`
       : '<p class="empty-state-text">No trades yet.</p>';
     return;
   }
@@ -2269,7 +2378,7 @@ function renderWinRateTab() {
       <div class="stat-summary-item"><div class="stat-value">${losses}</div><div class="stat-label">Losses</div></div>
       <div class="stat-summary-item"><div class="stat-value">${breakeven}</div><div class="stat-label">Breakeven</div></div>
       <div class="stat-summary-item"><div class="stat-value">${avgR.toFixed(2)}R</div><div class="stat-label">Avg R-multiple</div></div>
-    </div>${pending > 0 ? `<p class="field-hint">${pending} additional trade${pending === 1 ? '' : 's'} pending verification and excluded above.</p>` : ''}`;
+    </div>${pending > 0 ? `<p class="field-hint">${pendingVerificationLink(pending, `${pending} additional trade${pending === 1 ? '' : 's'} pending verification`)} and excluded above.</p>` : ''}`;
 
   const rowsHtml = [...bySymbol.entries()]
     .sort((a, b) => b[1].length - a[1].length)
@@ -2300,7 +2409,7 @@ function renderDurationTab() {
   const pending = getPendingVerificationCount();
   if (closed.length === 0) {
     list.innerHTML = pending > 0
-      ? `<p class="empty-state-text">${pending} trade${pending === 1 ? '' : 's'} pending verification (missing EA-reported profit data).</p>`
+      ? `<p class="empty-state-text">${pendingVerificationLink(pending, `${pending} trade${pending === 1 ? '' : 's'} pending verification`)} (missing EA-reported profit data).</p>`
       : '<p class="empty-state-text">No closed trades yet.</p>';
     return;
   }
@@ -2350,6 +2459,90 @@ function renderDurationTab() {
 
   list.innerHTML = summaryHtml + rowsHtml;
 }
+
+// ---------------------------------------------------------------------------
+// Account history modal (v1.0.19) -- scrollable list of every trade in
+// trade_history for the active terminal. Opened from the "Positions Closed
+// →" link on the P&L card, and from any "pending verification" note
+// elsewhere on the dashboard (via pendingVerificationLink() above), so
+// there's always a clear place to go look instead of a dead-end count.
+// ---------------------------------------------------------------------------
+let accountHistoryFilter = 'all';
+
+function renderAccountHistoryList() {
+  const list = document.getElementById('account-history-list');
+  const explainer = document.getElementById('account-history-pending-explainer');
+  if (!list) return;
+  if (explainer) explainer.hidden = accountHistoryFilter !== 'pending';
+
+  const rows = [...state.tradeHistory]
+    .filter((t) => (accountHistoryFilter === 'pending' ? t.profit_verified === false : true))
+    .sort((a, b) => new Date(b.close_time || b.open_time || 0) - new Date(a.close_time || a.open_time || 0));
+
+  if (rows.length === 0) {
+    list.innerHTML = `<p class="empty-state-text">${
+      accountHistoryFilter === 'pending'
+        ? 'No trades pending verification right now.'
+        : 'No trade history yet. Once trades close on this account, they\'ll show up here.'
+    }</p>`;
+    return;
+  }
+
+  list.innerHTML = rows
+    .map((t) => {
+      const dateLabel = t.close_time
+        ? new Date(t.close_time).toLocaleString()
+        : t.open_time
+        ? `opened ${new Date(t.open_time).toLocaleString()}`
+        : '—';
+      const plCell = t.profit_verified === false
+        ? '<span class="hist-pl pending">Pending</span>'
+        : `<span class="hist-pl ${(t.profit ?? 0) > 0 ? 'positive' : (t.profit ?? 0) < 0 ? 'negative' : ''}">${
+            (t.profit ?? 0) >= 0 ? '+' : ''
+          }${(t.profit ?? 0).toFixed(2)}</span>`;
+      return `
+        <div class="account-history-row">
+          <div><span class="hist-symbol">${t.symbol || 'Unknown'}</span> <span class="hist-side">${t.side || '—'}</span></div>
+          <div class="hist-date">${dateLabel}</div>
+          <div>${t.volume ?? '—'} lots</div>
+          ${plCell}
+        </div>`;
+    })
+    .join('');
+}
+
+function openAccountHistoryModal(filter) {
+  accountHistoryFilter = filter === 'pending' ? 'pending' : 'all';
+  document.querySelectorAll('.account-history-filter').forEach((btn) => {
+    const isActive = btn.dataset.historyFilter === accountHistoryFilter;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+  renderAccountHistoryList();
+  window.LucreUI?.openModal('modal-account-history');
+}
+
+document.getElementById('link-open-account-history')?.addEventListener('click', () => openAccountHistoryModal('all'));
+document.getElementById('link-open-account-history')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    openAccountHistoryModal('all');
+  }
+});
+
+document.querySelectorAll('.account-history-filter').forEach((btn) => {
+  btn.addEventListener('click', () => openAccountHistoryModal(btn.dataset.historyFilter));
+});
+
+// Event delegation: the pending-verification links above are re-rendered
+// dynamically inside various tab/card innerHTML blocks, so a single
+// document-level listener catches all of them regardless of when they
+// were inserted.
+document.addEventListener('click', (e) => {
+  const trigger = e.target.closest('[data-open-account-history]');
+  if (!trigger) return;
+  openAccountHistoryModal(trigger.dataset.openAccountHistory);
+});
 
 async function loadCalendarEvents() {
   // v1.0.17 -- shortened from 100 to 30: the tab now shows a short, most-
