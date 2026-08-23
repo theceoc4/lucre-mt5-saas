@@ -99,6 +99,10 @@ interface CommandResult {
   error_message?: string;
   close_price?: number;
   profit?: number;
+  commission?: number;
+  swap?: number;
+  fee?: number;
+  net_profit?: number;
   r_multiple?: number;
   close_time?: string;
 }
@@ -111,6 +115,8 @@ interface ClosedDeal {
   symbol: string;
   close_price: number;
   profit: number;
+  commission?: number;
+  swap?: number;
   fee?: number;
   close_time: string;
 }
@@ -199,6 +205,7 @@ Deno.serve(async (req: Request) => {
 
   // 2. Process command execution results (acks, executions, failures).
   const processedResults: Array<{ ea_command_id: string; ok: boolean; detail?: string }> = [];
+  const closedPositionTickets = new Set<number>();
 
   for (const result of body.command_results ?? []) {
     const { data: command, error: commandFetchError } = await admin
@@ -244,7 +251,12 @@ Deno.serve(async (req: Request) => {
           .maybeSingle();
 
         if (position && result.close_price !== undefined && result.profit !== undefined) {
-          const outcome = result.profit > 0 ? "win" : result.profit < 0 ? "loss" : "breakeven";
+          const hasCostBreakdown = result.net_profit !== undefined
+            || result.commission !== undefined || result.swap !== undefined || result.fee !== undefined;
+          const netProfit = result.net_profit ?? (hasCostBreakdown
+            ? result.profit + Number(result.commission ?? 0) + Number(result.swap ?? 0) + Number(result.fee ?? 0)
+            : result.profit);
+          const outcome = netProfit > 0 ? "win" : netProfit < 0 ? "loss" : "breakeven";
           // v1.0.19 -- prefer the position's own stored context (migration
           // 038) and fall back to the closing command's, rather than the
           // other way around, so a close command that for any reason lacks
@@ -272,13 +284,14 @@ Deno.serve(async (req: Request) => {
             origin_detail: position.origin_detail,
             risk_defined: position.risk_defined,
             entry_context: position.entry_context,
-            net_profit: result.profit,
+            net_profit: netProfit,
             outcome,
           });
           if (tradeHistoryError) {
             processedResults.push({ ea_command_id: result.ea_command_id, ok: false, detail: `trade_history: ${tradeHistoryError.message}` });
             continue;
           }
+          closedPositionTickets.add(Number(ticket));
           await admin.from("positions").update({ status: "closed", updated_at: nowIso }).eq("id", position.id);
         }
       }
@@ -340,7 +353,15 @@ Deno.serve(async (req: Request) => {
 
     if (!position) continue; // already closed, or never tracked (shouldn't happen)
 
-    const outcome = deal.profit > 0 ? "win" : deal.profit < 0 ? "loss" : "breakeven";
+    // v1.0.23 sends MT5's gross DEAL_PROFIT separately from commission,
+    // swap and fee. Older EAs sent profit+commission+swap in `profit`, so
+    // preserve that legacy interpretation when the new fields are absent.
+    const hasCostBreakdown = deal.commission !== undefined || deal.swap !== undefined;
+    const netProfit = hasCostBreakdown
+      ? deal.profit + Number(deal.commission ?? 0) + Number(deal.swap ?? 0) + Number(deal.fee ?? 0)
+      : deal.profit + Number(deal.fee ?? 0);
+    const displayProfit = hasCostBreakdown ? deal.profit : netProfit;
+    const outcome = netProfit > 0 ? "win" : netProfit < 0 ? "loss" : "breakeven";
     // v1.0.19 -- this path (a position closed outside the command flow, e.g.
     // SL/TP hit) previously hard-coded session/htf_regime/near_news_event/
     // news_event_id to null since it had no command row to read them from.
@@ -361,7 +382,7 @@ Deno.serve(async (req: Request) => {
         close_price: deal.close_price,
         open_time: position.open_time,
         close_time: deal.close_time,
-        profit: deal.profit + Number(deal.fee ?? 0),
+        profit: displayProfit,
         r_multiple: null,
         session: position.session ?? null,
         htf_regime: position.htf_regime ?? null,
@@ -372,15 +393,45 @@ Deno.serve(async (req: Request) => {
         origin_detail: position.origin_detail,
         risk_defined: position.risk_defined,
         entry_context: position.entry_context,
-        net_profit: deal.profit + Number(deal.fee ?? 0),
+        net_profit: netProfit,
         outcome,
       },
       { onConflict: "terminal_id,mt5_ticket", ignoreDuplicates: true },
     );
 
     if (!closedDealError) {
+      closedPositionTickets.add(Number(deal.mt5_ticket));
       await admin.from("positions").update({ status: "closed", updated_at: nowIso }).eq("id", position.id);
     }
+  }
+
+  // Reconcile the analytical trade against the lossless MT5 deal ledger.
+  // This includes costs charged on both the opening and closing legs, and it
+  // also guarantees that the dashboard's displayed trade P/L and net P/L are
+  // derived from one authoritative set of deals.
+  for (const positionTicket of closedPositionTickets) {
+    const { data: ledgerRows, error: ledgerError } = await admin
+      .from("mt5_account_history")
+      .select("profit, commission, swap, fee")
+      .eq("terminal_id", terminal.id)
+      .eq("position_id", positionTicket);
+    if (ledgerError || !ledgerRows || ledgerRows.length === 0) continue;
+
+    const tradeProfit = ledgerRows.reduce((sum, row) => sum + Number(row.profit ?? 0), 0);
+    const reconciledNet = ledgerRows.reduce(
+      (sum, row) => sum + Number(row.profit ?? 0) + Number(row.commission ?? 0)
+        + Number(row.swap ?? 0) + Number(row.fee ?? 0),
+      0,
+    );
+    await admin
+      .from("trade_history")
+      .update({
+        profit: tradeProfit,
+        net_profit: reconciledNet,
+        outcome: reconciledNet > 0 ? "win" : reconciledNet < 0 ? "loss" : "breakeven",
+      })
+      .eq("terminal_id", terminal.id)
+      .eq("mt5_ticket", positionTicket);
   }
 
   // 3. Reconcile reported open positions (mirrored from the EA on every poll).

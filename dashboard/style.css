@@ -1250,6 +1250,14 @@ select.dropdown-pill {
   color: var(--color-text-primary);
 }
 
+.pl-summary-detail {
+  margin-top: 2px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.25;
+  text-align: right;
+}
+
 .mini-chart-wrap {
   height: 90px;
   margin-top: var(--space-4);

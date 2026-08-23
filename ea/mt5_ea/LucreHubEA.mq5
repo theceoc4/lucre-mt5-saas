@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.22 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.23 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.22"
+#property version   "1.23"
 #property strict
 
 
@@ -572,6 +572,7 @@ void EASync_QueueExecutedModify(const string ea_command_id, const long ticket)
 
 void EASync_QueueExecutedClose(const string ea_command_id, const long ticket,
                                 const double close_price, const double profit,
+                                const double commission, const double swap, const double fee,
                                 const double r_multiple, const bool has_r)
 {
    string s =
@@ -580,6 +581,10 @@ void EASync_QueueExecutedClose(const string ea_command_id, const long ticket,
       "\"mt5_ticket\":" + IntegerToString(ticket) + ","
       "\"close_price\":" + DoubleToString(close_price, 5) + ","
       "\"profit\":" + DoubleToString(profit, 2) + ","
+      "\"commission\":" + DoubleToString(commission, 2) + ","
+      "\"swap\":" + DoubleToString(swap, 2) + ","
+      "\"fee\":" + DoubleToString(fee, 2) + ","
+      "\"net_profit\":" + DoubleToString(profit + commission + swap + fee, 2) + ","
       "\"r_multiple\":" + (has_r ? DoubleToString(r_multiple, 4) : "null") + ","
       "\"close_time\":\"" + EASync_ToIso8601(TimeCurrent()) + "\"}";
    EASync_QueueResult(s);
@@ -917,9 +922,11 @@ void EASync_ExecuteClose(const string ea_command_id, const long ticket)
       HistoryDealSelect(result.deal);
    }
 
-   double profit = HistoryDealGetDouble(result.deal, DEAL_PROFIT)
-                  + HistoryDealGetDouble(result.deal, DEAL_SWAP)
-                  + HistoryDealGetDouble(result.deal, DEAL_COMMISSION);
+   double profit = HistoryDealGetDouble(result.deal, DEAL_PROFIT);
+   double commission = HistoryDealGetDouble(result.deal, DEAL_COMMISSION);
+   double swap = HistoryDealGetDouble(result.deal, DEAL_SWAP);
+   double fee = HistoryDealGetDouble(result.deal, DEAL_FEE);
+   double net_profit = profit + commission + swap + fee;
 
    bool has_r = (sl_at_close > 0.0);
    double r_multiple = 0.0;
@@ -930,12 +937,13 @@ void EASync_ExecuteClose(const string ea_command_id, const long ticket)
       double tick_size  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
       double risk_amount = (tick_size > 0.0) ? (risk_distance / tick_size) * tick_value * volume : 0.0;
       has_r = (risk_amount > 0.0);
-      if(has_r) r_multiple = profit / risk_amount;
+      if(has_r) r_multiple = net_profit / risk_amount;
    }
 
    EASync_UntrackTicket(ticket);
-   EASync_QueueExecutedClose(ea_command_id, ticket, result.price > 0 ? result.price : close_price, profit, r_multiple, has_r);
-   PrintFormat("EASync: closed ticket=%I64d profit=%.2f, command=%s", ticket, profit, ea_command_id);
+   EASync_QueueExecutedClose(ea_command_id, ticket, result.price > 0 ? result.price : close_price,
+                             profit, commission, swap, fee, r_multiple, has_r);
+   PrintFormat("EASync: closed ticket=%I64d profit=%.2f net=%.2f, command=%s", ticket, profit, net_profit, ea_command_id);
 }
 
 //+------------------------------------------------------------------+
@@ -1315,9 +1323,9 @@ string EASync_BuildClosedDealsJson()
 
          long position_id = (long)HistoryDealGetInteger(deal_ticket, DEAL_POSITION_ID);
          double close_price = HistoryDealGetDouble(deal_ticket, DEAL_PRICE);
-         double deal_profit = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT)
-                             + HistoryDealGetDouble(deal_ticket, DEAL_SWAP)
-                             + HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
+         double deal_profit = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT);
+         double deal_commission = HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
+         double deal_swap = HistoryDealGetDouble(deal_ticket, DEAL_SWAP);
          double deal_fee = HistoryDealGetDouble(deal_ticket, DEAL_FEE);
          datetime close_time = (datetime)HistoryDealGetInteger(deal_ticket, DEAL_TIME);
          string symbol = HistoryDealGetString(deal_ticket, DEAL_SYMBOL);
@@ -1329,6 +1337,8 @@ string EASync_BuildClosedDealsJson()
             "\"symbol\":\"" + EASync_JsonEscape(symbol) + "\","
             "\"close_price\":" + DoubleToString(close_price, 5) + ","
             "\"profit\":" + DoubleToString(deal_profit, 2) + ","
+            "\"commission\":" + DoubleToString(deal_commission, 2) + ","
+            "\"swap\":" + DoubleToString(deal_swap, 2) + ","
             "\"fee\":" + DoubleToString(deal_fee, 2) + ","
             "\"close_time\":\"" + EASync_ToIso8601(close_time) + "\""
             "}";
@@ -3002,8 +3012,8 @@ void PriceReporter_OnTimer()
 //----------------------------------------------------------------------
 input string SupabaseProjectUrl   = "https://qxlfnscmrhwfcpattqxa.supabase.co"; // Backend URL — leave as-is
 input string TerminalApiKey       = "";  // Paste your terminal's mtk_live_... key here
-input int    SyncFallbackPollSeconds = 10; // reconciliation cadence while Realtime is unavailable
-input int    SyncHealthyPollSeconds  = 60; // safety reconciliation cadence while Realtime is joined
+input int    SyncFallbackPollSeconds = 5;  // reconciliation cadence while Realtime is unavailable
+input int    SyncHealthyPollSeconds  = 10; // live account/position snapshot cadence while Realtime is joined
 input int    CalendarSyncMinutes  = 15;  // Economic calendar push interval
 input bool   EnableCalendarSync   = true; // Turn off only if this terminal should not push calendar data
 input bool   EnableWebSocketPush  = true; // Persistent WebSocket for near-instant command pickup (hint-only; polling always keeps running as the fallback)

@@ -1,5 +1,14 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.23 — Live position snapshots and explicit P/L costs (2026-08-23)
+
+- Publishes account and open-position snapshots every 10 seconds while the
+  Realtime command channel is healthy, and every 5 seconds while reconnecting.
+- Reports MT5 deal profit separately from commission, swap and fees so the
+  backend can show both trade P/L and true net P/L without double counting.
+- Keeps immediate `OnTradeTransaction` synchronization for opens, closes,
+  partial fills and SL/TP changes.
+
 ## v1.0.22 — Realtime wake-ups and multi-timeframe bars (2026-08-23)
 
 - Replaced continuous two-second command polling with direct Supabase

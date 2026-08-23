@@ -7,6 +7,17 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.23 — Order completion, reconcilable P/L, and scalable live positions (2026-08-23)
+
+- The New Order modal now closes as soon as the backend accepts the order.
+  Any later MT5 execution failure remains visible in the dashboard status
+  banner rather than trapping the user in the modal.
+- Cumulative trade P/L now uses the same gross MT5 profit values shown for
+  trades; net P/L after commission, swap and fees is displayed separately.
+- A healthy Supabase Realtime subscription is now the primary update path.
+  The browser performs one safety reconciliation per minute and only falls
+  back to eight-second polling while Realtime is disconnected.
+
 ## v1.0.19 — Root-cause fix for scenario-stats cold start, honest Risk Engine numbers, true multi-select symbol picker, reordered nav, and an account history modal (2026-08-21)
 
 ### Root cause: scenario stats / adaptive throttle ladder never warmed up

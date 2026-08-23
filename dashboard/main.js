@@ -66,13 +66,13 @@ let volumeChartInstance = null;
 let plChartInstance = null;
 // Realtime keeps positions/signal queue live while a terminal is active;
 // polling remains as a reduced-frequency safety net for missed events.
-// v1.0.12 -- lowered from 30s to 8s. A subscribed-but-silently-broken
-// Realtime channel previously meant a full 30s (sometimes ~1 minute in
-// practice) before an opened/closed position showed up; 8s is a tighter
-// safety net while startRealtime() below now detects and recovers from
-// that failure mode directly instead of just masking it with polling.
+// v1.0.23 -- a healthy Realtime channel is the primary update path, with a
+// once-per-minute reconciliation read. If the channel drops, the dashboard
+// automatically switches to an eight-second fallback until it reconnects.
 let positionPollIntervalId = null;
-const POSITION_POLL_MS = 8000;
+const POSITION_POLL_FALLBACK_MS = 8000;
+const POSITION_POLL_HEALTHY_MS = 60000;
+let realtimeIsHealthy = false;
 let realtimeChannel = null;
 let realtimeReconnectTimer = null;
 // Rescan-in-flight poll — checks mt5_terminals.last_symbol_scan_at every 5s
@@ -874,8 +874,8 @@ document.getElementById('form-new-order')?.addEventListener('submit', async (e) 
   try {
     const command = await placeManualOrder(payload);
     state.pendingCommandId = command.ea_command_id;
-    msg.textContent = 'Order queued — waiting for MT5 confirmation.';
     form.reset();
+    window.LucreUI.closeModal(document.getElementById('modal-new-order'));
     await loadPositions();
   } catch (err) {
     msg.style.color = 'var(--color-negative)';
@@ -985,6 +985,7 @@ async function handleClosePosition(positionId) {
 // ---------------------------------------------------------------------------
 function startPositionPolling() {
   if (positionPollIntervalId) return;
+  const pollMs = realtimeIsHealthy ? POSITION_POLL_HEALTHY_MS : POSITION_POLL_FALLBACK_MS;
   positionPollIntervalId = setInterval(() => {
     if (!state.activeTerminalId) return;
     loadPositions();
@@ -995,12 +996,19 @@ function startPositionPolling() {
     // misses an INSERT, metrics still catch up within one poll tick instead
     // of needing a manual reload.
     loadTradeHistory();
-  }, POSITION_POLL_MS);
+  }, pollMs);
 }
 
 function stopPositionPolling() {
   if (positionPollIntervalId) clearInterval(positionPollIntervalId);
   positionPollIntervalId = null;
+}
+
+function setRealtimeHealth(isHealthy) {
+  if (realtimeIsHealthy === isHealthy) return;
+  realtimeIsHealthy = isHealthy;
+  stopPositionPolling();
+  startPositionPolling();
 }
 
 // v1.0.12 -- lightweight balance/equity/margin_level refresh, run on the
@@ -1096,7 +1104,9 @@ function startRealtime(terminalId) {
     // instead of requiring a manual page reload.
     .subscribe((status) => {
       console.log('[realtime]', status, 'terminal', terminalId);
+      if (status === 'SUBSCRIBED') setRealtimeHealth(true);
       if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        setRealtimeHealth(false);
         if (realtimeReconnectTimer) return;
         realtimeReconnectTimer = setTimeout(() => {
           realtimeReconnectTimer = null;
@@ -2141,7 +2151,7 @@ async function loadTradeHistory() {
   const { data, error } = await supabase
     .from('trade_history')
     .select(
-      'id, symbol, side, volume, profit, r_multiple, open_time, close_time, strategy_id, session, htf_regime, near_news_event, news_event_id, outcome, source, profit_verified'
+      'id, symbol, side, volume, profit, net_profit, r_multiple, open_time, close_time, strategy_id, session, htf_regime, near_news_event, news_event_id, outcome, source, profit_verified'
     )
     .eq('terminal_id', state.activeTerminalId)
     .order('close_time', { ascending: true });
@@ -3074,18 +3084,29 @@ function renderPlChart() {
   const byDate = new Map();
   trades.forEach((t) => {
     const key = new Date(t.close_time).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    byDate.set(key, (byDate.get(key) || 0) + (t.profit ?? 0));
+    byDate.set(key, (byDate.get(key) || 0) + Number(t.profit ?? 0));
   });
 
-  const netTotal = trades.reduce((sum, t) => sum + (t.profit ?? 0), 0);
+  const tradePlTotal = trades.reduce((sum, t) => sum + Number(t.profit ?? 0), 0);
+  const netTotal = trades.reduce((sum, t) => sum + Number(t.net_profit ?? t.profit ?? 0), 0);
   if (plSummaryValue) {
     if (trades.length === 0) {
       plSummaryValue.textContent = '—';
       plSummaryValue.style.color = '';
     } else {
-      const sign = netTotal >= 0 ? '+' : '−';
-      plSummaryValue.textContent = `${sign}$${Math.abs(netTotal).toFixed(2)}`;
-      plSummaryValue.style.color = netTotal >= 0 ? positive : negative;
+      const sign = tradePlTotal >= 0 ? '+' : '−';
+      plSummaryValue.textContent = `${sign}$${Math.abs(tradePlTotal).toFixed(2)}`;
+      plSummaryValue.style.color = tradePlTotal >= 0 ? positive : negative;
+    }
+  }
+  const plSummaryDetail = document.getElementById('pl-summary-detail');
+  if (plSummaryDetail) {
+    if (trades.length === 0) {
+      plSummaryDetail.textContent = '';
+    } else {
+      const netSign = netTotal >= 0 ? '+' : '−';
+      const costs = netTotal - tradePlTotal;
+      plSummaryDetail.textContent = `Net after costs ${netSign}$${Math.abs(netTotal).toFixed(2)} · Costs ${costs >= 0 ? '+' : '−'}$${Math.abs(costs).toFixed(2)}`;
     }
   }
 
