@@ -10,15 +10,15 @@ was synchronized from production on **2026-08-21**.
 
 | Component | Location in repo | Live location | Version |
 |---|---|---|---|
-| Backend (Supabase) | [`supabase/`](./supabase) | [qxlfnscmrhwfcpattqxa.supabase.co](https://qxlfnscmrhwfcpattqxa.supabase.co) | 43 migrations / 12 functions |
+| Backend (Supabase) | [`supabase/`](./supabase) | [qxlfnscmrhwfcpattqxa.supabase.co](https://qxlfnscmrhwfcpattqxa.supabase.co) | 51 migrations / 14 functions locally |
 | Dashboard (frontend) | [`dashboard/`](./dashboard) | [mt5dashboardui.vercel.app](https://mt5dashboardui.vercel.app) | v1.0.19 |
-| EA (MetaTrader 5) | [`ea/`](./ea) | Runs on MT5 terminal / VPS | v1.0.18 (single-file) |
+| EA (MetaTrader 5) | [`ea/`](./ea) | Runs on MT5 terminal / VPS | v1.0.22 candidate (single-file) |
 
 ## Important caveats
 
 - **`supabase/` is the backend deployment source of truth.** It contains all
-  12 live Edge Functions and all 43 migration bodies fetched from the linked
-  project. `backend/` remains only as the earlier audit snapshot.
+  production-synchronized Edge Functions and migrations plus pending local
+  releases. `backend/` remains only as the earlier audit snapshot.
 - **EA ships uncompiled.** No MQL5 compiler is available outside MetaEditor,
   so `ea/mt5_ea/LucreHubEA.mq5` must be compiled locally in MetaEditor before
   use. As of v1.0.18 it's a single consolidated file (no external `.mqh`
@@ -33,8 +33,8 @@ was synchronized from production on **2026-08-21**.
 
 ```
 supabase/
-  functions/         12 deployable Supabase Edge Functions
-  migrations/        43 version-aligned SQL migrations
+  functions/         Deployable Supabase Edge Functions
+  migrations/        Version-aligned SQL migrations
   config.toml        Local project and function authentication configuration
 backend/              Earlier read-only backend audit snapshot
 dashboard/

@@ -119,6 +119,16 @@
         <label for="strategy-name">Configuration name</label>
         <input id="strategy-name" name="name" type="text" placeholder="e.g. VWAP Reversion — Majors" required />
       </div>
+      <div class="field-row" id="strategy-ema-parameters" hidden>
+        <div class="field">
+          <label for="strategy-ema-fast">Fast EMA period</label>
+          <input id="strategy-ema-fast" name="ema_fast_period" type="number" min="1" max="99" value="9" />
+        </div>
+        <div class="field">
+          <label for="strategy-ema-slow">Slow EMA period</label>
+          <input id="strategy-ema-slow" name="ema_slow_period" type="number" min="2" max="100" value="21" />
+        </div>
+      </div>
       <div class="field-row">
         <div class="field">
           <label id="strategy-symbol-picker-label">Symbols</label>

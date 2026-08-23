@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.20 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.22 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.20"
+#property version   "1.22"
 #property strict
 
 
@@ -127,7 +127,7 @@
 //----------------------------------------------------------------------
 string   g_es_base_url         = "";   // e.g. https://qxlfnscmrhwfcpattqxa.supabase.co
 string   g_es_api_key          = "";   // mtk_live_... from provision-terminal-key
-int      g_es_poll_seconds     = 2;    // 1-2s per architecture spec §3.1
+int      g_es_poll_seconds     = 10;   // adaptive: slower while Realtime is healthy
 datetime g_es_last_poll        = 0;
 datetime g_es_last_history_scan = 0; // v1.0.14: rolling window start for closed-deal detection
 ulong    g_es_account_history_last_ticket = 0;
@@ -179,6 +179,16 @@ void EASync_Init(const string base_url, const string api_key, const int poll_sec
    g_es_strategy_map_count = 0;
 
    PrintFormat("EASync: initialized, base_url=%s, poll_seconds=%d", g_es_base_url, g_es_poll_seconds);
+}
+
+// Realtime changes the reconciliation cadence, never the command source of
+// truth. The EA always retains a periodic ea-sync fallback.
+void EASync_SetPollSeconds(const int poll_seconds)
+{
+   int normalized = (poll_seconds > 0) ? poll_seconds : 10;
+   if(g_es_poll_seconds == normalized) return;
+   g_es_poll_seconds = normalized;
+   PrintFormat("EASync: reconciliation interval now %d seconds", g_es_poll_seconds);
 }
 
 //+------------------------------------------------------------------+
@@ -285,8 +295,8 @@ void EASync_OnTimer()
 //+------------------------------------------------------------------+
 //| Public: call from OnTradeTransaction() the instant a position    |
 //| opens, modifies, or closes. Previously every trade event waited  |
-//| out the full g_es_poll_seconds gate (default 2s) before its      |
-//| effect reached the dashboard at all, on top of whatever delay    |
+//| out the full g_es_poll_seconds gate before its effect reached    |
+//| the dashboard at all, on top of whatever delay                   |
 //| the dashboard's own poll/Realtime layer added on the way out —   |
 //| together explaining the ~1 minute lag reported live. This runs   |
 //| EASync_Run() immediately, bypassing the gate, so a trade event   |
@@ -1702,18 +1712,18 @@ void CalendarSync_Run()
 //============================================================================
 //+------------------------------------------------------------------+
 //|                                                   EAStream.mqh   |
-//|  v1.0.12 — Optional low-latency companion to EASync.mqh.         |
+//|  v1.0.22 — Optional low-latency companion to EASync.mqh.         |
 //|                                                                    |
-//|  This module opens a persistent WebSocket connection to the        |
-//|  /functions/v1/ea-stream edge function and listens for a single    |
-//|  text message: "wake". On "wake" it calls EASync_Run() directly,   |
+//|  This module uses the terminal API key to load a random wake-up     |
+//|  topic and opens a terminal-scoped Supabase Realtime Broadcast      |
+//|  channel. On command_available it calls EASync_Run() directly,     |
 //|  so a freshly-inserted ea_commands row (a new trade signal, a      |
 //|  manual order, a hedge, a flatten) is picked up within one round   |
-//|  trip instead of waiting up to SyncPollSeconds for the next poll.  |
+//|  trip instead of waiting for the next fallback reconciliation.     |
 //|                                                                    |
 //|  THIS IS A HINT-ONLY CHANNEL. Correctness never depends on it.     |
-//|  EASync.mqh's ordinary polling loop (EASync_OnTimer -> EASync_Run) |
-//|  keeps running unchanged regardless of WebSocket state — it is     |
+//|  EASync.mqh's ordinary reconciliation loop remains active          |
+//|  regardless of WebSocket state — it is                             |
 //|  the source of truth for command execution and heartbeats. If the  |
 //|  WebSocket never connects, never authenticates, or drops and       |
 //|  can't reconnect, the EA behaves exactly as it did before this     |
@@ -1786,9 +1796,15 @@ const int EWS_HANDSHAKE_TIMEOUT  = 10;
 string   g_ews_base_url = "";
 string   g_ews_api_key  = "";
 string   g_ews_host     = "";
+string   g_ews_public_api_key = "";
+string   g_ews_topic = "";
 bool     g_ews_enabled  = false;
+bool     g_ews_joined   = false;
 int      g_ews_socket   = INVALID_HANDLE;
 int      g_ews_state    = EWS_STATE_DISCONNECTED;
+int      g_ews_ref      = 1;
+int      g_ews_fallback_poll_seconds = 10;
+int      g_ews_healthy_poll_seconds = 60;
 datetime g_ews_last_attempt      = 0;
 int      g_ews_backoff_seconds   = 2;
 datetime g_ews_last_activity     = 0;
@@ -1813,9 +1829,64 @@ int      g_ews_recv_buf_len = 0;
 void EAStream_ScheduleRetry()
 {
    g_ews_state = EWS_STATE_DISCONNECTED;
+   g_ews_joined = false;
+   EASync_SetPollSeconds(g_ews_fallback_poll_seconds);
    g_ews_backoff_seconds *= 2;
    if(g_ews_backoff_seconds > EWS_BACKOFF_CAP)
       g_ews_backoff_seconds = EWS_BACKOFF_CAP;
+}
+
+//+------------------------------------------------------------------+
+//| Load the anonymous Realtime key and this terminal's random wake-up  |
+//| topic. Commands themselves remain behind ea-sync API-key auth.      |
+//+------------------------------------------------------------------+
+bool EAStream_LoadConfig()
+{
+   string url = g_ews_base_url + "/functions/v1/terminal-realtime-config";
+   string headers = "Content-Type: application/json\r\nx-api-key: " + g_ews_api_key + "\r\n";
+   string request_body = "{}";
+   uchar data[];
+   int data_len = StringToCharArray(request_body, data, 0, StringLen(request_body), CP_UTF8);
+   ArrayResize(data, data_len);
+   uchar result[];
+   string result_headers;
+   ResetLastError();
+   int status = WebRequest("POST", url, headers, 10000, data, result, result_headers);
+   if(status != 200)
+   {
+      string detail = (status == -1) ? IntegerToString(GetLastError()) : CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+      PrintFormat("EAStream: config request failed, HTTP %d: %s", status, detail);
+      return false;
+   }
+
+   string body = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+   g_ews_public_api_key = EASync_JsonGetRaw(body, 0, StringLen(body), "apikey");
+   g_ews_topic = EASync_JsonGetRaw(body, 0, StringLen(body), "topic");
+   if(g_ews_public_api_key == "" || g_ews_topic == "")
+   {
+      Print("EAStream: config endpoint returned an incomplete response");
+      return false;
+   }
+   return true;
+}
+
+void EAStream_SendJoin()
+{
+   string ref = IntegerToString(g_ews_ref++);
+   string topic = "realtime:" + g_ews_topic;
+   string message =
+      "{\"topic\":\"" + EASync_JsonEscape(topic) + "\","
+      "\"event\":\"phx_join\",\"payload\":{"
+      "\"config\":{\"broadcast\":{\"ack\":false,\"self\":false},"
+      "\"presence\":{\"enabled\":false},\"postgres_changes\":[],\"private\":false}},"
+      "\"ref\":\"" + ref + "\",\"join_ref\":\"" + ref + "\"}";
+   EAStream_SendText(message);
+}
+
+void EAStream_SendHeartbeat()
+{
+   string ref = IntegerToString(g_ews_ref++);
+   EAStream_SendText("{\"topic\":\"phoenix\",\"event\":\"heartbeat\",\"payload\":{},\"ref\":\"" + ref + "\",\"join_ref\":null}");
 }
 
 //+------------------------------------------------------------------+
@@ -2037,24 +2108,35 @@ void EAStream_HandleFrame(int opcode, const uchar &payload[], int payload_len)
    if(opcode == 0x1) // text
    {
       string text = CharArrayToString(payload, 0, payload_len, CP_UTF8);
-      if(text == "wake")
+      if(StringFind(text, "\"event\":\"broadcast\"") >= 0 &&
+         StringFind(text, "command_available") >= 0)
       {
-         Print("EAStream: wake received — running EASync_Run() immediately");
+         Print("EAStream: command broadcast received — reconciling immediately");
          EASync_Run();
       }
-      else if(text == "ping")
+      else if(StringFind(text, "\"event\":\"phx_reply\"") >= 0 &&
+              StringFind(text, "\"status\":\"ok\"") >= 0 && !g_ews_joined)
       {
-         EAStream_SendText("pong");
+         g_ews_joined = true;
+         EASync_SetPollSeconds(g_ews_healthy_poll_seconds);
+         Print("EAStream: terminal wake-up channel joined");
+         EASync_Run(); // repair anything queued before/during the join
       }
-      // any other text payload: no-op
+      else if(StringFind(text, "\"event\":\"phx_error\"") >= 0 ||
+              StringFind(text, "\"event\":\"system\"") >= 0)
+      {
+         Print("EAStream: Realtime channel error; reconnecting with fallback polling");
+         SocketClose(g_ews_socket);
+         g_ews_socket = INVALID_HANDLE;
+         EAStream_ScheduleRetry();
+      }
    }
    else if(opcode == 0x8) // close
    {
-      Print("EAStream: server closed the connection (benign — expected during "
-            "edge worker recycling every ~5-7 min); reconnecting");
+      Print("EAStream: server closed the Realtime connection; reconnecting");
       SocketClose(g_ews_socket);
       g_ews_socket = INVALID_HANDLE;
-      g_ews_state = EWS_STATE_DISCONNECTED;
+      EAStream_ScheduleRetry();
       g_ews_backoff_seconds = 2; // this is expected/benign, don't punish with backoff
    }
    else if(opcode == 0x9) // control ping (defensive/unused by this server today)
@@ -2100,6 +2182,15 @@ void EAStream_Connect()
 {
    g_ews_last_attempt = TimeCurrent();
 
+   if(g_ews_public_api_key == "" || g_ews_topic == "")
+   {
+      if(!EAStream_LoadConfig())
+      {
+         EAStream_ScheduleRetry();
+         return;
+      }
+   }
+
    if(g_ews_socket != INVALID_HANDLE)
    {
       SocketClose(g_ews_socket);
@@ -2140,13 +2231,12 @@ void EAStream_Connect()
 
    string ws_key = EAStream_GenerateWebSocketKey();
    string request =
-      "GET /functions/v1/ea-stream HTTP/1.1\r\n"
+      "GET /realtime/v1/websocket?apikey=" + g_ews_public_api_key + "&vsn=1.0.0 HTTP/1.1\r\n"
       "Host: " + g_ews_host + "\r\n"
       "Upgrade: websocket\r\n"
       "Connection: Upgrade\r\n"
       "Sec-WebSocket-Key: " + ws_key + "\r\n"
       "Sec-WebSocket-Version: 13\r\n"
-      "x-api-key: " + g_ews_api_key + "\r\n"
       "\r\n";
 
    uchar req_bytes[];
@@ -2246,22 +2336,31 @@ void EAStream_PumpHandshake()
    }
 
    g_ews_state = EWS_STATE_OPEN;
+   g_ews_joined = false;
    g_ews_backoff_seconds = 2;
    g_ews_last_activity = TimeCurrent();
    g_ews_last_ping_sent = TimeCurrent();
-   Print("EAStream: WebSocket connected");
+   EAStream_SendJoin();
+   Print("EAStream: Realtime WebSocket connected; joining terminal wake-up channel");
 }
 
 //+------------------------------------------------------------------+
 //| 12. Public: call once from OnInit, guarded by EnableWebSocketPush.  |
 //+------------------------------------------------------------------+
-void EAStream_Init(const string base_url, const string api_key)
+void EAStream_Init(const string base_url, const string api_key,
+                   const int fallback_poll_seconds = 10,
+                   const int healthy_poll_seconds = 60)
 {
    g_ews_base_url = base_url;
    g_ews_api_key  = api_key;
    g_ews_host     = EAStream_ExtractHost(base_url);
    g_ews_enabled  = true;
+   g_ews_fallback_poll_seconds = (fallback_poll_seconds > 0) ? fallback_poll_seconds : 10;
+   g_ews_healthy_poll_seconds = (healthy_poll_seconds > g_ews_fallback_poll_seconds)
+      ? healthy_poll_seconds : 60;
+   EASync_SetPollSeconds(g_ews_fallback_poll_seconds);
    g_ews_state    = EWS_STATE_DISCONNECTED;
+   g_ews_joined   = false;
    g_ews_last_attempt = 0; // forces an immediate first connect attempt
    g_ews_backoff_seconds = 2;
    MathSrand((int)TimeLocal());
@@ -2269,7 +2368,7 @@ void EAStream_Init(const string base_url, const string api_key)
    ArrayResize(g_ews_hs_buf, 0);
    g_ews_recv_buf_len = 0;
    ArrayResize(g_ews_recv_buf, 0);
-   Print("EAStream: initialized, will connect to wss://", g_ews_host, "/functions/v1/ea-stream");
+   Print("EAStream: initialized for terminal-scoped Supabase Realtime Broadcast");
 }
 
 //+------------------------------------------------------------------+
@@ -2284,6 +2383,8 @@ void EAStream_Deinit()
       g_ews_socket = INVALID_HANDLE;
    }
    g_ews_state = EWS_STATE_DISCONNECTED;
+   g_ews_joined = false;
+   EASync_SetPollSeconds(g_ews_fallback_poll_seconds);
 }
 
 //+------------------------------------------------------------------+
@@ -2314,6 +2415,8 @@ void EAStream_OnTimer()
          SocketClose(g_ews_socket);
          g_ews_socket = INVALID_HANDLE;
          g_ews_state = EWS_STATE_DISCONNECTED;
+         g_ews_joined = false;
+         EASync_SetPollSeconds(g_ews_fallback_poll_seconds);
          g_ews_backoff_seconds = 2; // drops are expected/benign, don't punish with backoff
          return;
       }
@@ -2326,15 +2429,18 @@ void EAStream_OnTimer()
          SocketClose(g_ews_socket);
          g_ews_socket = INVALID_HANDLE;
          g_ews_state = EWS_STATE_DISCONNECTED;
+         g_ews_joined = false;
+         EASync_SetPollSeconds(g_ews_fallback_poll_seconds);
          g_ews_backoff_seconds = 2;
          return;
       }
 
       if(TimeCurrent() - g_ews_last_ping_sent >= EWS_PING_INTERVAL)
       {
-         EAStream_SendText("ping");
+         EAStream_SendHeartbeat();
          g_ews_last_ping_sent = TimeCurrent();
       }
+
    }
 }
 //+------------------------------------------------------------------+
@@ -2530,12 +2636,12 @@ void SymbolMap_OnTimer()
 //============================================================================
 //+------------------------------------------------------------------+
 //|                                               PriceReporter.mqh   |
-//|  v1.0.14 — Closed M5 bar reporting for strategy-signal-engine.    |
+//|  v1.0.22 — Multi-timeframe closed-bar reporting.                  |
 //|                                                                    |
 //|  This module reads the cached ea-sync response that EASync.mqh has |
 //|  already fetched, extracts its bound_symbols canonical->broker     |
-//|  pairs, and reports each bound broker symbol's three latest CLOSED |
-//|  M5 bars to /functions/v1/report-bars in one compact POST.         |
+//|  pairs and selected timeframes, then reports newly CLOSED bars to  |
+//|  /functions/v1/report-bars in bounded batches.                     |
 //|                                                                    |
 //|  It deliberately does NOT make its own ea-sync request: EASync is |
 //|  the sole owner of that poll. This keeps bar reporting canonical    |
@@ -2571,37 +2677,44 @@ string   g_pr_api_key = "";
 int      g_pr_report_interval_seconds = 60;
 datetime g_pr_last_report = 0;
 
-// v1.0.17 -- one-time historical backfill per broker symbol per EA session.
-// New accounts/newly-bound symbols previously only ever received 3 closed M5
-// bars per report (a small outage-gap backfill), so strategy-signal-engine's
-// 30-bar ADX/regime warm-up requirement took ~2.5 hours of real time to clear
-// after connecting -- new users had to wait for a first evaluation cycle
-// before ANY signal could ever be generated. MT5's own CopyRates() already
-// has hundreds of bars of broker-supplied M5 history available locally/on
-// demand, so the very first time this session sees a given broker symbol we
-// pull up to PR_BACKFILL_BARS bars in one shot instead of 3 -- still 100%
-// MT5-native data via the EA, no third-party market-data API involved.
+// v1.0.22 -- historical warm-up and outage recovery are staggered so a large
+// symbol/timeframe selection cannot create an unbounded Edge Function body.
 #define PR_BACKFILL_BARS 300
-string   g_pr_backfilled_symbols[];
+#define PR_MAX_BACKFILL_SERIES_PER_RUN 2
+#define PR_MAX_RECOVERY_SERIES_PER_RUN 2
+#define PR_MAX_BARS_PER_REQUEST 1200
+string   g_pr_series_keys[];
+datetime g_pr_series_last_sent[];
 
 //+------------------------------------------------------------------+
-//| True if this EA session has not yet successfully backfilled the   |
-//| given broker symbol. Does not mutate state -- call                |
-//| PriceReporter_MarkBackfilled() only after a successful CopyRates. |
+//| Finds the session checkpoint for one broker-symbol/timeframe.      |
 //+------------------------------------------------------------------+
-bool PriceReporter_NeedsBackfill(const string broker_symbol)
+int PriceReporter_SeriesIndex(const string series_key)
 {
-   int total = ArraySize(g_pr_backfilled_symbols);
+   int total = ArraySize(g_pr_series_keys);
    for(int i = 0; i < total; i++)
-      if(g_pr_backfilled_symbols[i] == broker_symbol) return false;
-   return true;
+      if(g_pr_series_keys[i] == series_key) return i;
+   return -1;
 }
 
-void PriceReporter_MarkBackfilled(const string broker_symbol)
+datetime PriceReporter_LastSent(const string series_key)
 {
-   int total = ArraySize(g_pr_backfilled_symbols);
-   ArrayResize(g_pr_backfilled_symbols, total + 1);
-   g_pr_backfilled_symbols[total] = broker_symbol;
+   int index = PriceReporter_SeriesIndex(series_key);
+   return (index >= 0) ? g_pr_series_last_sent[index] : 0;
+}
+
+void PriceReporter_MarkSent(const string series_key, const datetime bar_time)
+{
+   int index = PriceReporter_SeriesIndex(series_key);
+   if(index < 0)
+   {
+      index = ArraySize(g_pr_series_keys);
+      ArrayResize(g_pr_series_keys, index + 1);
+      ArrayResize(g_pr_series_last_sent, index + 1);
+      g_pr_series_keys[index] = series_key;
+   }
+   if(bar_time > g_pr_series_last_sent[index])
+      g_pr_series_last_sent[index] = bar_time;
 }
 
 //+------------------------------------------------------------------+
@@ -2611,7 +2724,21 @@ struct PriceReporterBoundSymbol
 {
    string canonical_symbol;
    string broker_symbol;
+   string report_timeframes;
 };
+
+ENUM_TIMEFRAMES PriceReporter_TimeframeEnum(const string timeframe)
+{
+   if(timeframe == "M1") return PERIOD_M1;
+   if(timeframe == "M5") return PERIOD_M5;
+   if(timeframe == "M15") return PERIOD_M15;
+   if(timeframe == "M30") return PERIOD_M30;
+   if(timeframe == "H1") return PERIOD_H1;
+   if(timeframe == "H4") return PERIOD_H4;
+   if(timeframe == "D1") return PERIOD_D1;
+   if(timeframe == "W1") return PERIOD_W1;
+   return PERIOD_CURRENT;
+}
 
 //+------------------------------------------------------------------+
 //| Splits top-level "bound_symbols":[ ... ] into object pairs. This  |
@@ -2650,11 +2777,14 @@ int PriceReporter_ParseBoundSymbols(const string json, PriceReporterBoundSymbol 
             int obj_end = pos + 1;
             string canonical = EASync_JsonGetRaw(json, obj_start, obj_end, "canonical_symbol");
             string broker    = EASync_JsonGetRaw(json, obj_start, obj_end, "broker_symbol");
+            string timeframes = EASync_JsonGetRaw(json, obj_start, obj_end, "report_timeframes");
             if(canonical != "" && broker != "")
             {
                ArrayResize(out_symbols, count + 1);
                out_symbols[count].canonical_symbol = canonical;
                out_symbols[count].broker_symbol = broker;
+               // Older ea-sync deployments omit this field; preserve M5.
+               out_symbols[count].report_timeframes = (timeframes == "") ? "[\"M5\"]" : timeframes;
                count++;
             }
             obj_start = -1;
@@ -2668,9 +2798,8 @@ int PriceReporter_ParseBoundSymbols(const string json, PriceReporterBoundSymbol 
 }
 
 //+------------------------------------------------------------------+
-//| Performs one batch POST of up to three latest CLOSED M5 bars for   |
-//| every mapped broker symbol. CopyRates start_pos=1 skips the live,  |
-//| still-forming candle; count=3 provides small outage backfill.      |
+//| Reports newly closed bars for each user-selected symbol/timeframe. |
+//| CopyRates start_pos=1 always excludes the live, forming candle.     |
 //+------------------------------------------------------------------+
 void PriceReporter_Run()
 {
@@ -2692,8 +2821,13 @@ void PriceReporter_Run()
    }
 
    string symbols_json = "\"symbols\":[";
-   int sent_symbols = 0;
+   int sent_series = 0;
    int sent_bars = 0;
+   int backfill_series = 0;
+   int recovery_series = 0;
+   string pending_keys[];
+   datetime pending_times[];
+   string timeframe_names[] = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"};
 
    for(int i = 0; i < bound_count; i++)
    {
@@ -2707,48 +2841,94 @@ void PriceReporter_Run()
          }
       }
 
-      MqlRates rates[];
-      ResetLastError();
-      bool is_backfill = PriceReporter_NeedsBackfill(broker_symbol);
-      int bars_requested = is_backfill ? PR_BACKFILL_BARS : 3;
-      int copied = CopyRates(broker_symbol, PERIOD_M5, 1, bars_requested, rates);
-      if(is_backfill && copied > 0)
-      {
-         PriceReporter_MarkBackfilled(broker_symbol);
-         PrintFormat("PriceReporter: backfilled %s with %d closed M5 bars (new symbol this session)", broker_symbol, copied);
-      }
-      if(copied < 0)
-      {
-         PrintFormat("PriceReporter: CopyRates failed for %s, error %d; skipped", broker_symbol, GetLastError());
-         continue;
-      }
-      if(copied == 0)
-      {
-         PrintFormat("PriceReporter: CopyRates returned no closed M5 bars for %s; skipped", broker_symbol);
-         continue;
-      }
+      int digits = (int)SymbolInfoInteger(broker_symbol, SYMBOL_DIGITS);
+      if(digits < 0 || digits > 12) digits = 8;
 
-      if(sent_symbols > 0) symbols_json += ",";
-      symbols_json += "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\",\"bars\":[";
-      for(int r = 0; r < copied; r++)
+      for(int tf_index = 0; tf_index < ArraySize(timeframe_names); tf_index++)
       {
-         if(r > 0) symbols_json += ",";
+         string timeframe = timeframe_names[tf_index];
+         if(StringFind(bound[i].report_timeframes, "\"" + timeframe + "\"") < 0)
+            continue;
+
+         string series_key = broker_symbol + "|" + timeframe;
+         datetime last_sent = PriceReporter_LastSent(series_key);
+         bool is_backfill = (last_sent == 0);
+         if(is_backfill && backfill_series >= PR_MAX_BACKFILL_SERIES_PER_RUN)
+            continue; // stagger startup so one request never contains every 300-bar series
+         ENUM_TIMEFRAMES period = PriceReporter_TimeframeEnum(timeframe);
+         int period_seconds = PeriodSeconds(period);
+         int missing_estimate = (period_seconds > 0 && last_sent > 0)
+            ? (int)((TimeCurrent() - last_sent) / period_seconds) + 2
+            : 1;
+         int bars_requested = is_backfill
+            ? PR_BACKFILL_BARS
+            : MathMin(PR_BACKFILL_BARS, MathMax(1, missing_estimate));
+         bool is_recovery = (!is_backfill && bars_requested > 3);
+         if(is_recovery && recovery_series >= PR_MAX_RECOVERY_SERIES_PER_RUN)
+            continue;
+         int remaining_capacity = PR_MAX_BARS_PER_REQUEST - sent_bars;
+         if(remaining_capacity <= 0)
+            break;
+         bars_requested = MathMin(bars_requested, remaining_capacity);
+         MqlRates rates[];
+         ResetLastError();
+         int copied = CopyRates(
+            broker_symbol,
+            period,
+            1,
+            bars_requested,
+            rates
+         );
+         if(copied <= 0)
+         {
+            if(copied < 0)
+               PrintFormat("PriceReporter: CopyRates failed for %s %s, error %d", broker_symbol, timeframe, GetLastError());
+            continue;
+         }
+
+         string bars_json = "";
+         int included = 0;
+         datetime newest_time = last_sent;
+         for(int r = 0; r < copied; r++)
+         {
+            if(rates[r].time <= last_sent) continue;
+            if(included > 0) bars_json += ",";
+            bars_json +=
+               "{\"time\":\"" + EASync_ToIso8601(rates[r].time) + "\","
+               "\"open\":" + DoubleToString(rates[r].open, digits) + ","
+               "\"high\":" + DoubleToString(rates[r].high, digits) + ","
+               "\"low\":" + DoubleToString(rates[r].low, digits) + ","
+               "\"close\":" + DoubleToString(rates[r].close, digits) + ","
+               "\"volume\":" + IntegerToString((long)rates[r].tick_volume) + ","
+               "\"spread\":" + IntegerToString((long)rates[r].spread) + ","
+               "\"real_volume\":" + IntegerToString((long)rates[r].real_volume) + "}";
+            included++;
+            sent_bars++;
+            if(rates[r].time > newest_time) newest_time = rates[r].time;
+         }
+         if(included == 0) continue;
+         if(is_backfill) backfill_series++;
+         if(is_recovery) recovery_series++;
+
+         if(sent_series > 0) symbols_json += ",";
          symbols_json +=
-            "{\"time\":\"" + EASync_ToIso8601(rates[r].time) + "\","
-            "\"open\":" + DoubleToString(rates[r].open, 5) + ","
-            "\"high\":" + DoubleToString(rates[r].high, 5) + ","
-            "\"low\":" + DoubleToString(rates[r].low, 5) + ","
-            "\"close\":" + DoubleToString(rates[r].close, 5) + ","
-            "\"volume\":" + IntegerToString((long)rates[r].tick_volume) + "}";
-         sent_bars++;
+            "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
+            "\"timeframe\":\"" + timeframe + "\","
+            "\"source_digits\":" + IntegerToString(digits) + ","
+            "\"bars\":[" + bars_json + "]}";
+         sent_series++;
+
+         int pending_index = ArraySize(pending_keys);
+         ArrayResize(pending_keys, pending_index + 1);
+         ArrayResize(pending_times, pending_index + 1);
+         pending_keys[pending_index] = series_key;
+         pending_times[pending_index] = newest_time;
       }
-      symbols_json += "]}";
-      sent_symbols++;
    }
 
-   if(sent_symbols == 0)
+   if(sent_series == 0)
    {
-      Print("PriceReporter: no symbols had reportable closed M5 bars");
+      Print("PriceReporter: no newly closed bars");
       return;
    }
 
@@ -2777,8 +2957,13 @@ void PriceReporter_Run()
    }
 
    string response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
-   PrintFormat("PriceReporter: sent %d symbols / %d closed M5 bars, HTTP %d", sent_symbols, sent_bars, status);
-   if(status != 200)
+   PrintFormat("PriceReporter: sent %d series / %d newly closed bars, HTTP %d", sent_series, sent_bars, status);
+   if(status == 200)
+   {
+      for(int i = 0; i < ArraySize(pending_keys); i++)
+         PriceReporter_MarkSent(pending_keys[i], pending_times[i]);
+   }
+   else
       PrintFormat("PriceReporter: report-bars returned HTTP %d: %s", status, response);
 }
 
@@ -2817,10 +3002,12 @@ void PriceReporter_OnTimer()
 //----------------------------------------------------------------------
 input string SupabaseProjectUrl   = "https://qxlfnscmrhwfcpattqxa.supabase.co"; // Backend URL — leave as-is
 input string TerminalApiKey       = "";  // Paste your terminal's mtk_live_... key here
-input int    SyncPollSeconds      = 2;   // ea-sync poll interval (1-2s recommended)
+input int    SyncFallbackPollSeconds = 10; // reconciliation cadence while Realtime is unavailable
+input int    SyncHealthyPollSeconds  = 60; // safety reconciliation cadence while Realtime is joined
 input int    CalendarSyncMinutes  = 15;  // Economic calendar push interval
 input bool   EnableCalendarSync   = true; // Turn off only if this terminal should not push calendar data
 input bool   EnableWebSocketPush  = true; // Persistent WebSocket for near-instant command pickup (hint-only; polling always keeps running as the fallback)
+input int    PriceScanSeconds     = 5;   // local scan only; network sends occur only for newly closed bars
 input int    SymbolMapRefreshHours = 24;  // Full broker-symbol rescan interval (also runs once on startup and on-demand from the dashboard)
 
 //+------------------------------------------------------------------+
@@ -2837,17 +3024,18 @@ int OnInit()
       // can fix the input without re-dragging the EA onto the chart.
    }
 
-   EASync_Init(SupabaseProjectUrl, TerminalApiKey, SyncPollSeconds);
+   EASync_Init(SupabaseProjectUrl, TerminalApiKey, SyncFallbackPollSeconds);
 
    if(EnableCalendarSync)
       CalendarSync_Init(SupabaseProjectUrl, TerminalApiKey, CalendarSyncMinutes * 60);
 
    if(EnableWebSocketPush)
-      EAStream_Init(SupabaseProjectUrl, TerminalApiKey);
+      EAStream_Init(SupabaseProjectUrl, TerminalApiKey,
+                    SyncFallbackPollSeconds, SyncHealthyPollSeconds);
 
    SymbolMap_Init(SupabaseProjectUrl, TerminalApiKey, SymbolMapRefreshHours);
 
-   PriceReporter_Init(SupabaseProjectUrl, TerminalApiKey, 60);
+   PriceReporter_Init(SupabaseProjectUrl, TerminalApiKey, PriceScanSeconds);
 
    // 1s base tick; each module's OnTimer self-gates on its own configured
    // interval, so a single fast timer serves all of them.
@@ -2911,8 +3099,8 @@ void OnTick()
 //+------------------------------------------------------------------+
 //| v1.0.15 — previously the EA had no trade-event hook at all, so    |
 //| every open/modify/close waited out EASync's own poll gate         |
-//| (g_es_poll_seconds, default 2s) before the backend even learned   |
-//| about it — on top of however long the dashboard's poll/Realtime   |
+//| g_es_poll_seconds before the backend learned about it, on top of |
+//| however long the dashboard's poll/Realtime layer then took       |
 //| layer then took to notice, together explaining the ~1 minute lag  |
 //| reported live for both opening and closing an order. This fires   |
 //| on every deal fill (open, close, partial close) and every SL/TP   |

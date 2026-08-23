@@ -337,18 +337,20 @@ function evaluateStrategy(
   const previous = bars[previousIndex];
   if (!current || !previous) return null;
 
+  const config = strategy.config;
   const closes = bars.map((bar) => bar.close);
   const atr = computeATR(bars, 14);
   const rsi = computeRSI(closes, 14);
   const adx = computeADX(bars, 14);
-  const ema9 = computeEMA(closes, 9);
-  const ema21 = computeEMA(closes, 21);
+  const fastEmaPeriod = Math.min(99, Math.max(1, Math.floor(positiveConfig(config, "ema_fast_period", 9))));
+  const slowEmaPeriod = Math.min(100, Math.max(fastEmaPeriod + 1, Math.floor(positiveConfig(config, "ema_slow_period", 21))));
+  const emaFast = computeEMA(closes, fastEmaPeriod);
+  const emaSlow = computeEMA(closes, slowEmaPeriod);
   const bollinger = computeBollinger(closes, 20, 2);
 
   const currentAtr = atr[currentIndex];
   const currentRsi = rsi[currentIndex];
   const currentAdx = adx[currentIndex];
-  const config = strategy.config;
   const newsScoreFactor = positiveConfig(config, "news_score_factor", 0.5);
   const applyNewsDownweight = (candidate: Omit<SignalCandidate, "policyDecision">): SignalCandidate => ({
     ...candidate,
@@ -490,10 +492,10 @@ function evaluateStrategy(
     const shortRsiMax = positiveConfig(config, "rsi_short_max", 50);
     const atrSpreadMultiple = positiveConfig(config, "atr_spread_multiple", 0.5);
     const atrStopMultiple = positiveConfig(config, "atr_stop_multiple", 1.5);
-    const currentFast = ema9[currentIndex];
-    const currentSlow = ema21[currentIndex];
-    const previousFast = ema9[previousIndex];
-    const previousSlow = ema21[previousIndex];
+    const currentFast = emaFast[currentIndex];
+    const currentSlow = emaSlow[currentIndex];
+    const previousFast = emaFast[previousIndex];
+    const previousSlow = emaSlow[previousIndex];
     if (!allFinite(currentAtr, currentRsi, currentAdx, currentFast, currentSlow, previousFast, previousSlow)) return null;
 
     if (
@@ -624,6 +626,19 @@ Deno.serve(async (req: Request) => {
     if (strategiesError) return jsonResponse({ error: "strategies_fetch_failed", detail: strategiesError.message }, 500);
     if (!strategies || strategies.length === 0) return jsonResponse({ processed: 0, signals_generated: 0, commands_queued: 0 });
 
+    const terminalIds = [...new Set(strategies.map((strategy) => strategy.terminal_id))];
+    const { data: symbolSettings, error: symbolSettingsError } = await admin
+      .from("symbol_settings")
+      .select("terminal_id, symbol, enabled, timeframes")
+      .in("terminal_id", terminalIds);
+    if (symbolSettingsError) {
+      return jsonResponse({ error: "symbol_settings_fetch_failed", detail: symbolSettingsError.message }, 500);
+    }
+    const supportedTimeframes = new Set(["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"]);
+    const settingsByTerminalSymbol = new Map(
+      (symbolSettings ?? []).map((setting) => [`${setting.terminal_id}:${setting.symbol}`, setting]),
+    );
+
     const now = new Date();
     const nowIso = now.toISOString();
     const session = sessionForNow(now);
@@ -640,12 +655,22 @@ Deno.serve(async (req: Request) => {
       for (const symbol of strategy.symbols) {
         if (typeof symbol !== "string" || symbol.length === 0) continue;
 
+        const symbolSetting = settingsByTerminalSymbol.get(`${strategy.terminal_id}:${symbol}`);
+        if (symbolSetting && !symbolSetting.enabled) continue;
+        const timeframes: string[] = symbolSetting
+          ? (Array.isArray(symbolSetting.timeframes)
+            ? symbolSetting.timeframes.filter((timeframe: string) => supportedTimeframes.has(timeframe))
+            : [])
+          : ["M5"];
+
+        for (const timeframe of timeframes) {
+
         const { data: descendingBars, error: barsError } = await admin
           .from("price_bars")
           .select("bar_time, open, high, low, close, volume")
           .eq("terminal_id", strategy.terminal_id)
           .eq("symbol", symbol)
-          .eq("timeframe", "M5")
+          .eq("timeframe", timeframe)
           .order("bar_time", { ascending: false })
           .limit(300);
         if (barsError) {
@@ -673,18 +698,16 @@ Deno.serve(async (req: Request) => {
         const candidate = evaluateStrategy(strategy, bars, news.near);
         if (!candidate) continue;
 
-        // signals has no status column in the existing schema (delivery status
-        // lives in signal_deliveries), so the requested active-status predicate
-        // is represented by this TTL-window check on signals.generated_at.
         const ttlSeconds = Math.max(1, Math.floor(numberValue(strategy.signal_ttl_seconds, 60)));
-        const cutoffIso = new Date(now.getTime() - ttlSeconds * 1000).toISOString();
+        const sourceBarTime = bars[bars.length - 1].bar_time;
         const { data: recentSignal, error: recentSignalError } = await admin
           .from("signals")
           .select("id")
           .eq("terminal_id", strategy.terminal_id)
           .eq("strategy_id", strategy.id)
           .eq("symbol", symbol)
-          .gte("generated_at", cutoffIso)
+          .eq("timeframe", timeframe)
+          .eq("source_bar_time", sourceBarTime)
           .limit(1)
           .maybeSingle();
         if (recentSignalError) {
@@ -705,6 +728,8 @@ Deno.serve(async (req: Request) => {
             terminal_id: strategy.terminal_id,
             strategy_id: strategy.id,
             symbol,
+            timeframe,
+            source_bar_time: sourceBarTime,
             side: candidate.side,
             suggested_volume: baseVolume,
             suggested_sl: candidate.suggestedSl,
@@ -822,7 +847,7 @@ Deno.serve(async (req: Request) => {
             entry_context: {
               version: 1, captured_at: nowIso, origin: "strategy_auto",
               strategy_name_at_entry: strategy.name, session_definition: "utc-v1",
-              regime_model: "adx14-m5-v1", regime_quality: "strategy_grade",
+              regime_model: `adx14-${timeframe.toLowerCase()}-v1`, regime_quality: "strategy_grade",
               risk_defined: true,
             },
           };
@@ -850,6 +875,7 @@ Deno.serve(async (req: Request) => {
         }
         if (insertFailure) {
           console.error(`strategy-signal-engine: command insert failed for signal ${signal.id} after ${insertedLegs} legs: ${insertFailure}`);
+        }
         }
       }
     }

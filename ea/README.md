@@ -1,4 +1,4 @@
-# LucreHubEA — v1.0.20 (single-file build)
+# LucreHubEA — v1.0.22 candidate (single-file build)
 
 ## What changed in this build
 
@@ -71,6 +71,26 @@ These are conservative compiled safeguards, separate from the dashboard and
 database limits. A command rejected by one appears in the dashboard as failed
 with a specific reason (for example `hard_stop_loss_required`). Review these
 constants in `mt5_ea/LucreHubEA.mq5` before changing risk policy.
+
+## Transport and market data in v1.0.22
+
+- Commands wake the EA through a random terminal-scoped Supabase Realtime
+  Broadcast channel. The event contains no trading data; `ea_commands` remains
+  authoritative and the wake-up only causes an immediate secure reconciliation.
+- The EA polls every 60 seconds while Realtime is healthy and every 10 seconds
+  while it is unavailable, instead of issuing an HTTP request every two
+  seconds continuously.
+- The terminal API key retrieves the public Realtime connection key and its
+  unguessable topic once per EA session. No per-terminal Supabase Auth users or
+  token-refresh traffic are required.
+- The price reporter scans locally every five seconds but makes a network
+  request only when a selected timeframe has a newly closed candle.
+- M1, M5, M15, M30, H1, H4, D1 and W1 are supported. Each series backfills up
+  to 300 closed candles and reports broker precision, tick volume, spread and
+  real volume.
+
+Before deployment, apply migrations 045-047, deploy the functions, then
+compile this EA in MetaEditor.
 
 ## Functional behavior
 

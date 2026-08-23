@@ -394,6 +394,14 @@ const STRATEGY_KIND_SIGNAL_FAMILY = {
   ema_trend: 'momentum',
 };
 
+function updateStrategyParameterVisibility() {
+  const kind = document.getElementById('strategy-kind')?.value;
+  const emaFields = document.getElementById('strategy-ema-parameters');
+  if (emaFields) emaFields.hidden = kind !== 'ema_trend';
+}
+
+document.getElementById('strategy-kind')?.addEventListener('change', updateStrategyParameterVisibility);
+
 // v1.0.19 -- checkbox-based multi-select popover. Renders a checkbox per
 // remaining pair, grouped in the fixed asset-class order from
 // groupSymbolsByClass(). The "Add" button (below) reads every currently
@@ -549,6 +557,7 @@ document.getElementById('button-add-strategy')?.addEventListener('click', () => 
   }
   const form = document.getElementById('form-add-strategy');
   form.reset();
+  updateStrategyParameterVisibility();
   resetStrategyModalToAddMode();
   strategySelectedSymbols = [];
   renderStrategySymbolChips();
@@ -571,6 +580,9 @@ function openEditStrategyModal(id) {
   form.name.value = strategy.name;
   form.delivery_mode.value = strategy.delivery_mode;
   form.max_lot_size.value = strategy.max_lot_size;
+  form.ema_fast_period.value = strategy.config?.ema_fast_period ?? 9;
+  form.ema_slow_period.value = strategy.config?.ema_slow_period ?? 21;
+  updateStrategyParameterVisibility();
 
   strategySelectedSymbols = (strategy.symbols || []).slice();
   renderStrategySymbolChips();
@@ -628,6 +640,8 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
   }
 
   const editId = form.edit_id.value;
+  const fastEma = Math.min(99, Math.max(1, parseInt(form.ema_fast_period.value, 10) || 9));
+  const slowEma = Math.min(100, Math.max(fastEma + 1, parseInt(form.ema_slow_period.value, 10) || 21));
 
   const payload = {
     terminal_id: state.activeTerminalId,
@@ -637,11 +651,14 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
     delivery_mode: form.delivery_mode.value,
     symbols,
     max_lot_size: parseFloat(form.max_lot_size.value) || 0.01,
+    config: form.kind.value === 'ema_trend'
+      ? { ...(state.strategies.find((strategy) => strategy.id === editId)?.config || {}), ema_fast_period: fastEma, ema_slow_period: slowEma }
+      : (state.strategies.find((strategy) => strategy.id === editId)?.config || {}),
   };
 
   const { error } = editId
     ? await supabase.from('strategies').update(payload).eq('id', editId)
-    : await supabase.from('strategies').insert({ ...payload, enabled: true, config: {} });
+    : await supabase.from('strategies').insert({ ...payload, enabled: true });
   if (error) {
     msg.textContent = error.message;
     return;
@@ -650,6 +667,7 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
   msg.style.color = 'var(--color-accent)';
   msg.textContent = editId ? 'Strategy updated.' : 'Strategy added.';
   form.reset();
+  updateStrategyParameterVisibility();
   resetStrategyModalToAddMode();
   strategySelectedSymbols = [];
   renderStrategySymbolChips();
@@ -1295,7 +1313,7 @@ async function loadStrategies() {
     .from('strategies')
     .select(
       'id, name, kind, enabled, delivery_mode, symbols, max_lot_size, signal_ttl_seconds, ' +
-        'news_posture, news_window_minutes, news_min_impact, news_exploit_size_multiplier'
+        'news_posture, news_window_minutes, news_min_impact, news_exploit_size_multiplier, config'
     )
     .eq('terminal_id', state.activeTerminalId)
     .order('created_at', { ascending: true });

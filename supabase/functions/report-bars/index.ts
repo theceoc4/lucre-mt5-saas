@@ -1,15 +1,15 @@
-// v1.0.14 — report-bars
+// v1.0.22 — report-bars
 //
-// The MT5 EA posts the latest three CLOSED M5 bars for every currently bound
-// broker symbol. This function reverse-resolves each broker-native spelling to
-// the terminal's canonical symbol before upserting price_bars, so strategy
-// definitions and indicator calculations stay broker-independent.
+// The MT5 EA posts newly closed bars for selected symbol/timeframe series.
+// This function reverse-resolves each broker-native spelling to the terminal's
+// canonical symbol before inserting price_bars, so strategy definitions and
+// indicator calculations stay broker-independent.
 //
 // This function is EA-key authenticated (x-api-key -> api_key_hash) and must
 // be deployed with verify_jwt:false, like ea-sync/report-symbols. That deploy
 // setting lives outside this source file.
 //
-// Request:  { symbols: [{ broker_symbol, bars: [{ time, open, high, low, close, volume }] }] }
+// Request:  { symbols: [{ broker_symbol, timeframe, source_digits, bars: [...] }] }
 // Response: { upserted, warnings }
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -21,12 +21,9 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const MAX_SYMBOLS_PER_REQUEST = 50;
-// v1.0.17 -- raised from 20 to 300 so the EA's one-time new-symbol history
-// backfill (PriceReporter.mqh PR_BACKFILL_BARS) can land in a single request.
-// strategy-signal-engine reads up to 300 M5 bars per symbol, so this is the
-// real ceiling of useful bars per request anyway.
+const MAX_SERIES_PER_REQUEST = 400; // 50 symbols x 8 timeframes
 const MAX_BARS_PER_SYMBOL = 300;
+const MAX_BARS_PER_REQUEST = 1200;
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -42,12 +39,18 @@ interface IncomingBar {
   low: number;
   close: number;
   volume: number;
+  spread?: number;
+  real_volume?: number;
 }
 
 interface IncomingSymbolBars {
   broker_symbol: string;
+  timeframe?: string; // omitted by pre-v1.0.22 EAs, meaning M5
+  source_digits?: number;
   bars: IncomingBar[];
 }
+
+const SUPPORTED_TIMEFRAMES = new Set(["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"]);
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -76,8 +79,8 @@ Deno.serve(async (req: Request) => {
   }
 
   if (!Array.isArray(body.symbols)) return jsonResponse({ error: "missing_symbols_array" }, 400);
-  if (body.symbols.length > MAX_SYMBOLS_PER_REQUEST) {
-    return jsonResponse({ error: "too_many_symbols", max: MAX_SYMBOLS_PER_REQUEST }, 413);
+  if (body.symbols.length > MAX_SERIES_PER_REQUEST) {
+    return jsonResponse({ error: "too_many_series", max: MAX_SERIES_PER_REQUEST }, 413);
   }
 
   for (const symbolPayload of body.symbols) {
@@ -91,6 +94,14 @@ Deno.serve(async (req: Request) => {
         max: MAX_BARS_PER_SYMBOL,
       }, 413);
     }
+    const timeframe = symbolPayload.timeframe ?? "M5";
+    if (!SUPPORTED_TIMEFRAMES.has(timeframe)) {
+      return jsonResponse({ error: "unsupported_timeframe", timeframe }, 400);
+    }
+  }
+  const requestedBarCount = body.symbols.reduce((total, series) => total + series.bars.length, 0);
+  if (requestedBarCount > MAX_BARS_PER_REQUEST) {
+    return jsonResponse({ error: "too_many_bars", max: MAX_BARS_PER_REQUEST }, 413);
   }
 
   const warnings: string[] = [];
@@ -119,13 +130,16 @@ Deno.serve(async (req: Request) => {
   const rows: Array<{
     terminal_id: string;
     symbol: string;
-    timeframe: "M5";
+    timeframe: string;
     bar_time: string;
     open: number;
     high: number;
     low: number;
     close: number;
     volume: number;
+    source_digits: number | null;
+    spread: number | null;
+    real_volume: number | null;
   }> = [];
 
   for (const symbolPayload of body.symbols) {
@@ -134,6 +148,12 @@ Deno.serve(async (req: Request) => {
       warnings.push(`No canonical mapping for broker symbol ${symbolPayload.broker_symbol}; skipped.`);
       continue;
     }
+
+    const timeframe = symbolPayload.timeframe ?? "M5";
+    const sourceDigits = Number.isInteger(symbolPayload.source_digits) &&
+        Number(symbolPayload.source_digits) >= 0 && Number(symbolPayload.source_digits) <= 12
+      ? Number(symbolPayload.source_digits)
+      : null;
 
     for (const bar of symbolPayload.bars) {
       const barTime = typeof bar?.time === "string" ? new Date(bar.time) : null;
@@ -153,13 +173,16 @@ Deno.serve(async (req: Request) => {
       rows.push({
         terminal_id: terminal.id,
         symbol: canonicalSymbol,
-        timeframe: "M5",
+        timeframe,
         bar_time: barTime.toISOString(),
         open: bar.open,
         high: bar.high,
         low: bar.low,
         close: bar.close,
         volume: bar.volume,
+        source_digits: sourceDigits,
+        spread: Number.isInteger(bar.spread) && Number(bar.spread) >= 0 ? Number(bar.spread) : null,
+        real_volume: isFiniteNumber(bar.real_volume) && Number(bar.real_volume) >= 0 ? Number(bar.real_volume) : null,
       });
     }
   }
@@ -168,7 +191,10 @@ Deno.serve(async (req: Request) => {
 
   const { error: upsertError } = await admin
     .from("price_bars")
-    .upsert(rows, { onConflict: "terminal_id,symbol,timeframe,bar_time" });
+    .upsert(rows, {
+      onConflict: "terminal_id,symbol,timeframe,bar_time",
+      ignoreDuplicates: true,
+    });
 
   if (upsertError) return jsonResponse({ error: "upsert_failed", detail: upsertError.message }, 500);
   return jsonResponse({ upserted: rows.length, warnings });

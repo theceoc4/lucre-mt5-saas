@@ -8,11 +8,19 @@ with Supabase CLI 2.111.0.
 
 - `config.toml` records local-stack settings and every function's live
   `verify_jwt` behavior.
-- `functions/` contains the 12 live Edge Function bundles downloaded from the
-  linked project. Shared helpers are kept per function because the deployed
+- `functions/` contains the production-synchronized Edge Function bundles and
+  pending local functions. Shared helpers are kept per function because the deployed
   bundles contain intentionally different historical helper revisions.
-- `migrations/` contains all 43 SQL migrations fetched from the remote
-  migration history, including their original version identifiers.
+- `migrations/` contains the synchronized remote history plus new local SQL
+  migrations, retaining the original version identifiers.
+
+## Realtime terminal wake-up channel
+
+`terminal-realtime-config` validates the opaque terminal key and returns the
+public Realtime connection key plus that terminal's random topic. Broadcasts
+contain no command or account data; they only tell the EA to reconcile through
+the API-key-authenticated `ea-sync` endpoint. This avoids per-terminal Auth
+users, refresh traffic and Auth MAU consumption.
 
 The older `backend/` directory is retained as an audit snapshot. Make future
 backend changes here, not under `backend/functions` or

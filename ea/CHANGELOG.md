@@ -1,5 +1,21 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.22 — Realtime wake-ups and multi-timeframe bars (2026-08-23)
+
+- Replaced continuous two-second command polling with direct Supabase
+  Realtime wake-ups plus durable reconciliation: 60 seconds while connected,
+  10 seconds if Realtime is unavailable.
+- Realtime carries no command or account data. It only tells the EA to call
+  the existing API-key-authenticated `ea-sync` endpoint immediately.
+- Added closed-candle reporting for M1, M5, M15, M30, H1, H4, D1 and W1 using
+  each pair's dashboard-selected timeframes.
+- Added staggered 300-candle warm-up, outage recovery checkpoints, broker
+  precision, spread and real-volume reporting, and a 1,200-bar request cap.
+- The local bar scanner runs every five seconds but only sends when at least
+  one selected series has a newly closed candle.
+
+This source must still be compiled in MetaEditor before installation.
+
 ## v1.0.18 — Single-file build for VPS compatibility (2026-08-20)
 
 **Packaging-only release — no trading logic changed.**
