@@ -220,13 +220,20 @@
       </div>
       <div class="field-row">
         <div class="field">
-          <label for="order-sl">Stop loss (optional)</label>
+          <label for="order-sl">Stop loss price (optional)</label>
           <input id="order-sl" name="sl" type="number" step="any" placeholder="Price" />
         </div>
+        <div class="field">
+          <label for="order-sl-pips">Stop loss distance (pips)</label>
+          <input id="order-sl-pips" name="sl_pips" type="number" step="any" min="0" placeholder="Or use pips" />
+        </div>
+      </div>
+      <div class="field-row">
         <div class="field">
           <label for="order-tp">Take profit (optional)</label>
           <input id="order-tp" name="tp" type="number" step="any" placeholder="Price" />
         </div>
+        <p class="field-hint">Optional. Use either a price or a pip distance, not both. Stopless manual trades are tracked separately from R-based analytics.</p>
       </div>
       <p class="auth-message" id="new-order-message" role="status"></p>
       <button class="btn-accent auth-submit" type="submit">Place order</button>
@@ -268,12 +275,8 @@
   </div>
 </div>
 
-<!-- ============ Account history modal (v1.0.19) ============ -->
-<!-- Scrollable, filterable list of every trade in trade_history for the
-     active terminal. Opened from the "Positions Closed →" link on the P&L
-     card. Doubles as the "where do I view pending-verification trades"
-     answer surfaced elsewhere in the dashboard -- clicking any "pending
-     verification" note opens this modal pre-filtered to that tab. -->
+<!-- ============ Account history modal ============ -->
+<!-- Scrollable MT5 deal ledger for the active terminal. -->
 <div class="modal-overlay" id="modal-account-history" aria-hidden="true">
   <div class="modal-card modal-card-wide">
     <div class="modal-head">
@@ -282,16 +285,32 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
-    <p class="modal-sub">Every closed trade on this account, most recent first.</p>
-    <div class="account-history-filters" role="tablist" aria-label="Account history filter">
-      <button type="button" class="account-history-filter active" data-history-filter="all" role="tab" aria-selected="true">All trades</button>
-      <button type="button" class="account-history-filter" data-history-filter="pending" role="tab" aria-selected="false">Pending verification</button>
-    </div>
-    <p class="field-hint" id="account-history-pending-explainer" hidden>Pending trades closed without your MT5 terminal confirming a final profit/loss (e.g. a brief connectivity gap), so they're excluded from win rate, P&amp;L and session stats until verified. They'll clear automatically once your EA reports the real result on its next sync.</p>
+    <p class="modal-sub">Every MT5 account deal imported from this terminal, most recent first.</p>
     <div class="account-history-list" id="account-history-list">
       <p class="empty-state-text">Connect an account to see history.</p>
     </div>
   </div>
+</div>
+
+<div class="modal-overlay" id="modal-account-settings" aria-hidden="true">
+  <div class="modal-card modal-card-wide">
+    <div class="modal-head"><h3>Account & profile</h3><button class="icon-btn" type="button" data-modal-close aria-label="Close">×</button></div>
+    <p class="modal-sub">Profile information is private for now. It can be used when social sharing is introduced later.</p>
+    <form id="form-account-profile" novalidate>
+      <div class="field-row"><div class="field"><label for="profile-display-name">Display name</label><input id="profile-display-name" name="display_name" maxlength="80" /></div><div class="field"><label for="profile-location">Location</label><input id="profile-location" name="location" maxlength="100" /></div></div>
+      <div class="field-row"><div class="field"><label for="profile-website">Website</label><input id="profile-website" name="website" maxlength="300" placeholder="https://" /></div><div class="field"><label for="profile-trading-style">Trading style</label><input id="profile-trading-style" name="trading_style" maxlength="100" placeholder="e.g. discretionary crypto" /></div></div>
+      <div class="field"><label for="profile-bio">About</label><textarea id="profile-bio" name="bio" maxlength="500" rows="3"></textarea></div>
+      <p class="auth-message" id="account-profile-message" role="status"></p><button class="btn-accent" type="submit">Save profile</button>
+    </form>
+    <hr class="account-danger-divider" />
+    <div class="account-action-row"><div><strong>Password</strong><p>Receive a secure password-reset email.</p></div><button class="btn-secondary" type="button" id="button-reset-password">Send reset email</button></div>
+    <div class="account-action-row"><div><strong>Reset trading data</strong><p>Erases all terminals, trades, sessions, strategies, signals and analytics. Your login and profile remain.</p></div><button class="btn-danger" type="button" id="button-reset-account-data">Reset data</button></div>
+    <div class="account-action-row"><div><strong>Delete account</strong><p>Permanently deletes your login, profile and all associated information.</p></div><button class="btn-danger" type="button" id="button-delete-account">Delete account</button></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-account-confirm" aria-hidden="true">
+  <div class="modal-card"><div class="modal-head"><h3 id="account-confirm-title">Confirm action</h3><button class="icon-btn" type="button" data-modal-close aria-label="Close">×</button></div><p class="modal-sub" id="account-confirm-copy"></p><label class="field" for="account-confirmation-input">Type the confirmation phrase exactly<input id="account-confirmation-input" autocomplete="off" /></label><p class="auth-message" id="account-confirm-message" role="status"></p><button class="btn-danger" type="button" id="button-confirm-account-action">Confirm</button></div>
 </div>
 
 <div class="page" id="dashboard-root">
@@ -330,6 +349,7 @@
           <button class="avatar-badge" id="account-menu-button" aria-label="Account menu" data-testid="text-avatar-initials">?</button>
           <div class="account-menu" id="account-menu" aria-hidden="true">
             <span class="account-menu-email" id="account-menu-email">—</span>
+            <button class="account-menu-item" id="button-account-settings" type="button">Account & profile</button>
             <button class="account-menu-item" id="button-sign-out" type="button">Sign out</button>
           </div>
         </div>
@@ -379,6 +399,7 @@
     <div class="banner-warning" id="banner-autotrading" hidden role="alert">
       AutoTrading is OFF on the terminal — new orders and signal-driven trades will be rejected until it's enabled in MT5.
     </div>
+    <div class="banner-warning" id="banner-command-status" hidden role="alert"></div>
 
     <div class="view" id="view-dashboard">
 

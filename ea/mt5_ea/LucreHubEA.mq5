@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.18 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.20 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.18"
+#property version   "1.20"
 #property strict
 
 
@@ -106,14 +106,9 @@
 //|      re-sets strategy_id (only the INSERT-of-new-position path       |
 //|      does), so that position permanently reports strategy_id=null.  |
 //|      Rare in practice (narrow restart window) but a known gap.       |
-//|    - Idempotency guard (v1.0.10) matches on a comment PREFIX         |
-//|      ("lucrehub:" + ea_command_id), not exact equality, to tolerate  |
-//|      broker-appended suffixes. "lucrehub:" + a 36-char UUID is 45    |
-//|      characters, which exceeds some brokers' historic ~31-char       |
-//|      position-comment limits -- on those brokers the comment may be |
-//|      silently truncated by the trade server, which would break the  |
-//|      idempotency match. Not yet observed on the brokers tested, but |
-//|      flag to the user if a broker switch is ever made.               |
+//|    - v1.0.20: open-command idempotency now uses a compact `lh:` tag  |
+//|      plus the first 20 hex characters of the command UUID (23 chars |
+//|      total), safely below common 31-character broker comment limits. |
 //|    - FIXED in v1.0.13: all three OrderSend() call sites used to hard- |
 //|      code request.type_filling = ORDER_FILLING_FOK, which errors out |
 //|      with "Unsupported filling mode" (retcode 10030) on any broker/  |
@@ -135,7 +130,16 @@ string   g_es_api_key          = "";   // mtk_live_... from provision-terminal-k
 int      g_es_poll_seconds     = 2;    // 1-2s per architecture spec §3.1
 datetime g_es_last_poll        = 0;
 datetime g_es_last_history_scan = 0; // v1.0.14: rolling window start for closed-deal detection
+ulong    g_es_account_history_last_ticket = 0;
+bool     g_es_account_history_initial_sync = true;
 int      g_es_magic            = 990110; // orders/positions tagged with this magic number
+
+// Local defense-in-depth ceilings. These do not replace server-side terminal
+// policy; they ensure a malformed/stale command cannot exceed a conservative
+// lot, account-position, or per-trade monetary-risk limit at the terminal.
+#define LUCRE_HARD_MAX_VOLUME_PER_ORDER 0.10
+#define LUCRE_HARD_MAX_OPEN_POSITIONS    5
+#define LUCRE_HARD_MAX_RISK_PER_TRADE_USD 500.0
 
 // Results collected while executing commands during one poll, flushed on
 // the *next* poll's request body (ea-sync is stateless per-request; the
@@ -581,25 +585,103 @@ bool EASync_SelectPositionByTicket(const long ticket)
 }
 
 //+------------------------------------------------------------------+
-//| Idempotency guard (v1.0.10): scans currently open positions for   |
-//| one whose comment starts with "lucrehub:" + ea_command_id. Prefix |
-//| match (not exact equality) tolerates broker-appended suffixes or  |
-//| truncation — see file header caveat re: comment length limits.    |
-//| Returns the matching ticket, or 0 if no match is found.           |
+//| Returns a compact, deterministic per-command trade tag. The 80-bit |
+//| prefix is short enough to survive historic broker comment limits.  |
+//+------------------------------------------------------------------+
+string EASync_CommandTradeTag(const string ea_command_id)
+{
+   string compact_id = ea_command_id;
+   StringReplace(compact_id, "-", "");
+   StringToLower(compact_id);
+   return StringSubstr(compact_id, 0, 20);
+}
+
+//+------------------------------------------------------------------+
+//| Idempotency guard: compact `lh:<tag>` prefix is the current form. |
+//| Retain the legacy lookup so an EA update cannot duplicate an order |
+//| placed by an older build that used the full UUID comment.          |
 //+------------------------------------------------------------------+
 long EASync_FindPositionByCommandComment(const string ea_command_id)
 {
-   string wanted = "lucrehub:" + ea_command_id;
+   string compact_wanted = "lh:" + EASync_CommandTradeTag(ea_command_id);
+   string legacy_wanted = "lucrehub:" + ea_command_id;
    int total = PositionsTotal();
    for(int i = 0; i < total; i++)
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       string comment = PositionGetString(POSITION_COMMENT);
-      if(StringFind(comment, wanted) == 0)
+      if(StringFind(comment, compact_wanted) == 0 || StringFind(comment, legacy_wanted) == 0)
          return (long)ticket;
    }
    return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Reject volume outside the broker's range/step and above Lucre's   |
+//| terminal-side absolute lot ceiling. Never round a server command: |
+//| a different size would violate the requested risk calculation.    |
+//+------------------------------------------------------------------+
+bool EASync_ValidateOpenVolume(const string symbol, const double volume, string &reason)
+{
+   double min_volume = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double max_volume = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double volume_step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   if(volume <= 0.0 || min_volume <= 0.0 || max_volume < min_volume || volume_step <= 0.0)
+   {
+      reason = "invalid_broker_volume_constraints";
+      return false;
+   }
+   if(volume > LUCRE_HARD_MAX_VOLUME_PER_ORDER)
+   {
+      reason = "hard_max_volume_per_order_exceeded";
+      return false;
+   }
+   if(volume < min_volume || volume > max_volume)
+   {
+      reason = "broker_volume_range_exceeded";
+      return false;
+   }
+   double steps = (volume - min_volume) / volume_step;
+   if(MathAbs(steps - MathRound(steps)) > 0.000001)
+   {
+      reason = "broker_volume_step_mismatch";
+      return false;
+   }
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Verify an opening command has a protective stop and a bounded USD |
+//| loss at that stop using the broker's own profit calculation.      |
+//+------------------------------------------------------------------+
+bool EASync_ValidateOpenRisk(const string symbol, const bool is_buy, const double volume,
+                             const double entry_price, const double stop_loss, string &reason)
+{
+   if(stop_loss <= 0.0)
+   {
+      reason = "hard_stop_loss_required";
+      return false;
+   }
+   if((is_buy && stop_loss >= entry_price) || (!is_buy && stop_loss <= entry_price))
+   {
+      reason = "invalid_stop_loss_direction";
+      return false;
+   }
+   double estimated_profit = 0.0;
+   ENUM_ORDER_TYPE order_type = is_buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   if(!OrderCalcProfit(order_type, symbol, volume, entry_price, stop_loss, estimated_profit))
+   {
+      reason = "risk_calculation_failed";
+      return false;
+   }
+   double risk_usd = MathAbs(estimated_profit);
+   if(risk_usd <= 0.0 || risk_usd > LUCRE_HARD_MAX_RISK_PER_TRADE_USD)
+   {
+      reason = "hard_max_risk_per_trade_exceeded";
+      return false;
+   }
+   return true;
 }
 
 //+------------------------------------------------------------------+
@@ -612,7 +694,7 @@ long EASync_FindPositionByCommandComment(const string ea_command_id)
 void EASync_ExecuteOpen(const string ea_command_id, const string symbol, const string side,
                          const double volume, const double sl, const double tp,
                          const double sl_pips, const double tp_pips, const int max_deviation,
-                         const string strategy_id)
+                         const string strategy_id, const string source)
 {
    // Idempotency guard (gap #2 fix): if a position tagged with this exact
    // command's comment already exists, this command was already executed —
@@ -648,6 +730,18 @@ void EASync_ExecuteOpen(const string ea_command_id, const string symbol, const s
       return;
    }
 
+   string safety_reason = "";
+   if(!EASync_ValidateOpenVolume(symbol, volume, safety_reason))
+   {
+      EASync_QueueFailed(ea_command_id, safety_reason);
+      return;
+   }
+   if(PositionsTotal() >= LUCRE_HARD_MAX_OPEN_POSITIONS)
+   {
+      EASync_QueueFailed(ea_command_id, "hard_max_open_positions_reached");
+      return;
+   }
+
    bool is_buy = (side == "buy");
    MqlTradeRequest request;
    MqlTradeResult  result;
@@ -663,11 +757,19 @@ void EASync_ExecuteOpen(const string ea_command_id, const string symbol, const s
    request.price        = price;
    request.deviation    = max_deviation;
    request.magic        = g_es_magic;
-   request.comment      = "lucrehub:" + ea_command_id;
+   request.comment      = "lh:" + EASync_CommandTradeTag(ea_command_id);
    // type_filling is set per-attempt inside EASync_SendOrderWithFillingFallback().
 
    double resolved_sl = EASync_ResolveStop(symbol, sl, sl_pips, price, is_buy, true);
    double resolved_tp = EASync_ResolveStop(symbol, tp, tp_pips, price, is_buy, false);
+   // Discretionary dashboard orders may be intentionally stopless. They still
+   // obey MT5/broker volume, quote, margin and AutoTrading constraints above;
+   // automated strategy orders retain the mandatory-stop/risk ceiling.
+   if(source != "manual_order" && !EASync_ValidateOpenRisk(symbol, is_buy, volume, price, resolved_sl, safety_reason))
+   {
+      EASync_QueueFailed(ea_command_id, safety_reason);
+      return;
+   }
    if(resolved_sl > 0.0) request.sl = resolved_sl;
    if(resolved_tp > 0.0) request.tp = resolved_tp;
 
@@ -888,12 +990,13 @@ void EASync_ExecuteFlattenBasket(const string ea_command_id)
 //| element of the pending_commands array returned by ea-sync.        |
 //+------------------------------------------------------------------+
 void EASync_ExecuteCommand(const string id, const string command_type, const string symbol,
-                            const string side, const double volume, const double sl, const double tp,
-                            const long mt5_ticket, const int max_deviation,
-                            const double sl_pips, const double tp_pips, const string strategy_id)
+                           const string side, const double volume, const double sl, const double tp,
+                           const long mt5_ticket, const int max_deviation,
+                           const double sl_pips, const double tp_pips, const string strategy_id,
+                           const string source)
 {
    if(command_type == "open" || command_type == "hedge_open")
-      EASync_ExecuteOpen(id, symbol, side, volume, sl, tp, sl_pips, tp_pips, max_deviation, strategy_id);
+      EASync_ExecuteOpen(id, symbol, side, volume, sl, tp, sl_pips, tp_pips, max_deviation, strategy_id, source);
    else if(command_type == "modify" || command_type == "modify_sl_tp")
       EASync_ExecuteModify(id, mt5_ticket, sl, tp, sl_pips, tp_pips);
    else if(command_type == "close")
@@ -1016,12 +1119,13 @@ void EASync_ProcessPendingCommands(const string json)
             double sl_pips       = EASync_JsonGetNumber(json, obj_start, obj_end, "sl_pips");
             double tp_pips       = EASync_JsonGetNumber(json, obj_start, obj_end, "tp_pips");
             string strategy_id   = EASync_JsonGetRaw(json, obj_start, obj_end, "strategy_id");
+            string source        = EASync_JsonGetRaw(json, obj_start, obj_end, "source");
 
             if(id != "")
             {
                PrintFormat("EASync: executing command id=%s type=%s symbol=%s", id, command_type, symbol);
                EASync_ExecuteCommand(id, command_type, symbol, side, volume, sl, tp,
-                                      mt5_ticket, (int)max_deviation, sl_pips, tp_pips, strategy_id);
+                                      mt5_ticket, (int)max_deviation, sl_pips, tp_pips, strategy_id, source);
             }
             obj_start = -1;
          }
@@ -1088,8 +1192,68 @@ string EASync_BuildRequestBody()
    results_json += "]";
 
    string closed_deals_json = EASync_BuildClosedDealsJson();
+   string account_history_json = EASync_BuildAccountHistoryJson();
 
-   return "{" + account_json + "," + positions_json + "," + results_json + "," + closed_deals_json + "}";
+   return "{" + account_json + "," + positions_json + "," + results_json + "," + closed_deals_json + "," + account_history_json + "}";
+}
+
+//+------------------------------------------------------------------+
+//| Import the MT5 deal ledger in bounded batches. The first run walks|
+//| all available account history 100 deals at a time; once caught up,|
+//| a rolling one-hour scan catches new entries cheaply. Upserts make |
+//| restarts and the intentional overlap safe.                         |
+//+------------------------------------------------------------------+
+string EASync_BuildAccountHistoryJson()
+{
+   datetime now = TimeCurrent();
+   datetime from = g_es_account_history_initial_sync ? 0 : now - 3600;
+   string json = "\"account_history_deals\":[";
+   bool first = true;
+   int sent = 0;
+   ulong newest_ticket = g_es_account_history_last_ticket;
+
+   if(HistorySelect(from, now))
+   {
+      int total = HistoryDealsTotal();
+      for(int i = 0; i < total && sent < 100; i++)
+      {
+         ulong deal_ticket = HistoryDealGetTicket(i);
+         if(deal_ticket == 0) continue;
+         if(g_es_account_history_initial_sync && deal_ticket <= g_es_account_history_last_ticket) continue;
+
+         long deal_type = HistoryDealGetInteger(deal_ticket, DEAL_TYPE);
+         string side = "null";
+         if(deal_type == DEAL_TYPE_BUY) side = "\"buy\"";
+         else if(deal_type == DEAL_TYPE_SELL) side = "\"sell\"";
+
+         if(!first) json += ",";
+         first = false;
+         sent++;
+         if(deal_ticket > newest_ticket) newest_ticket = deal_ticket;
+         json +=
+            "{\"deal_ticket\":" + IntegerToString((long)deal_ticket) + ","
+            "\"position_id\":" + IntegerToString((long)HistoryDealGetInteger(deal_ticket, DEAL_POSITION_ID)) + ","
+            "\"symbol\":\"" + EASync_JsonEscape(HistoryDealGetString(deal_ticket, DEAL_SYMBOL)) + "\","
+            "\"side\":" + side + ","
+            "\"entry_type\":" + IntegerToString((long)HistoryDealGetInteger(deal_ticket, DEAL_ENTRY)) + ","
+            "\"deal_type\":" + IntegerToString(deal_type) + ","
+            "\"volume\":" + DoubleToString(HistoryDealGetDouble(deal_ticket, DEAL_VOLUME), 8) + ","
+            "\"price\":" + DoubleToString(HistoryDealGetDouble(deal_ticket, DEAL_PRICE), 8) + ","
+            "\"profit\":" + DoubleToString(HistoryDealGetDouble(deal_ticket, DEAL_PROFIT), 2) + ","
+            "\"commission\":" + DoubleToString(HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION), 2) + ","
+            "\"swap\":" + DoubleToString(HistoryDealGetDouble(deal_ticket, DEAL_SWAP), 2) + ","
+            "\"fee\":" + DoubleToString(HistoryDealGetDouble(deal_ticket, DEAL_FEE), 2) + ","
+            "\"occurred_at\":\"" + EASync_ToIso8601((datetime)HistoryDealGetInteger(deal_ticket, DEAL_TIME)) + "\","
+            "\"magic\":" + IntegerToString((long)HistoryDealGetInteger(deal_ticket, DEAL_MAGIC)) + ","
+            "\"comment\":\"" + EASync_JsonEscape(HistoryDealGetString(deal_ticket, DEAL_COMMENT)) + "\"}";
+      }
+   }
+   if(g_es_account_history_initial_sync)
+   {
+      g_es_account_history_last_ticket = newest_ticket;
+      if(sent < 100) g_es_account_history_initial_sync = false;
+   }
+   return json + "]";
 }
 
 //+------------------------------------------------------------------+
@@ -1144,6 +1308,7 @@ string EASync_BuildClosedDealsJson()
          double deal_profit = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT)
                              + HistoryDealGetDouble(deal_ticket, DEAL_SWAP)
                              + HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
+         double deal_fee = HistoryDealGetDouble(deal_ticket, DEAL_FEE);
          datetime close_time = (datetime)HistoryDealGetInteger(deal_ticket, DEAL_TIME);
          string symbol = HistoryDealGetString(deal_ticket, DEAL_SYMBOL);
 
@@ -1154,6 +1319,7 @@ string EASync_BuildClosedDealsJson()
             "\"symbol\":\"" + EASync_JsonEscape(symbol) + "\","
             "\"close_price\":" + DoubleToString(close_price, 5) + ","
             "\"profit\":" + DoubleToString(deal_profit, 2) + ","
+            "\"fee\":" + DoubleToString(deal_fee, 2) + ","
             "\"close_time\":\"" + EASync_ToIso8601(close_time) + "\""
             "}";
       }

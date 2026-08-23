@@ -1,4 +1,4 @@
-import { supabase } from './supabase-client.js';
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from './supabase-client.js';
 import {
   provisionTerminalKey,
   tapSignal,
@@ -21,6 +21,8 @@ const state = {
   signals: [],
   signalDeliveries: [],
   tradeHistory: [],
+  accountHistory: [],
+  pendingCommandId: null,
   agentPolicies: [],
   positions: [],
   pendingSignals: [],
@@ -100,6 +102,7 @@ const balanceWidgetBalance = document.getElementById('balance-widget-balance');
 const balanceWidgetEquity = document.getElementById('balance-widget-equity');
 const balanceWidgetMargin = document.getElementById('balance-widget-margin');
 const bannerAutotrading = document.getElementById('banner-autotrading');
+const bannerCommandStatus = document.getElementById('banner-command-status');
 
 const textSignalTotal = document.getElementById('text-signal-total');
 const countExecuted = document.getElementById('count-executed');
@@ -225,6 +228,61 @@ window.addEventListener('lucre:auth-tab-changed', (e) => {
 
 document.getElementById('button-sign-out')?.addEventListener('click', async () => {
   await supabase.auth.signOut();
+});
+
+async function accountManagement(action, body = {}) {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error('Your session has expired — please sign in again.');
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/account-management`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action, ...body }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.detail || payload.error || 'Account action failed.');
+  return payload;
+}
+
+document.getElementById('button-account-settings')?.addEventListener('click', () => {
+  window.LucreUI?.openModal('modal-account-settings');
+});
+document.getElementById('form-account-profile')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const message = document.getElementById('account-profile-message');
+  try {
+    await accountManagement('update_profile', Object.fromEntries(new FormData(form)));
+    if (message) { message.style.color = 'var(--color-accent)'; message.textContent = 'Profile saved.'; }
+    await loadProfile();
+  } catch (err) { if (message) { message.style.color = 'var(--color-negative)'; message.textContent = err.message; } }
+});
+document.getElementById('button-reset-password')?.addEventListener('click', async () => {
+  const message = document.getElementById('account-profile-message');
+  const { error } = await supabase.auth.resetPasswordForEmail(state.session.user.email, { redirectTo: window.location.origin });
+  if (message) { message.style.color = error ? 'var(--color-negative)' : 'var(--color-accent)'; message.textContent = error ? error.message : 'Password-reset email sent.'; }
+});
+let pendingAccountAction = null;
+function openAccountConfirmation(action) {
+  pendingAccountAction = action;
+  const isDelete = action === 'delete_account';
+  document.getElementById('account-confirm-title').textContent = isDelete ? 'Delete account permanently' : 'Reset trading data';
+  document.getElementById('account-confirm-copy').textContent = isDelete ? 'This permanently deletes your login, profile, terminals and all associated information. Type DELETE MY ACCOUNT to continue.' : 'This erases all logged trades, sessions, strategies, signals, analytics and terminal connections. Your login and profile remain. Type RESET MY DATA to continue.';
+  document.getElementById('account-confirmation-input').value = '';
+  document.getElementById('account-confirm-message').textContent = '';
+  window.LucreUI?.openModal('modal-account-confirm');
+}
+document.getElementById('button-reset-account-data')?.addEventListener('click', () => openAccountConfirmation('reset_account_data'));
+document.getElementById('button-delete-account')?.addEventListener('click', () => openAccountConfirmation('delete_account'));
+document.getElementById('button-confirm-account-action')?.addEventListener('click', async () => {
+  const input = document.getElementById('account-confirmation-input');
+  const message = document.getElementById('account-confirm-message');
+  const expected = pendingAccountAction === 'delete_account' ? 'DELETE MY ACCOUNT' : 'RESET MY DATA';
+  if (input.value !== expected) { message.textContent = `Type ${expected} exactly to continue.`; return; }
+  try {
+    await accountManagement(pendingAccountAction, { confirmation: input.value });
+    if (pendingAccountAction === 'delete_account') await supabase.auth.signOut();
+    else window.location.reload();
+  } catch (err) { message.textContent = err.message; }
 });
 
 // ---------------------------------------------------------------------------
@@ -780,21 +838,26 @@ document.getElementById('form-new-order')?.addEventListener('submit', async (e) 
   if (deviation) payload.max_deviation_points = parseInt(deviation, 10);
   const sl = form.sl.value.trim();
   if (sl) payload.sl = parseFloat(sl);
+  const slPips = form.sl_pips.value.trim();
+  if (slPips) payload.sl_pips = parseFloat(slPips);
   const tp = form.tp.value.trim();
   if (tp) payload.tp = parseFloat(tp);
+
+  if (sl && slPips) {
+    msg.style.color = 'var(--color-negative)';
+    msg.textContent = 'Order was not sent: use either stop-loss price or stop-loss pips, not both.';
+    return;
+  }
 
   submitBtn.disabled = true;
   msg.style.color = 'var(--color-accent)';
   msg.textContent = 'Placing order…';
 
   try {
-    await placeManualOrder(payload);
-    msg.textContent = 'Order queued.';
+    const command = await placeManualOrder(payload);
+    state.pendingCommandId = command.ea_command_id;
+    msg.textContent = 'Order queued — waiting for MT5 confirmation.';
     form.reset();
-    setTimeout(() => {
-      window.LucreUI.closeModal(document.getElementById('modal-new-order'));
-      msg.textContent = '';
-    }, 700);
     await loadPositions();
   } catch (err) {
     msg.style.color = 'var(--color-negative)';
@@ -985,7 +1048,10 @@ function startRealtime(terminalId) {
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'ea_commands', filter: `terminal_id=eq.${terminalId}` },
-      () => checkAutotradingBanner()
+      (payload) => {
+        checkAutotradingBanner();
+        handleCommandStatus(payload.new);
+      }
     )
     // v1.0.17 -- trade_history was never in the supabase_realtime publication
     // (fixed in migration 037), so R:R/Win Ratio/P&L on the Performance,
@@ -998,6 +1064,11 @@ function startRealtime(terminalId) {
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'trade_history', filter: `terminal_id=eq.${terminalId}` },
       () => loadTradeHistory()
+    )
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'mt5_account_history', filter: `terminal_id=eq.${terminalId}` },
+      () => loadAccountHistory()
     )
     // v1.0.12 -- previously had no status callback at all, so a dropped/
     // failed channel (network blip, token refresh, etc.) silently fell
@@ -1045,6 +1116,38 @@ async function checkAutotradingBanner() {
   );
 }
 
+function humanizeCommandFailure(error) {
+  const labels = {
+    autotrading_disabled: 'MT5 AutoTrading is disabled.',
+    hard_stop_loss_required: 'A protective stop-loss is required.',
+    hard_max_volume_per_order_exceeded: 'The volume exceeds the EA hard limit.',
+    broker_volume_step_mismatch: 'The volume does not match this broker’s lot step.',
+    hard_max_open_positions_reached: 'The EA account-position limit has been reached.',
+    max_open_positions_reached: 'The terminal open-position limit has been reached.',
+  };
+  return labels[error] || error || 'MT5 did not provide a failure reason.';
+}
+
+function handleCommandStatus(command) {
+  if (!command || command.id !== state.pendingCommandId) return;
+  if (command.status === 'failed' || command.status === 'expired') {
+    const message = `Order was not executed: ${humanizeCommandFailure(command.error_message)}`;
+    if (bannerCommandStatus) {
+      bannerCommandStatus.textContent = message;
+      bannerCommandStatus.hidden = false;
+    }
+    const modalMessage = document.getElementById('new-order-message');
+    if (modalMessage) {
+      modalMessage.style.color = 'var(--color-negative)';
+      modalMessage.textContent = message;
+    }
+    state.pendingCommandId = null;
+  } else if (command.status === 'executed') {
+    if (bannerCommandStatus) bannerCommandStatus.hidden = true;
+    state.pendingCommandId = null;
+  }
+}
+
 function stopRealtime() {
   if (realtimeReconnectTimer) {
     clearTimeout(realtimeReconnectTimer);
@@ -1062,7 +1165,7 @@ function stopRealtime() {
 async function loadProfile() {
   const { data, error } = await supabase
     .from('profiles')
-    .select('display_name')
+    .select('display_name, bio, location, website, trading_style')
     .eq('id', state.session.user.id)
     .maybeSingle();
 
@@ -1076,6 +1179,14 @@ async function loadProfile() {
   textGreeting.textContent = `Hey, ${displayName} 👋`;
   accountMenuEmail.textContent = state.session.user.email || '';
   document.getElementById('account-menu-button').textContent = initials(displayName);
+  const profileForm = document.getElementById('form-account-profile');
+  if (profileForm) {
+    profileForm.display_name.value = data?.display_name || '';
+    profileForm.bio.value = data?.bio || '';
+    profileForm.location.value = data?.location || '';
+    profileForm.website.value = data?.website || '';
+    profileForm.trading_style.value = data?.trading_style || '';
+  }
 }
 
 async function loadTerminals() {
@@ -1106,6 +1217,7 @@ async function loadTerminals() {
     loadStrategies(),
     loadSignals(),
     loadTradeHistory(),
+    loadAccountHistory(),
     loadAgentPolicies(),
     loadPositions(),
     loadPendingSignals(),
@@ -1163,6 +1275,7 @@ terminalSelect?.addEventListener('change', async (e) => {
     loadStrategies(),
     loadSignals(),
     loadTradeHistory(),
+    loadAccountHistory(),
     loadAgentPolicies(),
     loadPositions(),
     loadPendingSignals(),
@@ -2029,6 +2142,26 @@ async function loadTradeHistory() {
   if (!viewPairs.hidden) renderPairsView();
 }
 
+async function loadAccountHistory() {
+  if (!state.activeTerminalId) {
+    state.accountHistory = [];
+    renderAccountHistoryList();
+    return;
+  }
+  const { data, error } = await supabase
+    .from('mt5_account_history')
+    .select('deal_ticket, position_id, symbol, side, entry_type, deal_type, volume, price, profit, commission, swap, fee, occurred_at, comment')
+    .eq('terminal_id', state.activeTerminalId)
+    .order('occurred_at', { ascending: false })
+    .limit(2000);
+  if (error) {
+    console.error('loadAccountHistory error', error);
+    return;
+  }
+  state.accountHistory = data || [];
+  renderAccountHistoryList();
+}
+
 // v1.0.18 -- rows with profit_verified === false were reconciled without an
 // EA-supplied profit/close-price (see ea-sync's self-healing reconciler),
 // so profit=0/outcome='breakeven' on them is a placeholder, not a real
@@ -2467,57 +2600,37 @@ function renderDurationTab() {
 // elsewhere on the dashboard (via pendingVerificationLink() above), so
 // there's always a clear place to go look instead of a dead-end count.
 // ---------------------------------------------------------------------------
-let accountHistoryFilter = 'all';
-
 function renderAccountHistoryList() {
   const list = document.getElementById('account-history-list');
-  const explainer = document.getElementById('account-history-pending-explainer');
   if (!list) return;
-  if (explainer) explainer.hidden = accountHistoryFilter !== 'pending';
-
-  const rows = [...state.tradeHistory]
-    .filter((t) => (accountHistoryFilter === 'pending' ? t.profit_verified === false : true))
-    .sort((a, b) => new Date(b.close_time || b.open_time || 0) - new Date(a.close_time || a.open_time || 0));
+  const rows = [...state.accountHistory];
 
   if (rows.length === 0) {
     list.innerHTML = `<p class="empty-state-text">${
-      accountHistoryFilter === 'pending'
-        ? 'No trades pending verification right now.'
-        : 'No trade history yet. Once trades close on this account, they\'ll show up here.'
+      'No MT5 account history has arrived yet. Compile the current EA and let it complete its initial sync.'
     }</p>`;
     return;
   }
 
   list.innerHTML = rows
     .map((t) => {
-      const dateLabel = t.close_time
-        ? new Date(t.close_time).toLocaleString()
-        : t.open_time
-        ? `opened ${new Date(t.open_time).toLocaleString()}`
-        : '—';
-      const plCell = t.profit_verified === false
-        ? '<span class="hist-pl pending">Pending</span>'
-        : `<span class="hist-pl ${(t.profit ?? 0) > 0 ? 'positive' : (t.profit ?? 0) < 0 ? 'negative' : ''}">${
-            (t.profit ?? 0) >= 0 ? '+' : ''
-          }${(t.profit ?? 0).toFixed(2)}</span>`;
+      const dateLabel = t.occurred_at ? new Date(t.occurred_at).toLocaleString() : '—';
+      const profit = Number(t.profit || 0);
+      const net = profit + Number(t.commission || 0) + Number(t.swap || 0) + Number(t.fee || 0);
+      const profitCell = `<span class="hist-pl ${profit > 0 ? 'positive' : profit < 0 ? 'negative' : ''}">${profit >= 0 ? '+' : ''}${profit.toFixed(2)} <small>MT5 profit</small></span>`;
+      const netCell = `<span class="hist-pl ${net > 0 ? 'positive' : net < 0 ? 'negative' : ''}">${net >= 0 ? '+' : ''}${net.toFixed(2)} <small>net</small></span>`;
       return `
         <div class="account-history-row">
-          <div><span class="hist-symbol">${t.symbol || 'Unknown'}</span> <span class="hist-side">${t.side || '—'}</span></div>
+          <div><span class="hist-symbol">${t.symbol || 'Account event'}</span> <span class="hist-side">${t.side || '—'}</span></div>
           <div class="hist-date">${dateLabel}</div>
           <div>${t.volume ?? '—'} lots</div>
-          ${plCell}
+          <div>${profitCell}<br/>${netCell}</div>
         </div>`;
     })
     .join('');
 }
 
-function openAccountHistoryModal(filter) {
-  accountHistoryFilter = filter === 'pending' ? 'pending' : 'all';
-  document.querySelectorAll('.account-history-filter').forEach((btn) => {
-    const isActive = btn.dataset.historyFilter === accountHistoryFilter;
-    btn.classList.toggle('active', isActive);
-    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
-  });
+function openAccountHistoryModal() {
   renderAccountHistoryList();
   window.LucreUI?.openModal('modal-account-history');
 }
@@ -2528,10 +2641,6 @@ document.getElementById('link-open-account-history')?.addEventListener('keydown'
     e.preventDefault();
     openAccountHistoryModal('all');
   }
-});
-
-document.querySelectorAll('.account-history-filter').forEach((btn) => {
-  btn.addEventListener('click', () => openAccountHistoryModal(btn.dataset.historyFilter));
 });
 
 // Event delegation: the pending-verification links above are re-rendered

@@ -1,8 +1,13 @@
-# Backend — Supabase Edge Functions & Database
+# Backend audit snapshot (legacy path)
 
 Live project: `qxlfnscmrhwfcpattqxa` — [https://qxlfnscmrhwfcpattqxa.supabase.co](https://qxlfnscmrhwfcpattqxa.supabase.co)
 
-Confirmed version at time of snapshot: **v1.0.18** (ea-sync v6, self-healing reconciler).
+This directory is retained for historical comparison only. The deployable,
+production-synchronized backend now lives in [`../supabase/`](../supabase).
+Do not make new function or migration changes here.
+
+Confirmed version at time of this older snapshot: **v1.0.18**. The live
+`ea-sync` function has since advanced to version 7.
 
 ## Structure
 

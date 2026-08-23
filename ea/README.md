@@ -1,4 +1,4 @@
-# LucreHubEA — v1.0.18 (single-file build)
+# LucreHubEA — v1.0.20 (single-file build)
 
 ## What changed in this build
 
@@ -27,8 +27,8 @@ includes) because `EASync.mqh` and friends never made it onto the VPS's
 **This build inlines all five modules directly into `LucreHubEA.mq5`.**
 MQL5's `#include` is plain text substitution — the compiled `.ex5` from this
 single file is byte-for-byte equivalent to compiling the old five-file
-layout. No trading logic changed; this is a packaging-only release. Each
-module's original header/doc comments are preserved in place, wrapped in
+layout before the v1.0.20 safety controls described below. Each module's
+original header/doc comments are preserved in place, wrapped in
 `BEGIN inlined module: X.mqh` / `END inlined module: X.mqh` banners, purely
 so the file stays navigable (search for `BEGIN inlined module` to jump
 between sections).
@@ -55,9 +55,26 @@ If you're moving an existing local install to a VPS: delete any old
 longer needed and won't be referenced), then follow the steps above with
 just the one `.mq5` file.
 
+## Safety behavior added in v1.0.20
+
+- Open-order idempotency uses a compact 23-character `lh:` trade comment,
+  avoiding broker truncation of the prior UUID-based comment. Existing legacy
+  comments remain recognized during an EA upgrade.
+- The EA independently rejects an open if its volume is outside the broker's
+  min/max/step, above `0.10` lots, or if the account already has five open
+  positions.
+- Every open must resolve to a protective stop-loss in the correct direction.
+  The EA uses MT5's `OrderCalcProfit` to reject an order whose estimated loss
+  at that stop is above `500` in the account currency.
+
+These are conservative compiled safeguards, separate from the dashboard and
+database limits. A command rejected by one appears in the dashboard as failed
+with a specific reason (for example `hard_stop_loss_required`). Review these
+constants in `mt5_ea/LucreHubEA.mq5` before changing risk policy.
+
 ## Functional behavior
 
-Unchanged from v1.0.17 — see the inlined module comments inside
+Other behavior is unchanged from v1.0.18 — see the inlined module comments inside
 `LucreHubEA.mq5` (or the prior multi-file bundle's README) for the full
 description of what each module does: account/position sync and command
 execution, economic calendar ingestion, low-latency WebSocket command
