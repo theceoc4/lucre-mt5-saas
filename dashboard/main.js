@@ -75,6 +75,9 @@ const POSITION_POLL_HEALTHY_MS = 60000;
 let realtimeIsHealthy = false;
 let realtimeChannel = null;
 let realtimeReconnectTimer = null;
+let positionStreamRequestIntervalId = null;
+let streamedPositionFields = new Map();
+const POSITION_STREAM_TTL_MS = 10000;
 // Rescan-in-flight poll — checks mt5_terminals.last_symbol_scan_at every 5s
 // (up to 60s) after "Rescan Symbols" is clicked, since report-symbols runs
 // asynchronously once the EA's next ea-sync poll picks up the flag.
@@ -1011,6 +1014,73 @@ function setRealtimeHealth(isHealthy) {
   startPositionPolling();
 }
 
+function mergeStreamedPositionFields(positions) {
+  const now = Date.now();
+  return positions.map((position) => {
+    const streamed = streamedPositionFields.get(String(position.mt5_ticket));
+    if (!streamed || now - streamed.receivedAt > POSITION_STREAM_TTL_MS) return position;
+    return {
+      ...position,
+      volume: streamed.volume,
+      current_price: streamed.current_price,
+      unrealized_pl: streamed.unrealized_pl,
+      sl: streamed.sl,
+      tp: streamed.tp,
+    };
+  });
+}
+
+// Ephemeral stream data may update mark-to-market fields only. Database row
+// identity and status remain authoritative, preserving modify/close behavior.
+function applyStreamedPositionState(terminalId, eventPayload) {
+  if (state.activeTerminalId !== terminalId) return;
+  const message = eventPayload?.payload?.positions ? eventPayload.payload : eventPayload;
+  if (!Array.isArray(message?.positions) || message.positions.length > 100) return;
+
+  const receivedAt = Date.now();
+  const next = new Map();
+  message.positions.forEach((position) => {
+    const ticket = Number(position?.mt5_ticket);
+    const volume = Number(position?.volume);
+    const currentPrice = Number(position?.current_price);
+    const unrealizedPl = Number(position?.unrealized_pl);
+    if (!Number.isFinite(ticket) || !Number.isFinite(volume)
+      || !Number.isFinite(currentPrice) || !Number.isFinite(unrealizedPl)) return;
+    const sl = position.sl === null ? null : Number(position.sl);
+    const tp = position.tp === null ? null : Number(position.tp);
+    next.set(String(ticket), {
+      receivedAt,
+      volume,
+      current_price: currentPrice,
+      unrealized_pl: unrealizedPl,
+      sl: sl === null || Number.isFinite(sl) ? sl : null,
+      tp: tp === null || Number.isFinite(tp) ? tp : null,
+    });
+  });
+  streamedPositionFields = next;
+  state.positions = mergeStreamedPositionFields(state.positions);
+  renderPositions();
+  renderPositionsTab();
+}
+
+function stopPositionStreamRequests() {
+  if (positionStreamRequestIntervalId) clearInterval(positionStreamRequestIntervalId);
+  positionStreamRequestIntervalId = null;
+}
+
+function requestPositionStream() {
+  if (!realtimeChannel) return;
+  realtimeChannel
+    .send({ type: 'broadcast', event: 'position_stream_subscribe', payload: {} })
+    .catch((error) => console.warn('[realtime] position stream lease failed', error));
+}
+
+function startPositionStreamRequests() {
+  stopPositionStreamRequests();
+  requestPositionStream();
+  positionStreamRequestIntervalId = setInterval(requestPositionStream, 15000);
+}
+
 // v1.0.12 -- lightweight balance/equity/margin_level refresh, run on the
 // same poll tick as positions. Previously the balance widget had *no*
 // polling fallback whatsoever and depended entirely on the (until this
@@ -1041,9 +1111,19 @@ async function refreshActiveTerminalBalance() {
 // ---------------------------------------------------------------------------
 function startRealtime(terminalId) {
   stopRealtime();
+  streamedPositionFields = new Map();
   if (!terminalId) return;
+  const terminal = state.terminals.find((item) => item.id === terminalId);
+  const channelName = terminal?.realtime_topic_id
+    ? `terminal:${terminal.realtime_topic_id}`
+    : `terminal-${terminalId}`;
   realtimeChannel = supabase
-    .channel(`terminal-${terminalId}`)
+    .channel(channelName)
+    .on(
+      'broadcast',
+      { event: 'position_state' },
+      (payload) => applyStreamedPositionState(terminalId, payload)
+    )
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'positions', filter: `terminal_id=eq.${terminalId}` },
@@ -1104,8 +1184,12 @@ function startRealtime(terminalId) {
     // instead of requiring a manual page reload.
     .subscribe((status) => {
       console.log('[realtime]', status, 'terminal', terminalId);
-      if (status === 'SUBSCRIBED') setRealtimeHealth(true);
+      if (status === 'SUBSCRIBED') {
+        setRealtimeHealth(true);
+        startPositionStreamRequests();
+      }
       if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        stopPositionStreamRequests();
         setRealtimeHealth(false);
         if (realtimeReconnectTimer) return;
         realtimeReconnectTimer = setTimeout(() => {
@@ -1177,6 +1261,7 @@ function handleCommandStatus(command) {
 }
 
 function stopRealtime() {
+  stopPositionStreamRequests();
   if (realtimeReconnectTimer) {
     clearTimeout(realtimeReconnectTimer);
     realtimeReconnectTimer = null;
@@ -1221,7 +1306,7 @@ async function loadTerminals() {
   const { data, error } = await supabase
     .from('mt5_terminals')
     .select(
-      'id, label, broker, account_login, server, is_live, status, equity, balance, margin_level, api_key_last_four, api_key_last_rotated_at, max_manual_lot_size, max_daily_loss_usd, max_open_positions, force_symbol_rescan, last_symbol_scan_at'
+      'id, label, broker, account_login, server, is_live, status, equity, balance, margin_level, api_key_last_four, api_key_last_rotated_at, max_manual_lot_size, max_daily_loss_usd, max_open_positions, force_symbol_rescan, last_symbol_scan_at, realtime_topic_id'
     )
     .order('created_at', { ascending: true });
 
@@ -1466,7 +1551,7 @@ async function loadPositions() {
     console.error('loadPositions error', error);
     return;
   }
-  state.positions = data || [];
+  state.positions = mergeStreamedPositionFields(data || []);
   renderPositions();
   renderPositionsTab();
 }

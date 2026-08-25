@@ -1,5 +1,19 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.24 — Ephemeral live position stream (2026-08-25)
+
+- Broadcasts one aggregate mark-to-market snapshot at most every two seconds
+  while open-position values are changing; no per-tick database writes. The
+  stream runs only while a dashboard renews its short subscription lease and
+  stops within 30 seconds after the last viewer disconnects.
+- Streams only volume, current price, unrealized P/L, SL and TP. Durable
+  `ea-sync` rows remain authoritative for position identity/status and every
+  modify/close action.
+- Durable healthy snapshots move from 10 to 30 seconds, reducing normal
+  database/Edge Function writes by roughly two-thirds. Trade transactions
+  still force an immediate durable sync, and disconnected fallback stays at
+  five seconds.
+
 ## v1.0.23 — Live position snapshots and explicit P/L costs (2026-08-23)
 
 - Publishes account and open-position snapshots every 10 seconds while the

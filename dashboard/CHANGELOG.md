@@ -7,6 +7,16 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.24 — Ephemeral live position stream (2026-08-25)
+
+- The dashboard joins the same high-entropy, terminal-scoped Realtime topic
+  as the EA, renews a short viewer lease, and overlays changed mark-to-market
+  fields every two seconds. The EA stops streaming when no dashboard is open.
+- Stream data cannot replace durable row identity/status, so existing Modify
+  and Close actions continue to use the same database-backed position IDs.
+- Stream values expire after ten seconds and automatically fall back to the
+  durable database snapshot if the socket stops delivering.
+
 ## v1.0.23 — Order completion, reconcilable P/L, and scalable live positions (2026-08-23)
 
 - The New Order modal now closes as soon as the backend accepts the order.

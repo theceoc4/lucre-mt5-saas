@@ -1,6 +1,6 @@
-// Returns the non-sensitive connection details for a terminal's random
-// Realtime wake-up topic. Actual commands never travel over this channel and
-// remain protected by the opaque terminal key at ea-sync.
+// Returns connection details for a terminal's high-entropy Realtime topic.
+// The topic carries command wake-up hints and ephemeral mark-to-market state;
+// actual commands and durable position state remain protected by ea-sync.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { authenticateTerminal } from "./_shared/auth.ts";

@@ -1,4 +1,4 @@
-# LucreHubEA — v1.0.23 candidate (single-file build)
+# LucreHubEA — v1.0.24 candidate (single-file build)
 
 ## What changed in this build
 

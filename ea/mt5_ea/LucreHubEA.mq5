@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.23 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.24 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.23"
+#property version   "1.24"
 #property strict
 
 
@@ -1223,7 +1223,7 @@ string EASync_BuildRequestBody()
 //+------------------------------------------------------------------+
 string EASync_BuildAccountHistoryJson()
 {
-   datetime now = TimeCurrent();
+   datetime now = TimeLocal();
    datetime from = g_es_account_history_initial_sync ? 0 : now - 3600;
    string json = "\"account_history_deals\":[";
    bool first = true;
@@ -1722,7 +1722,7 @@ void CalendarSync_Run()
 //============================================================================
 //+------------------------------------------------------------------+
 //|                                                   EAStream.mqh   |
-//|  v1.0.22 — Optional low-latency companion to EASync.mqh.         |
+//|  v1.0.24 — Low-latency companion to durable EASync snapshots.    |
 //|                                                                    |
 //|  This module uses the terminal API key to load a random wake-up     |
 //|  topic and opens a terminal-scoped Supabase Realtime Broadcast      |
@@ -1731,14 +1731,17 @@ void CalendarSync_Run()
 //|  manual order, a hedge, a flatten) is picked up within one round   |
 //|  trip instead of waiting for the next fallback reconciliation.     |
 //|                                                                    |
-//|  THIS IS A HINT-ONLY CHANNEL. Correctness never depends on it.     |
+//|  Correctness never depends on this channel. It carries command     |
+//|  wake-up hints plus ephemeral mark-to-market position fields; the  |
+//|  durable reconciliation loop remains authoritative for position    |
+//|  identity, status, commands, account history and heartbeats.        |
 //|  EASync.mqh's ordinary reconciliation loop remains active          |
 //|  regardless of WebSocket state — it is                             |
 //|  the source of truth for command execution and heartbeats. If the  |
 //|  WebSocket never connects, never authenticates, or drops and       |
 //|  can't reconnect, the EA behaves exactly as it did before this     |
-//|  module existed. EAStream.mqh only ever makes commands execute     |
-//|  SOONER, never differently.                                        |
+//|  module existed. EAStream.mqh makes commands execute sooner and     |
+//|  makes displayed prices/P&L fresher, never differently.             |
 //|                                                                    |
 //|  INTEGRATION (in your main .mq5 EA file, AFTER #include            |
 //|  "EASync.mqh" — EAStream_HandleFrame() calls EASync_Run() and      |
@@ -1782,11 +1785,11 @@ void CalendarSync_Run()
 //|  KNOWN LIMITATIONS (see mt5_ea/README.md for detail):                   |
 //|    - Does NOT cryptographically verify Sec-WebSocket-Accept. Any HTTP   |
 //|      101 response is accepted as a successful upgrade. Zero correctness |
-//|      impact since this is a hint-only channel and ea-stream is a         |
+//|      impact since streamed values are ephemeral and the connection is    |
 //|      first-party endpoint reached over TLS.                              |
 //|    - Frames with the 127-length marker (payloads >= 64KB, RFC6455        |
 //|      len7==127) are defensively dropped — this channel only ever         |
-//|      carries "wake"/"ping"/"pong" text frames, which never approach      |
+//|      carries compact wake/state/heartbeat frames, which never approach  |
 //|      that size.                                                           |
 //|    - Reconnect logic runs from OnTimer(), so there can be a brief         |
 //|      (sub-second) blocking window during SocketConnect/TlsHandshake       |
@@ -1808,6 +1811,7 @@ string   g_ews_api_key  = "";
 string   g_ews_host     = "";
 string   g_ews_public_api_key = "";
 string   g_ews_topic = "";
+string   g_ews_join_ref = "";
 bool     g_ews_enabled  = false;
 bool     g_ews_joined   = false;
 int      g_ews_socket   = INVALID_HANDLE;
@@ -1815,6 +1819,10 @@ int      g_ews_state    = EWS_STATE_DISCONNECTED;
 int      g_ews_ref      = 1;
 int      g_ews_fallback_poll_seconds = 10;
 int      g_ews_healthy_poll_seconds = 60;
+int      g_ews_position_stream_seconds = 2;
+datetime g_ews_last_position_stream_check = 0;
+datetime g_ews_position_stream_requested_until = 0;
+string   g_ews_last_position_state = "";
 datetime g_ews_last_attempt      = 0;
 int      g_ews_backoff_seconds   = 2;
 datetime g_ews_last_activity     = 0;
@@ -1847,8 +1855,8 @@ void EAStream_ScheduleRetry()
 }
 
 //+------------------------------------------------------------------+
-//| Load the anonymous Realtime key and this terminal's random wake-up  |
-//| topic. Commands themselves remain behind ea-sync API-key auth.      |
+//| Load the anonymous Realtime key and this terminal's high-entropy     |
+//| topic. Commands themselves remain behind ea-sync API-key auth.       |
 //+------------------------------------------------------------------+
 bool EAStream_LoadConfig()
 {
@@ -1883,6 +1891,7 @@ bool EAStream_LoadConfig()
 void EAStream_SendJoin()
 {
    string ref = IntegerToString(g_ews_ref++);
+   g_ews_join_ref = ref;
    string topic = "realtime:" + g_ews_topic;
    string message =
       "{\"topic\":\"" + EASync_JsonEscape(topic) + "\","
@@ -1897,6 +1906,64 @@ void EAStream_SendHeartbeat()
 {
    string ref = IntegerToString(g_ews_ref++);
    EAStream_SendText("{\"topic\":\"phoenix\",\"event\":\"heartbeat\",\"payload\":{},\"ref\":\"" + ref + "\",\"join_ref\":null}");
+}
+
+//+------------------------------------------------------------------+
+//| Builds a compact, ephemeral mark-to-market snapshot. The durable  |
+//| positions table remains authoritative for identity/status/actions; |
+//| this payload only refreshes fields that can change between syncs. |
+//+------------------------------------------------------------------+
+string EAStream_BuildPositionState()
+{
+   string positions = "[";
+   int appended = 0;
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+
+      if(appended > 0) positions += ",";
+      appended++;
+      double sl = PositionGetDouble(POSITION_SL);
+      double tp = PositionGetDouble(POSITION_TP);
+      positions +=
+         "{\"mt5_ticket\":" + IntegerToString((long)ticket) + ","
+         "\"volume\":" + DoubleToString(PositionGetDouble(POSITION_VOLUME), 8) + ","
+         "\"current_price\":" + DoubleToString(PositionGetDouble(POSITION_PRICE_CURRENT), 8) + ","
+         "\"unrealized_pl\":" + DoubleToString(PositionGetDouble(POSITION_PROFIT), 2) + ","
+         "\"sl\":" + (sl > 0.0 ? DoubleToString(sl, 8) : "null") + ","
+         "\"tp\":" + (tp > 0.0 ? DoubleToString(tp, 8) : "null") + "}";
+   }
+   return "{\"positions\":" + positions + "]}";
+}
+
+//+------------------------------------------------------------------+
+//| Broadcast at most once per configured interval and only when the  |
+//| aggregate position state changed. One message covers every open   |
+//| position, so usage does not multiply with position count.         |
+//+------------------------------------------------------------------+
+void EAStream_MaybeBroadcastPositionState()
+{
+   if(!g_ews_joined) return;
+   datetime now = TimeCurrent();
+   if(now > g_ews_position_stream_requested_until) return;
+   if(now - g_ews_last_position_stream_check < g_ews_position_stream_seconds) return;
+   g_ews_last_position_stream_check = now;
+
+   string state_json = EAStream_BuildPositionState();
+   if(state_json == g_ews_last_position_state) return;
+
+   string ref = IntegerToString(g_ews_ref++);
+   string topic = "realtime:" + g_ews_topic;
+   string message =
+      "{\"topic\":\"" + EASync_JsonEscape(topic) + "\","
+      "\"event\":\"broadcast\",\"payload\":{"
+      "\"type\":\"broadcast\",\"event\":\"position_state\","
+      "\"payload\":" + state_json + "},"
+      "\"ref\":\"" + ref + "\",\"join_ref\":\"" + g_ews_join_ref + "\"}";
+   EAStream_SendText(message);
+   g_ews_last_position_state = state_json;
 }
 
 //+------------------------------------------------------------------+
@@ -2119,6 +2186,19 @@ void EAStream_HandleFrame(int opcode, const uchar &payload[], int payload_len)
    {
       string text = CharArrayToString(payload, 0, payload_len, CP_UTF8);
       if(StringFind(text, "\"event\":\"broadcast\"") >= 0 &&
+         StringFind(text, "position_stream_subscribe") >= 0)
+      {
+         // Dashboard leases are renewed every 15s. If every viewer leaves,
+         // broadcasts stop automatically after this short grace period.
+         bool stream_was_inactive = TimeLocal() > g_ews_position_stream_requested_until;
+         g_ews_position_stream_requested_until = TimeLocal() + 30;
+         if(stream_was_inactive)
+         {
+            g_ews_last_position_state = "";
+            g_ews_last_position_stream_check = 0;
+         }
+      }
+      else if(StringFind(text, "\"event\":\"broadcast\"") >= 0 &&
          StringFind(text, "command_available") >= 0)
       {
          Print("EAStream: command broadcast received — reconciling immediately");
@@ -2128,6 +2208,8 @@ void EAStream_HandleFrame(int opcode, const uchar &payload[], int payload_len)
               StringFind(text, "\"status\":\"ok\"") >= 0 && !g_ews_joined)
       {
          g_ews_joined = true;
+         g_ews_last_position_state = "";
+         g_ews_last_position_stream_check = 0;
          EASync_SetPollSeconds(g_ews_healthy_poll_seconds);
          Print("EAStream: terminal wake-up channel joined");
          EASync_Run(); // repair anything queued before/during the join
@@ -2233,7 +2315,7 @@ void EAStream_Connect()
    // handshake function again on top of that is a redundant negotiation and
    // is exactly what produced the observed "SocketTlsHandshake ... failed,
    // error 5274 (ERR_NETSOCKET_HANDSHAKE_FAILED)" on every single attempt,
-   // meaning this hint-only push channel never once connected. The
+   // meaning this Realtime channel never once connected. The
    // SocketTlsSend/SocketTlsReadAvailable calls further below are unchanged
    // and correct -- they already work directly on a freshly SocketConnect()'d
    // port-443 socket with no explicit handshake, exactly like MetaQuotes'
@@ -2332,7 +2414,7 @@ void EAStream_PumpHandshake()
    }
    // Known limitation: Sec-WebSocket-Accept is NOT cryptographically verified.
    // Any HTTP 101 response is accepted. This is a first-party TLS endpoint and
-   // a hint-only channel, so there is no correctness or security impact.
+   // ephemeral-only channel, so durable correctness is unaffected.
 
    int body_start = term_pos + 4;
    int leftover = g_ews_hs_len - body_start;
@@ -2359,7 +2441,8 @@ void EAStream_PumpHandshake()
 //+------------------------------------------------------------------+
 void EAStream_Init(const string base_url, const string api_key,
                    const int fallback_poll_seconds = 10,
-                   const int healthy_poll_seconds = 60)
+                   const int healthy_poll_seconds = 60,
+                   const int position_stream_seconds = 2)
 {
    g_ews_base_url = base_url;
    g_ews_api_key  = api_key;
@@ -2368,9 +2451,14 @@ void EAStream_Init(const string base_url, const string api_key,
    g_ews_fallback_poll_seconds = (fallback_poll_seconds > 0) ? fallback_poll_seconds : 10;
    g_ews_healthy_poll_seconds = (healthy_poll_seconds > g_ews_fallback_poll_seconds)
       ? healthy_poll_seconds : 60;
+   g_ews_position_stream_seconds = (position_stream_seconds > 0) ? position_stream_seconds : 2;
    EASync_SetPollSeconds(g_ews_fallback_poll_seconds);
    g_ews_state    = EWS_STATE_DISCONNECTED;
    g_ews_joined   = false;
+   g_ews_join_ref = "";
+   g_ews_last_position_stream_check = 0;
+   g_ews_position_stream_requested_until = 0;
+   g_ews_last_position_state = "";
    g_ews_last_attempt = 0; // forces an immediate first connect attempt
    g_ews_backoff_seconds = 2;
    MathSrand((int)TimeLocal());
@@ -2450,6 +2538,8 @@ void EAStream_OnTimer()
          EAStream_SendHeartbeat();
          g_ews_last_ping_sent = TimeCurrent();
       }
+
+      EAStream_MaybeBroadcastPositionState();
 
    }
 }
@@ -3013,10 +3103,11 @@ void PriceReporter_OnTimer()
 input string SupabaseProjectUrl   = "https://qxlfnscmrhwfcpattqxa.supabase.co"; // Backend URL — leave as-is
 input string TerminalApiKey       = "";  // Paste your terminal's mtk_live_... key here
 input int    SyncFallbackPollSeconds = 5;  // reconciliation cadence while Realtime is unavailable
-input int    SyncHealthyPollSeconds  = 10; // live account/position snapshot cadence while Realtime is joined
+input int    SyncHealthyPollSeconds  = 30; // durable account/position snapshot cadence while Realtime is joined
+input int    PositionStreamSeconds   = 2;  // ephemeral mark-to-market broadcast cadence; sends only changed state
 input int    CalendarSyncMinutes  = 15;  // Economic calendar push interval
 input bool   EnableCalendarSync   = true; // Turn off only if this terminal should not push calendar data
-input bool   EnableWebSocketPush  = true; // Persistent WebSocket for near-instant command pickup (hint-only; polling always keeps running as the fallback)
+input bool   EnableWebSocketPush  = true; // Persistent WebSocket for command wake-ups and ephemeral live position state; durable polling remains the fallback
 input int    PriceScanSeconds     = 5;   // local scan only; network sends occur only for newly closed bars
 input int    SymbolMapRefreshHours = 24;  // Full broker-symbol rescan interval (also runs once on startup and on-demand from the dashboard)
 
@@ -3041,7 +3132,7 @@ int OnInit()
 
    if(EnableWebSocketPush)
       EAStream_Init(SupabaseProjectUrl, TerminalApiKey,
-                    SyncFallbackPollSeconds, SyncHealthyPollSeconds);
+                    SyncFallbackPollSeconds, SyncHealthyPollSeconds, PositionStreamSeconds);
 
    SymbolMap_Init(SupabaseProjectUrl, TerminalApiKey, SymbolMapRefreshHours);
 
