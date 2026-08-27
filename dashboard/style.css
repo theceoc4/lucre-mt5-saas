@@ -2360,6 +2360,12 @@ body {
   background: var(--color-text);
   box-shadow: 0 0 0 2px var(--color-surface-2);
   transform: translate(-50%, -50%);
+  transition: left 420ms ease;
+}
+
+.pair-strength.is-stale .pair-strength-bar,
+.pair-strength.is-stale .pair-strength-pending {
+  opacity: 0.62;
 }
 
 .pair-strength-labels {
@@ -2373,6 +2379,11 @@ body {
 
 .pair-strength-labels span:last-child {
   color: var(--color-positive);
+}
+
+.pair-strength-labels .pair-strength-score {
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
 }
 
 .pair-auto-row {

@@ -7,6 +7,19 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.26 — Live layered trend-strength meters (2026-08-27)
+
+- Pairs cards now render a signed `-100` to `+100` trend score instead of the
+  placeholder. The label exposes strength and market regime, while hovering
+  shows the contributing timeframe scores.
+- Meter values arrive over the terminal's existing Supabase Realtime channel.
+  The dashboard performs one initial read but adds no per-minute browser poll.
+- The backend combines EMA structure/slope, RSI, directional movement, ADX,
+  price-path linearity, persistence, and ATR shock detection across M1, M5,
+  M15, H1, H4, and D1 closed candles.
+- Indicator checkpoints advance from each newly closed candle. Full candle
+  history is read only during first warmup or a future model-version change.
+
 ## v1.0.25 — System-wide symbol visibility and one-click orders (2026-08-27)
 
 - The top-nav gear now opens a terminal-scoped symbol manager. It lists every

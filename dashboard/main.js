@@ -28,6 +28,7 @@ const state = {
   pendingSignals: [],
   symbolSettings: [],
   symbolMappings: [],
+  trendStates: [],
   calendarEvents: [],
   scenarioStats: [],
   activeTab: 'overview',
@@ -1120,6 +1121,18 @@ function startRealtime(terminalId) {
     )
     .on(
       'postgres_changes',
+      { event: '*', schema: 'public', table: 'symbol_trend_state', filter: `terminal_id=eq.${terminalId}` },
+      (payload) => {
+        const next = payload.new;
+        if (!next?.symbol || state.activeTerminalId !== terminalId) return;
+        const index = state.trendStates.findIndex((item) => item.symbol === next.symbol);
+        if (index >= 0) state.trendStates[index] = next;
+        else state.trendStates.push(next);
+        if (!viewPairs.hidden) renderPairsView();
+      }
+    )
+    .on(
+      'postgres_changes',
       { event: '*', schema: 'public', table: 'signal_deliveries', filter: `terminal_id=eq.${terminalId}` },
       () => loadPendingSignals()
     )
@@ -1324,6 +1337,7 @@ async function loadTerminals() {
     loadPositions(),
     loadPendingSignals(),
     loadSymbolSettings(),
+    loadTrendStates(),
     loadScenarioStats(),
   ]);
 }
@@ -1382,6 +1396,7 @@ terminalSelect?.addEventListener('change', async (e) => {
     loadPositions(),
     loadPendingSignals(),
     loadSymbolSettings(),
+    loadTrendStates(),
     loadScenarioStats(),
   ]);
 });
@@ -1704,6 +1719,24 @@ function getAvailableSymbols() {
   return getResolvedSymbols().filter(({ symbol }) => bySymbol.get(symbol)?.enabled !== false);
 }
 
+async function loadTrendStates() {
+  if (!state.activeTerminalId) {
+    state.trendStates = [];
+    if (!viewPairs.hidden) renderPairsView();
+    return;
+  }
+  const { data, error } = await supabase
+    .from('symbol_trend_state')
+    .select('symbol, score, direction, strength, confidence, regime, timeframe_scores, source_bar_time, computed_at')
+    .eq('terminal_id', state.activeTerminalId);
+  if (error) {
+    console.error('loadTrendStates error', error);
+    return;
+  }
+  state.trendStates = data || [];
+  if (!viewPairs.hidden) renderPairsView();
+}
+
 async function loadSymbolSettings() {
   // Only scanned and broker-resolved symbols are configurable or visible.
   const resolvedSymbols = getResolvedSymbols().map((s) => s.symbol);
@@ -1827,6 +1860,35 @@ function computeSymbolPerformance(symbol) {
   return { count: trades.length, winRate: Math.round((wins / trades.length) * 100), totalPl };
 }
 
+function trendMeterPresentation(symbol) {
+  const trend = state.trendStates.find((item) => item.symbol === symbol);
+  if (!trend || trend.regime === 'insufficient_data') {
+    return { score: 0, position: 50, status: 'Warming up', detail: 'Waiting for at least 60 closed candles.' };
+  }
+  const score = Math.max(-100, Math.min(100, Number(trend.score) || 0));
+  const sourceTime = trend.source_bar_time ? new Date(trend.source_bar_time).getTime() : 0;
+  const stale = !sourceTime || Date.now() - sourceTime > 5 * 60 * 1000;
+  const words = {
+    volatility_shock: 'Volatility shock',
+    trending: 'Trending',
+    ranging: 'Ranging',
+    transition: 'Transition',
+  };
+  const direction = trend.direction === 'bullish' ? 'bullish' : trend.direction === 'bearish' ? 'bearish' : 'neutral';
+  const strength = trend.strength === 'neutral' ? 'Neutral' : `${trend.strength[0].toUpperCase()}${trend.strength.slice(1)} ${direction}`;
+  const status = stale ? `${strength} · Market data paused` : `${strength} · ${words[trend.regime] || 'Transition'}`;
+  const breakdown = Object.entries(trend.timeframe_scores || {})
+    .map(([timeframe, value]) => `${timeframe} ${Number(value?.score) >= 0 ? '+' : ''}${Math.round(Number(value?.score) || 0)}`)
+    .join(' · ');
+  return {
+    score,
+    position: (score + 100) / 2,
+    status,
+    detail: breakdown || 'Layered EMA, RSI, DMI/ADX, persistence and volatility regime score.',
+    stale,
+  };
+}
+
 async function handleQuickOrder(symbol, side, btn) {
   if (!state.activeTerminalId) return;
   const terminal = state.terminals.find((t) => t.id === state.activeTerminalId);
@@ -1879,6 +1941,7 @@ function renderPairsView() {
   pairGrid.innerHTML = visibleSettings
     .map((s) => {
       const perf = computeSymbolPerformance(s.symbol);
+      const trend = trendMeterPresentation(s.symbol);
       const plColor =
         perf.totalPl > 0 ? 'var(--color-positive)' : perf.totalPl < 0 ? 'var(--color-negative)' : 'var(--color-text-muted)';
       const perfText =
@@ -1895,13 +1958,13 @@ function renderPairsView() {
           </label>
         </div>
 
-        <div class="pair-strength" aria-label="BUY versus SELL strength placeholder">
+        <div class="pair-strength${trend.stale ? ' is-stale' : ''}" aria-label="BUY versus SELL strength: ${trend.status}" title="${trend.detail}">
           <div class="pair-strength-heading">
             <span class="pair-card-section-label">BUY vs SELL strength</span>
-            <span class="pair-strength-pending">Awaiting signal</span>
+            <span class="pair-strength-pending">${trend.status}</span>
           </div>
-          <div class="pair-strength-bar" aria-hidden="true"><span></span></div>
-          <div class="pair-strength-labels"><span>SELL</span><span>BUY</span></div>
+          <div class="pair-strength-bar" role="meter" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="${Math.round(trend.score)}"><span style="left:${trend.position}%"></span></div>
+          <div class="pair-strength-labels"><span>SELL</span><span class="pair-strength-score">${trend.score > 0 ? '+' : ''}${Math.round(trend.score)}</span><span>BUY</span></div>
         </div>
 
         <div>
@@ -3315,6 +3378,7 @@ function resetDashboardState() {
   state.pendingSignals = [];
   state.symbolSettings = [];
   state.symbolMappings = [];
+  state.trendStates = [];
   state.calendarEvents = [];
   state.scenarioStats = [];
   setActiveTab('overview');

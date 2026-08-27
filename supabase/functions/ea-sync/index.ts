@@ -685,7 +685,7 @@ Deno.serve(async (req: Request) => {
     .eq("terminal_id", terminal.id);
   if (settingsError) return jsonResponse({ error: "symbol_settings_fetch_failed", detail: settingsError.message }, 500);
 
-  const supportedTimeframes = new Set(["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"]);
+  const supportedTimeframes = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"];
   const settingsBySymbol = new Map(
     (symbolSettings ?? []).map((setting) => [setting.symbol, setting]),
   );
@@ -705,15 +705,13 @@ Deno.serve(async (req: Request) => {
     bound_symbols: (mappings ?? []).map((m) => ({
       canonical_symbol: m.canonical_symbol,
       broker_symbol: m.broker_symbol,
-      // Preserve the historical M5 feed until a user saves explicit pair
-      // settings. Disabled pairs report no bars but remain mapped for orders.
+      // Visibility now controls collection system-wide. Every visible symbol
+      // reports the standard timeframe set; the removed timeframe picker must
+      // not silently stop market-data ingestion when its saved array is empty.
       report_timeframes: (() => {
         const setting = settingsBySymbol.get(m.canonical_symbol);
-        if (!setting) return ["M5"];
-        if (!setting.enabled) return [];
-        return Array.isArray(setting.timeframes)
-          ? setting.timeframes.filter((timeframe: string) => supportedTimeframes.has(timeframe))
-          : [];
+        if (setting && !setting.enabled) return [];
+        return supportedTimeframes;
       })(),
     })),
     force_symbol_rescan: terminal.force_symbol_rescan ?? false,

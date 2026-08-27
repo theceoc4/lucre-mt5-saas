@@ -14,6 +14,19 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { authenticateTerminal } from "./_shared/auth.ts";
+import {
+  advanceTrendIndicatorState,
+  computeCompositeTrend,
+  initializeTrendIndicatorState,
+  TREND_BAR_LIMIT,
+  TREND_MODEL_VERSION,
+  TREND_TIMEFRAME_WEIGHTS,
+  type TrendIndicatorState,
+  type TimeframeTrend,
+  type TrendBar,
+} from "./_shared/trend-strength.ts";
+
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -48,6 +61,120 @@ interface IncomingSymbolBars {
   timeframe?: string; // omitted by pre-v1.0.22 EAs, meaning M5
   source_digits?: number;
   bars: IncomingBar[];
+}
+
+async function updateTrendStates(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  terminalId: string,
+  rows: Array<{ symbol: string; timeframe: string; bar_time: string; open: number; high: number; low: number; close: number; volume: number }>,
+): Promise<{ updated: number; warnings: string[] }> {
+  const uniqueSeries = [...new Map(rows
+    .filter((row) => row.timeframe in TREND_TIMEFRAME_WEIGHTS)
+    .map((row) => [`${row.symbol}:${row.timeframe}`, row])).values()];
+  if (uniqueSeries.length === 0) return { updated: 0, warnings: [] };
+
+  const symbols = [...new Set(uniqueSeries.map((series) => series.symbol))];
+  const { data: calculationRows, error: calculationError } = await admin
+    .from("symbol_trend_calculation_state")
+    .select("symbol,timeframe,indicator_state,timeframe_result,model_version")
+    .eq("terminal_id", terminalId)
+    .in("symbol", symbols);
+  if (calculationError) {
+    return { updated: 0, warnings: [`Trend calculation-state lookup failed: ${calculationError.message}`] };
+  }
+
+  const calculations = new Map<string, { indicator?: TrendIndicatorState; result?: TimeframeTrend; version?: string }>();
+  const nextBySymbol = new Map<string, Record<string, TimeframeTrend>>();
+  for (const row of calculationRows ?? []) {
+    const symbol = String(row.symbol);
+    const timeframe = String(row.timeframe);
+    calculations.set(`${symbol}:${timeframe}`, {
+      indicator: row.indicator_state as TrendIndicatorState,
+      result: row.timeframe_result as TimeframeTrend,
+      version: String(row.model_version),
+    });
+    if (row.timeframe_result) {
+      if (!nextBySymbol.has(symbol)) nextBySymbol.set(symbol, {});
+      nextBySymbol.get(symbol)![timeframe] = row.timeframe_result as TimeframeTrend;
+    }
+  }
+
+  const warnings: string[] = [];
+  const calculationUpserts: Record<string, unknown>[] = [];
+  for (const { symbol, timeframe } of uniqueSeries) {
+    const key = `${symbol}:${timeframe}`;
+    const prior = calculations.get(key);
+    const incomingBars: TrendBar[] = rows.filter((row) => row.symbol === symbol && row.timeframe === timeframe)
+      .map((row) => ({
+        bar_time: row.bar_time, open: row.open, high: row.high, low: row.low,
+        close: row.close, volume: row.volume,
+      }));
+    let computed = prior?.version === TREND_MODEL_VERSION && prior.indicator
+      ? advanceTrendIndicatorState(timeframe, prior.indicator, incomingBars, prior.result?.regime)
+      : null;
+
+    // A series is warmed once (or after a model version change), then every
+    // later update advances solely from the candle(s) in the EA request.
+    if (!computed) {
+      const { data, error } = await admin.from("price_bars")
+        .select("bar_time,open,high,low,close,volume")
+        .eq("terminal_id", terminalId).eq("symbol", symbol).eq("timeframe", timeframe)
+        .order("bar_time", { ascending: false }).limit(TREND_BAR_LIMIT);
+      if (error) {
+        warnings.push(`${symbol} ${timeframe} trend warmup failed: ${error.message}`);
+        continue;
+      }
+      const history: TrendBar[] = [...(data ?? [])].reverse().map((bar) => ({
+        bar_time: String(bar.bar_time), open: Number(bar.open), high: Number(bar.high),
+        low: Number(bar.low), close: Number(bar.close), volume: Number(bar.volume),
+      }));
+      computed = initializeTrendIndicatorState(timeframe, history, prior?.result?.regime);
+    }
+    if (!computed) continue; // fewer than 60 closed candles: still warming up
+    if (!nextBySymbol.has(symbol)) nextBySymbol.set(symbol, {});
+    nextBySymbol.get(symbol)![timeframe] = computed.result;
+    calculationUpserts.push({
+      terminal_id: terminalId, symbol, timeframe,
+      indicator_state: computed.indicatorState,
+      timeframe_result: computed.result,
+      source_bar_time: computed.result.source_bar_time,
+      model_version: TREND_MODEL_VERSION,
+      updated_at: new Date().toISOString(),
+    });
+  }
+
+  if (calculationUpserts.length > 0) {
+    const { error } = await admin.from("symbol_trend_calculation_state")
+      .upsert(calculationUpserts, { onConflict: "terminal_id,symbol,timeframe" });
+    if (error) warnings.push(`Trend calculation-state upsert failed: ${error.message}`);
+  }
+
+  const now = new Date().toISOString();
+  const payload = symbols.map((symbol) => {
+    const timeframeScores = nextBySymbol.get(symbol) ?? {};
+    const composite = computeCompositeTrend(timeframeScores);
+    return {
+      terminal_id: terminalId,
+      symbol,
+      score: composite.score,
+      direction: composite.direction,
+      strength: composite.strength,
+      confidence: composite.confidence,
+      regime: composite.regime,
+      timeframe_scores: timeframeScores,
+      components: composite.components,
+      source_bar_times: composite.source_bar_times,
+      source_bar_time: composite.source_bar_time,
+      model_version: TREND_MODEL_VERSION,
+      computed_at: now,
+    };
+  });
+  const { error: upsertError } = await admin
+    .from("symbol_trend_state")
+    .upsert(payload, { onConflict: "terminal_id,symbol" });
+  if (upsertError) warnings.push(`Trend state upsert failed: ${upsertError.message}`);
+  return { updated: upsertError ? 0 : payload.length, warnings };
 }
 
 const SUPPORTED_TIMEFRAMES = new Set(["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"]);
@@ -197,5 +324,14 @@ Deno.serve(async (req: Request) => {
     });
 
   if (upsertError) return jsonResponse({ error: "upsert_failed", detail: upsertError.message }, 500);
-  return jsonResponse({ upserted: rows.length, warnings });
+
+  // Reuse this authenticated minute-level ingestion request instead of adding
+  // a cron sweep or browser poll. Only affected series are recalculated, then
+  // one compact current-state row is upserted per affected symbol.
+  EdgeRuntime.waitUntil(
+    updateTrendStates(admin, terminal.id, rows).then((result) => {
+      if (result.warnings.length) console.warn("Trend update warnings", result.warnings);
+    }).catch((error) => console.error("Trend update failed", error)),
+  );
+  return jsonResponse({ upserted: rows.length, trend_update_scheduled: true, warnings });
 });
