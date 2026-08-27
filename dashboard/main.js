@@ -1993,8 +1993,8 @@ function renderPairsView() {
         </div>
 
         <div class="pair-actions">
-          <button type="button" class="btn-buy" data-quick-buy="${s.symbol}">Buy</button>
           <button type="button" class="btn-sell" data-quick-sell="${s.symbol}">Sell</button>
+          <button type="button" class="btn-buy" data-quick-buy="${s.symbol}">Buy</button>
         </div>
       </div>`;
     })

@@ -11,7 +11,7 @@ was synchronized from production on **2026-08-21**.
 | Component | Location in repo | Live location | Version |
 |---|---|---|---|
 | Backend (Supabase) | [`supabase/`](./supabase) | [qxlfnscmrhwfcpattqxa.supabase.co](https://qxlfnscmrhwfcpattqxa.supabase.co) | 54 migrations / 14 functions locally |
-| Dashboard (frontend) | [`dashboard/`](./dashboard) | [mt5dashboardui.vercel.app](https://mt5dashboardui.vercel.app) | v1.0.26 |
+| Dashboard (frontend) | [`dashboard/`](./dashboard) | [mt5dashboardui.vercel.app](https://mt5dashboardui.vercel.app) | v1.0.27 |
 | EA (MetaTrader 5) | [`ea/`](./ea) | Runs on MT5 terminal / VPS | v1.0.24 candidate (single-file) |
 
 ## Important caveats

@@ -7,6 +7,11 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.27 — Pair-card action alignment (2026-08-27)
+
+- Pair-card quick-order actions now place SELL on the bearish left side and
+  BUY on the bullish right side, matching the trend-strength meter above.
+
 ## v1.0.26 — Live layered trend-strength meters (2026-08-27)
 
 - Pairs cards now render a signed `-100` to `+100` trend score instead of the
