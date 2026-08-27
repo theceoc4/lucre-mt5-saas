@@ -3,7 +3,7 @@
 Live deployment: [https://mt5dashboardui.vercel.app](https://mt5dashboardui.vercel.app)
 
 Vercel team `lucre1`, project `mt5_dashboard_ui`. Confirmed version at time of
-snapshot: **v1.0.15**.
+snapshot: **v1.0.25**.
 
 Static frontend (no build step) that talks directly to the Supabase project
 described in `../backend/README.md` using the public anon key embedded in

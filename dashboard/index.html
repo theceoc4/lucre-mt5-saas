@@ -203,50 +203,21 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
-    <p class="modal-sub">Places a market order on the active terminal through its Expert Advisor. Subject to this terminal's lot size, open position, and daily loss caps.</p>
+    <p class="modal-sub">Choose a visible symbol and lot size, then send a market order through the active terminal.</p>
     <form id="form-new-order" novalidate>
-      <div class="field-row">
-        <div class="field">
-          <label for="order-symbol">Symbol</label>
-          <select id="order-symbol" name="symbol" required></select>
-        </div>
-        <div class="field">
-          <label for="order-side">Side</label>
-          <select id="order-side" name="side">
-            <option value="buy">Buy</option>
-            <option value="sell">Sell</option>
-          </select>
-        </div>
+      <div class="field">
+        <label for="order-symbol">Symbol</label>
+        <select id="order-symbol" name="symbol" required></select>
       </div>
-      <div class="field-row">
-        <div class="field">
-          <label for="order-volume">Volume (lots)</label>
-          <input id="order-volume" name="volume" type="number" step="0.01" min="0.01" placeholder="0.10" required />
-        </div>
-        <div class="field">
-          <label for="order-deviation">Max deviation (points)</label>
-          <input id="order-deviation" name="max_deviation_points" type="number" step="1" min="0" placeholder="20" />
-        </div>
-      </div>
-      <div class="field-row">
-        <div class="field">
-          <label for="order-sl">Stop loss price (optional)</label>
-          <input id="order-sl" name="sl" type="number" step="any" placeholder="Price" />
-        </div>
-        <div class="field">
-          <label for="order-sl-pips">Stop loss distance (pips)</label>
-          <input id="order-sl-pips" name="sl_pips" type="number" step="any" min="0" placeholder="Or use pips" />
-        </div>
-      </div>
-      <div class="field-row">
-        <div class="field">
-          <label for="order-tp">Take profit (optional)</label>
-          <input id="order-tp" name="tp" type="number" step="any" placeholder="Price" />
-        </div>
-        <p class="field-hint">Optional. Use either a price or a pip distance, not both. Stopless manual trades are tracked separately from R-based analytics.</p>
+      <div class="field">
+        <label for="order-volume">Lot size</label>
+        <input id="order-volume" name="volume" type="number" step="0.01" min="0.01" value="0.01" required />
       </div>
       <p class="auth-message" id="new-order-message" role="status"></p>
-      <button class="btn-accent auth-submit" type="submit">Place order</button>
+      <div class="one-click-order-actions">
+        <button class="btn-buy" type="submit" data-order-side="buy">BUY</button>
+        <button class="btn-sell" type="submit" data-order-side="sell">SELL</button>
+      </div>
     </form>
   </div>
 </div>
@@ -302,6 +273,35 @@
   </div>
 </div>
 
+<!-- ============ Platform settings modal ============ -->
+<div class="modal-overlay" id="modal-platform-settings" aria-hidden="true">
+  <div class="modal-card modal-card-wide">
+    <div class="modal-head">
+      <h3>Settings</h3>
+      <button class="icon-btn" type="button" data-modal-close aria-label="Close">×</button>
+    </div>
+    <p class="modal-sub">Choose which symbols are visible across this terminal. Hidden symbols stay mapped and can be turned back on here at any time.</p>
+
+    <section class="symbol-settings-section" aria-labelledby="symbol-settings-title">
+      <div class="symbol-settings-heading">
+        <div>
+          <h4 id="symbol-settings-title">Symbols</h4>
+          <p class="desc" id="symbol-mapping-status">Connect an account to see broker symbol mapping.</p>
+        </div>
+        <button type="button" class="btn-secondary btn-xs" id="button-rescan-symbols" data-testid="button-rescan-symbols" disabled>Scan terminal</button>
+      </div>
+
+      <form id="form-symbol-search" class="symbol-settings-search">
+        <input type="search" id="symbol-settings-search" data-testid="input-add-pair" placeholder="Search visible symbols or pair a new one" autocomplete="off" autocapitalize="characters" maxlength="20" />
+        <button type="submit" class="btn-primary btn-xs" id="button-pair-symbol" data-testid="button-submit-pair" hidden>Pair symbol</button>
+      </form>
+      <p class="field-hint symbol-settings-status" id="symbol-settings-status" role="status" hidden></p>
+      <div class="symbol-settings-list" id="symbol-settings-list"></div>
+      <div id="symbol-mapping-body"></div>
+    </section>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-account-settings" aria-hidden="true">
   <div class="modal-card modal-card-wide">
     <div class="modal-head"><h3>Account & profile</h3><button class="icon-btn" type="button" data-modal-close aria-label="Close">×</button></div>
@@ -348,7 +348,7 @@
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" class="nav-menu-icon-open"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" class="nav-menu-icon-close" hidden><path d="M6 6l12 12M18 6L6 18"/></svg>
         </button>
-        <button class="icon-btn" aria-label="Settings" data-testid="button-settings">
+        <button class="icon-btn" id="button-settings" aria-label="Settings" data-testid="button-settings">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.64 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.64a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.36 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
         </button>
         <button class="icon-btn" aria-label="Notifications, 1 unread" data-testid="button-notifications">
@@ -688,27 +688,7 @@
     <div class="view" id="view-pairs" hidden>
       <div class="pairs-view-head">
         <h2>Pairs</h2>
-        <p class="desc">Toggle signal delivery per pair, set timeframes and auto SL/TP, and fire quick manual orders.</p>
-      </div>
-
-      <div class="card card-pad symbol-mapping-card" id="symbol-mapping-card">
-        <div class="symbol-mapping-head">
-          <div>
-            <h3>Broker symbol mapping</h3>
-            <p class="desc" id="symbol-mapping-status">Connect an account to see broker symbol mapping.</p>
-          </div>
-          <div class="symbol-mapping-actions">
-            <button type="button" class="btn-icon" id="button-add-pair" data-testid="button-add-pair" disabled aria-label="Add a new pair">+</button>
-            <button type="button" class="btn-secondary" id="button-rescan-symbols" data-testid="button-rescan-symbols" disabled>Rescan Symbols</button>
-          </div>
-        </div>
-        <form id="add-pair-row" class="add-pair-row" hidden>
-          <input type="text" id="add-pair-input" data-testid="input-add-pair" placeholder="e.g. USDSEK" autocomplete="off" autocapitalize="characters" maxlength="20" />
-          <button type="submit" class="btn-primary btn-xs" id="button-submit-pair" data-testid="button-submit-pair">Submit</button>
-          <button type="button" class="btn-secondary btn-xs" id="button-cancel-pair" data-testid="button-cancel-pair">Cancel</button>
-        </form>
-        <p class="field-hint" id="add-pair-status" hidden></p>
-        <div id="symbol-mapping-body"></div>
+        <p class="desc">Monitor enabled pairs, configure quick-order protection, and place manual trades.</p>
       </div>
 
       <div class="pair-grid" id="pair-grid"></div>

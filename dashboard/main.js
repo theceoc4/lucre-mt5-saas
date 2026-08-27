@@ -35,33 +35,6 @@ const state = {
   plFilter: { timeframe: '30d', source: 'all' },
 };
 
-// Bootstrap pair universe — mirrors the backend's full canonical symbol
-// list (supabase/functions/_shared/canonical-symbols.ts). Used ONLY as a
-// pre-scan fallback (before a terminal has ever reported its broker symbol
-// universe via SymbolMap.mqh) so the Pairs page has something to configure.
-// Once symbol_mappings rows exist for a terminal, getAvailableSymbols()
-// below takes over and reflects exactly what that broker actually supports
-// — v1.0.10 fix: this list used to be hardcoded to 14 FX/metal pairs, which
-// both under-represented the Pairs page (no indices/crypto) and let the
-// New Position modal accept any free-typed symbol, causing
-// "symbol_unavailable" errors outside the Pairs page.
-const SYMBOL_UNIVERSE = [
-  // FX majors
-  'EURUSD', 'GBPUSD', 'AUDUSD', 'NZDUSD', 'USDCAD', 'USDCHF', 'USDJPY',
-  // FX crosses
-  'EURGBP', 'EURJPY', 'EURCHF', 'EURCAD', 'EURAUD', 'EURNZD',
-  'GBPJPY', 'GBPCHF', 'GBPCAD', 'GBPAUD', 'GBPNZD',
-  'AUDJPY', 'AUDCHF', 'AUDCAD', 'AUDNZD',
-  'NZDJPY', 'NZDCHF', 'NZDCAD', 'CADJPY', 'CADCHF', 'CHFJPY',
-  // Metals
-  'XAUUSD', 'XAGUSD', 'XPTUSD', 'XPDUSD',
-  // Indices
-  'US30', 'US500', 'USTEC', 'UK100', 'GER40', 'FRA40', 'EU50', 'JP225', 'AUS200', 'HK50',
-  // Crypto
-  'BTCUSD', 'ETHUSD', 'LTCUSD', 'XRPUSD', 'BCHUSD', 'ADAUSD', 'SOLUSD', 'DOGEUSD', 'DOTUSD', 'BNBUSD',
-];
-const TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
-
 let volumeChartInstance = null;
 let plChartInstance = null;
 // Realtime keeps positions/signal queue live while a terminal is active;
@@ -130,11 +103,11 @@ const viewDashboard = document.getElementById('view-dashboard');
 const viewPairs = document.getElementById('view-pairs');
 const pairGrid = document.getElementById('pair-grid');
 const buttonRescanSymbols = document.getElementById('button-rescan-symbols');
-const buttonAddPair = document.getElementById('button-add-pair');
-const addPairRow = document.getElementById('add-pair-row');
-const addPairInput = document.getElementById('add-pair-input');
-const buttonCancelPair = document.getElementById('button-cancel-pair');
-const addPairStatus = document.getElementById('add-pair-status');
+const symbolSearchForm = document.getElementById('form-symbol-search');
+const symbolSearchInput = document.getElementById('symbol-settings-search');
+const buttonPairSymbol = document.getElementById('button-pair-symbol');
+const symbolSettingsStatus = document.getElementById('symbol-settings-status');
+const symbolSettingsList = document.getElementById('symbol-settings-list');
 const symbolMappingStatus = document.getElementById('symbol-mapping-status');
 const symbolMappingBody = document.getElementById('symbol-mapping-body');
 const plTimeframeSelect = document.getElementById('pl-timeframe-select');
@@ -248,6 +221,16 @@ async function accountManagement(action, body = {}) {
 
 document.getElementById('button-account-settings')?.addEventListener('click', () => {
   window.LucreUI?.openModal('modal-account-settings');
+});
+document.getElementById('button-settings')?.addEventListener('click', () => {
+  if (symbolSearchInput) symbolSearchInput.value = '';
+  if (symbolSettingsStatus) {
+    symbolSettingsStatus.hidden = true;
+    symbolSettingsStatus.textContent = '';
+  }
+  renderSymbolSettingsList();
+  renderSymbolMappingPanel();
+  window.LucreUI?.openModal('modal-platform-settings');
 });
 document.getElementById('form-account-profile')?.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -421,7 +404,7 @@ function populateStrategySymbolSelect() {
   const remaining = available.filter((s) => !strategySelectedSymbols.includes(s.symbol));
 
   if (available.length === 0) {
-    checklist.innerHTML = '<p class="symbol-multiselect-empty">No mapped pairs yet — bind one on the Pairs page first</p>';
+    checklist.innerHTML = '<p class="symbol-multiselect-empty">No visible pairs yet — turn one on in Settings first</p>';
     toggle.disabled = true;
     toggleLabel.textContent = 'No pairs available';
     return;
@@ -806,7 +789,7 @@ function populateOrderSymbolSelect() {
   const available = getAvailableSymbols();
 
   if (available.length === 0) {
-    select.innerHTML = '<option value="">No mapped symbols yet — rescan on the Pairs page</option>';
+    select.innerHTML = '<option value="">No visible symbols — manage them in Settings</option>';
     select.disabled = true;
     return;
   }
@@ -828,6 +811,7 @@ document.getElementById('button-new-order')?.addEventListener('click', () => {
     return;
   }
   document.getElementById('form-new-order').reset();
+  document.getElementById('order-volume').value = '0.01';
   document.getElementById('new-order-message').textContent = '';
   populateOrderSymbolSelect();
   window.LucreUI.openModal('modal-new-order');
@@ -837,11 +821,23 @@ document.getElementById('form-new-order')?.addEventListener('submit', async (e) 
   e.preventDefault();
   const form = e.target;
   const msg = document.getElementById('new-order-message');
-  const submitBtn = form.querySelector('button[type="submit"]');
+  const side = e.submitter?.dataset.orderSide;
+  const orderButtons = Array.from(form.querySelectorAll('[data-order-side]'));
 
   if (!form.symbol.value) {
     msg.style.color = 'var(--color-negative)';
-    msg.textContent = 'No mapped symbols available on this terminal yet — rescan on the Pairs page first.';
+    msg.textContent = 'No visible symbols are available. Turn one on in Settings first.';
+    return;
+  }
+  if (side !== 'buy' && side !== 'sell') {
+    msg.style.color = 'var(--color-negative)';
+    msg.textContent = 'Choose BUY or SELL.';
+    return;
+  }
+  const volume = parseFloat(form.volume.value);
+  if (!Number.isFinite(volume) || volume <= 0) {
+    msg.style.color = 'var(--color-negative)';
+    msg.textContent = 'Enter a valid lot size.';
     return;
   }
 
@@ -851,28 +847,21 @@ document.getElementById('form-new-order')?.addEventListener('submit', async (e) 
     // populateOrderSymbolSelect() from this terminal's resolved symbol
     // mappings, so it is always an exact, broker-resolved canonical symbol.
     symbol: form.symbol.value,
-    side: form.side.value,
-    volume: parseFloat(form.volume.value),
+    side,
+    volume,
     client_request_id: crypto.randomUUID(),
   };
-  const deviation = form.max_deviation_points.value.trim();
-  if (deviation) payload.max_deviation_points = parseInt(deviation, 10);
-  const sl = form.sl.value.trim();
-  if (sl) payload.sl = parseFloat(sl);
-  const slPips = form.sl_pips.value.trim();
-  if (slPips) payload.sl_pips = parseFloat(slPips);
-  const tp = form.tp.value.trim();
-  if (tp) payload.tp = parseFloat(tp);
-
-  if (sl && slPips) {
-    msg.style.color = 'var(--color-negative)';
-    msg.textContent = 'Order was not sent: use either stop-loss price or stop-loss pips, not both.';
-    return;
+  // Keep the one-click surface simple while honoring any protection defaults
+  // already configured for this symbol on its Pairs card.
+  const setting = state.symbolSettings.find((s) => s.symbol === form.symbol.value);
+  if (setting?.auto_sl_tp_enabled) {
+    if (setting.auto_sl_pips) payload.sl_pips = setting.auto_sl_pips;
+    if (setting.auto_tp_pips) payload.tp_pips = setting.auto_tp_pips;
   }
 
-  submitBtn.disabled = true;
+  orderButtons.forEach((button) => { button.disabled = true; });
   msg.style.color = 'var(--color-accent)';
-  msg.textContent = 'Placing order…';
+  msg.textContent = `Placing ${side.toUpperCase()} order…`;
 
   try {
     const command = await placeManualOrder(payload);
@@ -884,7 +873,7 @@ document.getElementById('form-new-order')?.addEventListener('submit', async (e) 
     msg.style.color = 'var(--color-negative)';
     msg.textContent = err.message;
   } finally {
-    submitBtn.disabled = false;
+    orderButtons.forEach((button) => { button.disabled = false; });
   }
 });
 
@@ -1701,26 +1690,27 @@ function defaultSymbolSetting(symbol) {
 // symbol_mappings row that currently resolves to a broker-native symbol
 // (mirrors resolveBrokerSymbol()'s own "is this usable right now" check in
 // supabase/functions/_shared/symbol-resolver.ts — keep these two in sync).
-// This is the single source of truth for "can an order for this symbol
-// actually be placed on this terminal", used by both the Pairs page and
-// the New Position modal so neither can offer a symbol the other would
-// reject.
-function getAvailableSymbols() {
+// This is the single source of truth for "has this symbol been mapped to a
+// tradable instrument on this terminal". Visibility is layered on separately
+// by getAvailableSymbols() using symbol_settings.enabled.
+function getResolvedSymbols() {
   return (state.symbolMappings || [])
     .filter((m) => m.broker_symbol && m.match_type !== 'unavailable' && !m.needs_review)
     .map((m) => ({ symbol: m.canonical_symbol, asset_class: m.asset_class }));
 }
 
+function getAvailableSymbols() {
+  const bySymbol = new Map(state.symbolSettings.map((setting) => [setting.symbol, setting]));
+  return getResolvedSymbols().filter(({ symbol }) => bySymbol.get(symbol)?.enabled !== false);
+}
+
 async function loadSymbolSettings() {
-  // Prefer the terminal's actually-resolved symbols; fall back to the full
-  // bootstrap universe only when no scan has happened yet (symbol_mappings
-  // empty), so the Pairs page isn't blank on a brand-new terminal.
-  const resolvedSymbols = getAvailableSymbols().map((s) => s.symbol);
-  const universe = resolvedSymbols.length > 0 ? resolvedSymbols : SYMBOL_UNIVERSE;
+  // Only scanned and broker-resolved symbols are configurable or visible.
+  const resolvedSymbols = getResolvedSymbols().map((s) => s.symbol);
 
   if (!state.activeTerminalId) {
-    state.symbolSettings = SYMBOL_UNIVERSE.map(defaultSymbolSetting);
-    if (!viewPairs.hidden) renderPairsView();
+    state.symbolSettings = [];
+    refreshSymbolVisibilitySurfaces();
     return;
   }
 
@@ -1735,10 +1725,17 @@ async function loadSymbolSettings() {
   }
 
   const bySymbol = new Map((data || []).map((row) => [row.symbol, row]));
-  state.symbolSettings = universe.map(
+  state.symbolSettings = resolvedSymbols.map(
     (symbol) => bySymbol.get(symbol) || defaultSymbolSetting(symbol)
   );
+  refreshSymbolVisibilitySurfaces();
+}
+
+function refreshSymbolVisibilitySurfaces() {
+  renderSymbolSettingsList();
   if (!viewPairs.hidden) renderPairsView();
+  populateOrderSymbolSelect();
+  populateStrategySymbolSelect();
 }
 
 async function upsertSymbolSetting(symbol, patch) {
@@ -1761,6 +1758,65 @@ async function upsertSymbolSetting(symbol, patch) {
 
   const idx = state.symbolSettings.findIndex((s) => s.symbol === symbol);
   if (idx >= 0) state.symbolSettings[idx] = data;
+  else state.symbolSettings.push(data);
+  refreshSymbolVisibilitySurfaces();
+}
+
+async function setSymbolVisibility(symbol, enabled) {
+  const setting = state.symbolSettings.find((item) => item.symbol === symbol);
+  if (!setting) return;
+  setting.enabled = enabled;
+  refreshSymbolVisibilitySurfaces();
+  await upsertSymbolSetting(symbol, { enabled });
+}
+
+function renderSymbolSettingsList() {
+  if (!symbolSettingsList) return;
+  if (!state.activeTerminalId) {
+    symbolSettingsList.innerHTML = '<p class="empty-state-text">Connect an MT5 account to manage symbols.</p>';
+    if (buttonPairSymbol) buttonPairSymbol.hidden = true;
+    return;
+  }
+
+  const query = (symbolSearchInput?.value || '').trim().toUpperCase();
+  const resolved = getResolvedSymbols().filter(({ symbol }) => !query || symbol.includes(query));
+  const exactMatch = getResolvedSymbols().some(({ symbol }) => symbol === query);
+  if (buttonPairSymbol) {
+    buttonPairSymbol.hidden = !query || exactMatch;
+    buttonPairSymbol.textContent = query ? `Pair ${query}` : 'Pair symbol';
+  }
+
+  if (resolved.length === 0) {
+    symbolSettingsList.innerHTML = `<p class="empty-state-text">${
+      query ? `No paired symbol matches ${query}. Pair it to search this terminal.` : 'No paired symbols yet. Scan the terminal or search for one above.'
+    }</p>`;
+    return;
+  }
+
+  const settingBySymbol = new Map(state.symbolSettings.map((setting) => [setting.symbol, setting]));
+  symbolSettingsList.innerHTML = resolved
+    .map(({ symbol, asset_class: assetClass }) => {
+      const enabled = settingBySymbol.get(symbol)?.enabled !== false;
+      const mapping = state.symbolMappings.find((item) => item.canonical_symbol === symbol);
+      return `
+        <div class="symbol-settings-row">
+          <div class="symbol-settings-identity">
+            <strong>${symbol}</strong>
+            <span>${assetClass || 'symbol'}${mapping?.broker_symbol && mapping.broker_symbol !== symbol ? ` · ${mapping.broker_symbol}` : ''}</span>
+          </div>
+          <label class="strategy-toggle">
+            <input type="checkbox" class="strategy-toggle-input" data-symbol-visibility="${symbol}" ${enabled ? 'checked' : ''} />
+            <span>${enabled ? 'On' : 'Off'}</span>
+          </label>
+        </div>`;
+    })
+    .join('');
+
+  symbolSettingsList.querySelectorAll('[data-symbol-visibility]').forEach((input) => {
+    input.addEventListener('change', (event) => {
+      setSymbolVisibility(event.target.dataset.symbolVisibility, event.target.checked);
+    });
+  });
 }
 
 function computeSymbolPerformance(symbol) {
@@ -1814,7 +1870,13 @@ function renderPairsView() {
     return;
   }
 
-  pairGrid.innerHTML = state.symbolSettings
+  const visibleSettings = state.symbolSettings.filter((setting) => setting.enabled);
+  if (visibleSettings.length === 0) {
+    pairGrid.innerHTML = '<p class="empty-state-text">No symbols are visible. Open Settings to turn on the pairs you want to use.</p>';
+    return;
+  }
+
+  pairGrid.innerHTML = visibleSettings
     .map((s) => {
       const perf = computeSymbolPerformance(s.symbol);
       const plColor =
@@ -1823,26 +1885,23 @@ function renderPairsView() {
         perf.count === 0
           ? 'No closed trades yet'
           : `${perf.winRate}% win rate · ${perf.count} trades`;
-      const tfChips = TIMEFRAMES.map(
-        (tf) =>
-          `<button type="button" class="pair-tf-chip ${
-            (s.timeframes || []).includes(tf) ? 'active' : ''
-          }" data-tf="${tf}" data-symbol="${s.symbol}">${tf}</button>`
-      ).join('');
-
       return `
-      <div class="card card-pad pair-card ${s.enabled ? '' : 'is-disabled'}" data-symbol-card="${s.symbol}">
+      <div class="card card-pad pair-card" data-symbol-card="${s.symbol}">
         <div class="pair-card-header">
           <span class="pair-card-name">${s.symbol}</span>
           <label class="strategy-toggle">
-            <input type="checkbox" class="strategy-toggle-input" data-pair-enable="${s.symbol}" ${s.enabled ? 'checked' : ''} />
-            <span>${s.enabled ? 'On' : 'Off'}</span>
+            <input type="checkbox" class="strategy-toggle-input" data-pair-enable="${s.symbol}" checked />
+            <span>On</span>
           </label>
         </div>
 
-        <div>
-          <div class="pair-card-section-label">Signal timeframes</div>
-          <div class="pair-tf-chips" data-tf-group="${s.symbol}">${tfChips}</div>
+        <div class="pair-strength" aria-label="BUY versus SELL strength placeholder">
+          <div class="pair-strength-heading">
+            <span class="pair-card-section-label">BUY vs SELL strength</span>
+            <span class="pair-strength-pending">Awaiting signal</span>
+          </div>
+          <div class="pair-strength-bar" aria-hidden="true"><span></span></div>
+          <div class="pair-strength-labels"><span>SELL</span><span>BUY</span></div>
         </div>
 
         <div>
@@ -1882,22 +1941,7 @@ function renderPairsView() {
     input.addEventListener('change', async (e) => {
       const symbol = e.target.dataset.pairEnable;
       const enabled = e.target.checked;
-      await upsertSymbolSetting(symbol, { enabled });
-      renderPairsView();
-    });
-  });
-
-  pairGrid.querySelectorAll('[data-tf-group] .pair-tf-chip').forEach((chip) => {
-    chip.addEventListener('click', async () => {
-      const symbol = chip.dataset.symbol;
-      const tf = chip.dataset.tf;
-      const setting = state.symbolSettings.find((s) => s.symbol === symbol);
-      const current = new Set(setting?.timeframes || []);
-      if (current.has(tf)) current.delete(tf);
-      else current.add(tf);
-      const timeframes = TIMEFRAMES.filter((t) => current.has(t));
-      await upsertSymbolSetting(symbol, { timeframes });
-      renderPairsView();
+      await setSymbolVisibility(symbol, enabled);
     });
   });
 
@@ -1943,15 +1987,16 @@ function stopSymbolRescanPoll() {
   }
   if (buttonRescanSymbols) {
     buttonRescanSymbols.disabled = !state.activeTerminalId;
-    buttonRescanSymbols.textContent = 'Rescan Symbols';
+    buttonRescanSymbols.textContent = 'Scan terminal';
   }
-  if (buttonAddPair) buttonAddPair.disabled = !state.activeTerminalId;
+  if (buttonPairSymbol) buttonPairSymbol.disabled = false;
 }
 
 async function loadSymbolMappings() {
   if (!state.activeTerminalId) {
     state.symbolMappings = [];
-    if (!viewPairs.hidden) renderSymbolMappingPanel();
+    renderSymbolSettingsList();
+    renderSymbolMappingPanel();
     return;
   }
 
@@ -1967,7 +2012,8 @@ async function loadSymbolMappings() {
   }
 
   state.symbolMappings = data || [];
-  if (!viewPairs.hidden) renderSymbolMappingPanel();
+  renderSymbolSettingsList();
+  renderSymbolMappingPanel();
 }
 
 async function resolveSymbolMapping(mappingId, brokerSymbol, rowEl) {
@@ -1988,6 +2034,7 @@ async function resolveSymbolMapping(mappingId, brokerSymbol, rowEl) {
 
   const idx = state.symbolMappings.findIndex((m) => m.id === mappingId);
   if (idx >= 0) state.symbolMappings[idx] = data;
+  await loadSymbolSettings();
   renderSymbolMappingPanel();
 }
 
@@ -1998,13 +2045,11 @@ function renderSymbolMappingPanel() {
     symbolMappingStatus.textContent = 'Connect an account to see broker symbol mapping.';
     symbolMappingBody.innerHTML = '';
     if (buttonRescanSymbols) buttonRescanSymbols.disabled = true;
-    if (buttonAddPair) buttonAddPair.disabled = true;
     return;
   }
 
   const terminal = state.terminals.find((t) => t.id === state.activeTerminalId);
   if (buttonRescanSymbols) buttonRescanSymbols.disabled = symbolRescanPollId ? true : false;
-  if (buttonAddPair) buttonAddPair.disabled = false;
 
   if (terminal?.force_symbol_rescan) {
     symbolMappingStatus.textContent = 'Rescan requested — waiting for the EA to report back (usually under a minute).';
@@ -2012,12 +2057,12 @@ function renderSymbolMappingPanel() {
     const when = new Date(terminal.last_symbol_scan_at);
     symbolMappingStatus.textContent = `Last scanned ${when.toLocaleString()}.`;
   } else {
-    symbolMappingStatus.textContent = 'No scan yet — click Rescan Symbols once your EA is connected (needs LucreHubEA v1.0.12+).';
+    symbolMappingStatus.textContent = 'No scan yet — scan the terminal once your EA is connected.';
   }
 
   if (state.symbolMappings.length === 0) {
     symbolMappingBody.innerHTML =
-      '<p class="empty-state-text">No broker symbol data yet. Connect your EA and click Rescan Symbols to map your broker\'s pairs, metals, indices, and crypto symbols to the canonical names used across the dashboard.</p>';
+      '<p class="empty-state-text">No broker symbol data yet. Connect your EA and scan the terminal to discover its pairs, metals, indices, and crypto symbols.</p>';
     return;
   }
 
@@ -2117,7 +2162,7 @@ buttonRescanSymbols?.addEventListener('click', async () => {
   } catch (err) {
     alert(err.message);
     buttonRescanSymbols.disabled = false;
-    buttonRescanSymbols.textContent = 'Rescan Symbols';
+    buttonRescanSymbols.textContent = 'Scan terminal';
     return;
   }
 
@@ -2133,72 +2178,45 @@ buttonRescanSymbols?.addEventListener('click', async () => {
     if (!stillPending || attempts >= 12) {
       stopSymbolRescanPoll();
       await loadSymbolMappings();
+      await loadSymbolSettings();
     } else {
       renderSymbolMappingPanel();
     }
   }, 5000);
 });
 
-// v1.0.14 — item 13 "add a new pair" workflow. Reveals the inline form,
-// submits the typed symbol to bind-symbol (stores a pending_manual
-// symbol_mappings row + flags the terminal for rescan), then reuses the
-// exact same rescan-poll pattern as buttonRescanSymbols above to detect
-// resolution and refresh the mapping panel once the EA's next scan lands.
-buttonAddPair?.addEventListener('click', () => {
-  if (!state.activeTerminalId || !addPairRow) return;
-  addPairRow.hidden = false;
-  if (addPairStatus) {
-    addPairStatus.hidden = true;
-    addPairStatus.textContent = '';
-  }
-  addPairInput?.focus();
+symbolSearchInput?.addEventListener('input', () => {
+  symbolSearchInput.value = symbolSearchInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  renderSymbolSettingsList();
 });
 
-buttonCancelPair?.addEventListener('click', () => {
-  if (!addPairRow) return;
-  addPairRow.hidden = true;
-  if (addPairInput) addPairInput.value = '';
-  if (addPairStatus) {
-    addPairStatus.hidden = true;
-    addPairStatus.textContent = '';
-  }
-});
-
-addPairRow?.addEventListener('submit', async (e) => {
+// Search doubles as the pair-new-symbol workflow. Filtering the local list
+// performs no network request; submitting an unmatched symbol asks the EA to
+// scan once, then the existing short-lived scan poll resolves the mapping.
+symbolSearchForm?.addEventListener('submit', async (e) => {
   e.preventDefault();
-  if (!state.activeTerminalId || !addPairInput) return;
+  if (!state.activeTerminalId || !symbolSearchInput) return;
 
-  const symbol = addPairInput.value.trim().toUpperCase();
+  const symbol = symbolSearchInput.value.trim().toUpperCase();
   if (!symbol) return;
+  if (getResolvedSymbols().some((item) => item.symbol === symbol)) return;
 
-  const submitBtn = document.getElementById('button-submit-pair');
-  if (submitBtn) submitBtn.disabled = true;
-  if (buttonCancelPair) buttonCancelPair.disabled = true;
-  if (addPairStatus) {
-    addPairStatus.hidden = false;
-    addPairStatus.textContent = 'Searching…';
+  if (buttonPairSymbol) buttonPairSymbol.disabled = true;
+  if (symbolSettingsStatus) {
+    symbolSettingsStatus.hidden = false;
+    symbolSettingsStatus.style.color = 'var(--color-text-muted)';
+    symbolSettingsStatus.textContent = `Searching this terminal for ${symbol}…`;
   }
 
   try {
     await bindSymbol(state.activeTerminalId, symbol);
   } catch (err) {
-    if (addPairStatus) addPairStatus.textContent = err.message;
-    if (submitBtn) submitBtn.disabled = false;
-    if (buttonCancelPair) buttonCancelPair.disabled = false;
+    if (symbolSettingsStatus) {
+      symbolSettingsStatus.style.color = 'var(--color-negative)';
+      symbolSettingsStatus.textContent = err.message;
+    }
+    if (buttonPairSymbol) buttonPairSymbol.disabled = false;
     return;
-  }
-
-  // Same reveal + poll pattern as the rescan button: hide the form, show
-  // the "searching…" state on the mapping panel (renderSymbolMappingPanel's
-  // pending_manual bucket), and poll force_symbol_rescan until the EA's
-  // next scan resolves it or we give up after ~1 minute.
-  addPairRow.hidden = true;
-  addPairInput.value = '';
-  if (submitBtn) submitBtn.disabled = false;
-  if (buttonCancelPair) buttonCancelPair.disabled = false;
-  if (addPairStatus) {
-    addPairStatus.hidden = false;
-    addPairStatus.textContent = `Searching for ${symbol}…`;
   }
 
   await refreshActiveTerminalScanStatus();
@@ -2212,11 +2230,19 @@ addPairRow?.addEventListener('submit', async (e) => {
     const stillPending = status?.force_symbol_rescan;
     if (!stillPending || attempts >= 12) {
       stopSymbolRescanPoll();
-      if (addPairStatus) {
-        addPairStatus.hidden = true;
-        addPairStatus.textContent = '';
-      }
       await loadSymbolMappings();
+      await loadSymbolSettings();
+      const paired = getResolvedSymbols().some((item) => item.symbol === symbol);
+      if (symbolSettingsStatus) {
+        symbolSettingsStatus.hidden = false;
+        symbolSettingsStatus.style.color = paired ? 'var(--color-positive)' : 'var(--color-negative)';
+        symbolSettingsStatus.textContent = paired
+          ? `${symbol} is paired and visible.`
+          : `${symbol} was not found on this terminal. Check the broker symbol and try again.`;
+      }
+      if (paired) symbolSearchInput.value = '';
+      if (buttonPairSymbol) buttonPairSymbol.disabled = false;
+      renderSymbolSettingsList();
     } else {
       renderSymbolMappingPanel();
     }

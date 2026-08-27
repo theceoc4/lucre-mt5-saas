@@ -1795,11 +1795,109 @@ body {
   line-height: 1.5;
 }
 
+.one-click-order-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.one-click-order-actions .btn-buy,
+.one-click-order-actions .btn-sell {
+  min-height: 48px;
+  font-size: var(--text-base);
+  letter-spacing: 0.04em;
+}
+
 /* ---- Account history modal (v1.0.19) ---- */
 .modal-card-wide {
   max-width: 640px;
   display: flex;
   flex-direction: column;
+}
+
+.symbol-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.symbol-settings-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.symbol-settings-heading h4 {
+  margin: 0 0 var(--space-1);
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  color: var(--color-text);
+}
+
+.symbol-settings-heading .desc {
+  margin: 0;
+}
+
+.symbol-settings-search {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.symbol-settings-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.symbol-settings-search button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.symbol-settings-status {
+  margin: 0;
+}
+
+.symbol-settings-list {
+  max-height: 330px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-sunken);
+}
+
+.symbol-settings-list > .empty-state-text {
+  padding: var(--space-4);
+}
+
+.symbol-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.symbol-settings-row:last-child {
+  border-bottom: 0;
+}
+
+.symbol-settings-identity {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.symbol-settings-identity strong {
+  color: var(--color-text);
+  font-size: var(--text-sm);
+}
+
+.symbol-settings-identity span {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  text-transform: capitalize;
 }
 
 .account-history-filters {
@@ -2201,10 +2299,6 @@ body {
   gap: var(--space-3);
 }
 
-.pair-card.is-disabled {
-  opacity: 0.62;
-}
-
 .pair-card-header {
   display: flex;
   align-items: center;
@@ -2228,33 +2322,57 @@ body {
   margin-bottom: var(--space-1);
 }
 
-.pair-tf-chips {
+.pair-strength-heading,
+.pair-strength-labels {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
 }
 
-.pair-tf-chip {
-  appearance: none;
-  border: 1px solid var(--color-border-strong);
-  background: var(--color-surface-sunken);
+.pair-strength-heading .pair-card-section-label {
+  margin-bottom: var(--space-1);
+}
+
+.pair-strength-pending,
+.pair-strength-labels {
   color: var(--color-text-muted);
   font-size: var(--text-xs);
-  font-weight: 600;
-  padding: var(--space-1) var(--space-3);
+}
+
+.pair-strength-bar {
+  position: relative;
+  height: 12px;
+  overflow: visible;
+  border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-full);
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  background: linear-gradient(90deg, var(--color-negative) 0%, var(--color-surface-sunken) 50%, var(--color-positive) 100%);
+  box-shadow: inset 0 1px 2px rgba(20, 32, 22, 0.16);
 }
 
-.pair-tf-chip:hover {
-  color: var(--color-text);
+.pair-strength-bar span {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: var(--color-text);
+  box-shadow: 0 0 0 2px var(--color-surface-2);
+  transform: translate(-50%, -50%);
 }
 
-.pair-tf-chip.active {
-  background: var(--color-accent);
-  border-color: var(--color-accent-strong);
-  color: var(--color-accent-ink);
+.pair-strength-labels {
+  margin-top: var(--space-1);
+  font-weight: 700;
+}
+
+.pair-strength-labels span:first-child {
+  color: var(--color-negative);
+}
+
+.pair-strength-labels span:last-child {
+  color: var(--color-positive);
 }
 
 .pair-auto-row {
@@ -2342,6 +2460,16 @@ body {
 @media (max-width: 640px) {
   .pair-grid {
     grid-template-columns: 1fr;
+  }
+
+  .symbol-settings-search,
+  .symbol-settings-heading {
+    flex-direction: column;
+  }
+
+  .symbol-settings-search button,
+  .symbol-settings-heading button {
+    width: 100%;
   }
 }
 

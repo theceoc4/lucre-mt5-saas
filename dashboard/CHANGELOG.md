@@ -7,6 +7,22 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.25 — System-wide symbol visibility and one-click orders (2026-08-27)
+
+- The top-nav gear now opens a terminal-scoped symbol manager. It lists every
+  resolved broker mapping, filters locally as the user searches, pairs new
+  symbols through the existing EA scan workflow, and stores visibility with
+  the existing `symbol_settings.enabled` preference.
+- Hidden symbols are removed from the Pairs page, New Order selector, and new
+  strategy symbol picker without deleting mappings or historical trade data.
+  Visibility changes produce one database upsert only when a toggle changes.
+- The New Order modal is reduced to symbol, lot size, and dedicated BUY/SELL
+  actions. Existing per-pair automatic SL/TP defaults are still honored under
+  the simplified surface, and the modal closes when the order is accepted.
+- The Pairs page no longer contains mapping/search controls or timeframe chips.
+  Each enabled card now has a centered, non-functional BUY-vs-SELL strength
+  meter placeholder using the dashboard's existing bearish/bullish palette.
+
 ## v1.0.24 — Ephemeral live position stream (2026-08-25)
 
 - The dashboard joins the same high-entropy, terminal-scoped Realtime topic
