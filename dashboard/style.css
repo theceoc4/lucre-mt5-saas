@@ -2381,11 +2381,6 @@ body {
   color: var(--color-positive);
 }
 
-.pair-strength-labels .pair-strength-score {
-  color: var(--color-text);
-  font-variant-numeric: tabular-nums;
-}
-
 .pair-auto-row {
   display: flex;
   align-items: center;

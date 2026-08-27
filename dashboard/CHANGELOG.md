@@ -7,6 +7,18 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.28 — Strategy rebuild and simplified trend meter (2026-08-27)
+
+- Renamed the pair-card meter to Trend Strength and removed its numeric score;
+  the directional visual, status, regime, and Realtime behavior remain intact.
+- Retired the four original strategy presets. Existing configurations are
+  disabled and hidden, while their historical signals and trades are retained.
+- Added Aggressive Momentum Breakout and Moderate Confirmed Trend Pullback.
+  Both evaluate closed OHLC candles with EMA, RSI, ADX, and ATR-based risk.
+- Strategy configurations now own an explicit M1–W1 timeframe. The Add/Edit
+  flow lets the user choose strategy, one or more visible pairs, and timeframe;
+  manual-confirm signal lifetime scales to the selected candle duration.
+
 ## v1.0.27 — Pair-card action alignment (2026-08-27)
 
 - Pair-card quick-order actions now place SELL on the bearish left side and

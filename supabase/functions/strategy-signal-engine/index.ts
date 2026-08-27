@@ -1,7 +1,7 @@
-// v1.0.14 — strategy-signal-engine
+// v1.0.28 — strategy-signal-engine
 //
 // Internal once-per-minute sweep invoked by pg_cron -> pg_net. It evaluates all
-// enabled terminal strategies against EA-reported CLOSED M5 price bars, creates
+// enabled terminal strategies against their configured CLOSED-candle timeframe, creates
 // deduplicated signals, and queues auto-execution commands only after the live
 // adaptive policy and terminal position caps have been checked. Migration 040
 // requires the Vault-backed scheduler secret before this service-role handler
@@ -35,7 +35,8 @@ type StrategyRow = {
   id: string;
   terminal_id: string;
   name: string;
-  kind: "vwap_reversion" | "orb_breakout" | "bb_fade" | "ema_trend" | string;
+  kind: "momentum_breakout" | "confirmed_trend_pullback" | string;
+  timeframe: string;
   symbols: string[];
   delivery_mode: "auto" | "manual_confirm";
   max_lot_size: number | string;
@@ -51,14 +52,6 @@ type SignalCandidate = {
   score: number;
   // News policy starts here. An agent_policies cell can tighten this further.
   policyDecision: PolicyDecision;
-};
-
-type SessionVWAP = {
-  vwap: number;
-  upperBand1: number;
-  lowerBand1: number;
-  upperBand2: number;
-  lowerBand2: number;
 };
 
 type TerminalPositionBudget = {
@@ -85,14 +78,6 @@ function numberValue(value: unknown, fallback: number): number {
 function positiveConfig(config: Record<string, unknown> | null, key: string, fallback: number): number {
   const value = numberValue(config?.[key], fallback);
   return value > 0 ? value : fallback;
-}
-
-function utcDayKey(iso: string): string {
-  return new Date(iso).toISOString().slice(0, 10);
-}
-
-function utcHour(iso: string): number {
-  return new Date(iso).getUTCHours();
 }
 
 // Simplified UTC session bucketing, copied from signal-action/index.ts.
@@ -250,78 +235,6 @@ function computeADX(bars: PriceBar[], period = 14): number[] {
   return result;
 }
 
-function computeBollinger(closes: number[], period = 20, mult = 2): {
-  upper: number[];
-  lower: number[];
-  middle: number[];
-  bandwidth: number[];
-} {
-  const upper = Array<number>(closes.length).fill(Number.NaN);
-  const lower = Array<number>(closes.length).fill(Number.NaN);
-  const middle = Array<number>(closes.length).fill(Number.NaN);
-  const bandwidth = Array<number>(closes.length).fill(Number.NaN);
-  if (period <= 0) return { upper, lower, middle, bandwidth };
-
-  for (let i = period - 1; i < closes.length; i++) {
-    const sample = closes.slice(i - period + 1, i + 1);
-    const mean = sample.reduce((sum, value) => sum + value, 0) / period;
-    const variance = sample.reduce((sum, value) => sum + (value - mean) ** 2, 0) / period;
-    const deviation = Math.sqrt(variance);
-    middle[i] = mean;
-    upper[i] = mean + mult * deviation;
-    lower[i] = mean - mult * deviation;
-    bandwidth[i] = Math.abs(mean) > EPSILON ? (upper[i] - lower[i]) / Math.abs(mean) : Number.NaN;
-  }
-  return { upper, lower, middle, bandwidth };
-}
-
-// Session-anchored VWAP, resetting at the first bar present for every UTC day.
-// If every reported volume in a day is zero (common with some MT5 feeds), that
-// day's weights become 1 so the calculation degrades safely to a session TWAP.
-function computeSessionVWAP(bars: PriceBar[]): SessionVWAP | null {
-  if (bars.length === 0) return null;
-
-  const hasPositiveVolume = new Map<string, boolean>();
-  for (const bar of bars) {
-    const day = utcDayKey(bar.bar_time);
-    hasPositiveVolume.set(day, (hasPositiveVolume.get(day) ?? false) || bar.volume > 0);
-  }
-
-  let currentDay = "";
-  let weightedPriceSum = 0;
-  let weightSum = 0;
-  let deviations: number[] = [];
-  let latest: SessionVWAP | null = null;
-
-  for (const bar of bars) {
-    const day = utcDayKey(bar.bar_time);
-    if (day !== currentDay) {
-      currentDay = day;
-      weightedPriceSum = 0;
-      weightSum = 0;
-      deviations = [];
-    }
-
-    const typicalPrice = (bar.high + bar.low + bar.close) / 3;
-    const weight = hasPositiveVolume.get(day) ? Math.max(0, bar.volume) : 1;
-    weightedPriceSum += typicalPrice * weight;
-    weightSum += weight;
-    const vwap = weightSum > 0 ? weightedPriceSum / weightSum : typicalPrice;
-
-    deviations.push(bar.close - vwap);
-    const variance = deviations.reduce((sum, value) => sum + value * value, 0) / deviations.length;
-    const sigma = Math.sqrt(variance);
-    latest = {
-      vwap,
-      upperBand1: vwap + sigma,
-      lowerBand1: vwap - sigma,
-      upperBand2: vwap + 2 * sigma,
-      lowerBand2: vwap - 2 * sigma,
-    };
-  }
-  return latest;
-}
-
 function allFinite(...values: number[]): boolean {
   return values.every((value) => Number.isFinite(value));
 }
@@ -342,12 +255,6 @@ function evaluateStrategy(
   const atr = computeATR(bars, 14);
   const rsi = computeRSI(closes, 14);
   const adx = computeADX(bars, 14);
-  const fastEmaPeriod = Math.min(99, Math.max(1, Math.floor(positiveConfig(config, "ema_fast_period", 9))));
-  const slowEmaPeriod = Math.min(100, Math.max(fastEmaPeriod + 1, Math.floor(positiveConfig(config, "ema_slow_period", 21))));
-  const emaFast = computeEMA(closes, fastEmaPeriod);
-  const emaSlow = computeEMA(closes, slowEmaPeriod);
-  const bollinger = computeBollinger(closes, 20, 2);
-
   const currentAtr = atr[currentIndex];
   const currentRsi = rsi[currentIndex];
   const currentAdx = adx[currentIndex];
@@ -358,172 +265,96 @@ function evaluateStrategy(
     policyDecision: nearNews ? "downweight" : "ok",
   });
 
-  if (strategy.kind === "vwap_reversion") {
-    const currentVwap = computeSessionVWAP(bars);
-    const previousVwap = computeSessionVWAP(bars.slice(0, -1));
-    const longRsiMax = positiveConfig(config, "rsi_long_max", 35);
-    const shortRsiMin = positiveConfig(config, "rsi_short_min", 65);
-    const atrBuffer = positiveConfig(config, "atr_stop_buffer", 0.5);
-    if (!currentVwap || !previousVwap || !allFinite(currentAtr, currentRsi)) return null;
+  if (!allFinite(currentAtr, currentRsi, currentAdx) || currentAtr <= EPSILON) return null;
 
-    if (previous.close < previousVwap.lowerBand2 && current.close >= currentVwap.lowerBand2 && currentRsi < longRsiMax) {
-      // Default score formula: clamp01((35 - RSI) / 35); a configured threshold
-      // substitutes for 35 while preserving the same 0..1 normalization shape.
-      return applyNewsDownweight({
-        side: "buy",
-        entryPrice: current.close,
-        suggestedSl: currentVwap.lowerBand2 - atrBuffer * currentAtr,
-        suggestedTp: currentVwap.vwap,
-        score: clamp01((longRsiMax - currentRsi) / longRsiMax),
-      });
-    }
-    if (previous.close > previousVwap.upperBand2 && current.close <= currentVwap.upperBand2 && currentRsi > shortRsiMin) {
-      // Default score formula: clamp01((RSI - 65) / 35), where 35 is the
-      // distance from the default 65 trigger to RSI's 100 upper bound.
-      return applyNewsDownweight({
-        side: "sell",
-        entryPrice: current.close,
-        suggestedSl: currentVwap.upperBand2 + atrBuffer * currentAtr,
-        suggestedTp: currentVwap.vwap,
-        score: clamp01((currentRsi - shortRsiMin) / (100 - shortRsiMin)),
-      });
-    }
-    return null;
-  }
-
-  if (strategy.kind === "orb_breakout") {
-    const rangeStartHour = Math.floor(positiveConfig(config, "range_start_hour_utc", 0));
-    const rangeEndHour = Math.floor(positiveConfig(config, "range_end_hour_utc", 7));
-    const triggerEndHour = Math.floor(positiveConfig(config, "trigger_end_hour_utc", 9));
-    const bufferFactor = positiveConfig(config, "breakout_buffer_factor", 0.0003);
-    const bodyRatioMin = positiveConfig(config, "body_ratio_min", 0.6);
-    const adxMin = positiveConfig(config, "adx_min", 20);
-    const slRangeBuffer = positiveConfig(config, "sl_range_buffer", 0.05);
-    const tpRangeMultiple = positiveConfig(config, "tp_range_multiple", 1.5);
-    const currentHour = utcHour(current.bar_time);
-    const currentDay = utcDayKey(current.bar_time);
-    const rangeBars = bars.filter((bar) => {
-      const hour = utcHour(bar.bar_time);
-      return utcDayKey(bar.bar_time) === currentDay && hour >= rangeStartHour && hour < rangeEndHour;
-    });
-    if (rangeBars.length === 0 || currentHour < rangeEndHour || currentHour >= triggerEndHour || !finite(currentAdx)) return null;
-
-    const rangeHigh = Math.max(...rangeBars.map((bar) => bar.high));
-    const rangeLow = Math.min(...rangeBars.map((bar) => bar.low));
-    const rangeSize = rangeHigh - rangeLow;
-    if (rangeSize <= EPSILON) return null;
-    const buffer = bufferFactor * current.close;
-    const range = current.high - current.low;
-
-    if (
-      current.close >= rangeHigh + buffer &&
-      (current.close - current.open) / (range + EPSILON) >= bodyRatioMin &&
-      currentAdx >= adxMin
-    ) {
-      return applyNewsDownweight({
-        side: "buy",
-        entryPrice: current.close,
-        suggestedSl: rangeLow - slRangeBuffer * rangeSize,
-        suggestedTp: current.close + tpRangeMultiple * rangeSize,
-        score: clamp01(currentAdx / 50),
-      });
-    }
-    if (
-      current.close <= rangeLow - buffer &&
-      (current.open - current.close) / (range + EPSILON) >= bodyRatioMin &&
-      currentAdx >= adxMin
-    ) {
-      return applyNewsDownweight({
-        side: "sell",
-        entryPrice: current.close,
-        suggestedSl: rangeHigh + slRangeBuffer * rangeSize,
-        suggestedTp: current.close - tpRangeMultiple * rangeSize,
-        score: clamp01(currentAdx / 50),
-      });
-    }
-    return null;
-  }
-
-  if (strategy.kind === "bb_fade") {
-    const adxMax = positiveConfig(config, "adx_max", 25);
-    const bandwidthMin = positiveConfig(config, "bandwidth_min", 0.04);
-    const longRsiMax = positiveConfig(config, "rsi_long_max", 30);
-    const shortRsiMin = positiveConfig(config, "rsi_short_min", 70);
-    const atrStopMultiple = positiveConfig(config, "atr_stop_multiple", 1);
-    const upper = bollinger.upper[currentIndex];
-    const lower = bollinger.lower[currentIndex];
-    const middle = bollinger.middle[currentIndex];
-    const bandwidth = bollinger.bandwidth[currentIndex];
-    if (!allFinite(currentAtr, currentRsi, currentAdx, upper, lower, middle, bandwidth)) return null;
-
-    // A scheduled-news spike is repricing, not a BB mean-reversion setup. The
-    // desired policy is block, but "skip entirely" means no signal row/delivery
-    // is produced for this pair on this sweep.
-    if (nearNews) return null;
-
-    if (currentAdx < adxMax && bandwidth >= bandwidthMin && current.low <= lower && current.close > current.low && currentRsi < longRsiMax) {
-      return {
-        side: "buy",
-        entryPrice: current.close,
-        suggestedSl: current.low - atrStopMultiple * currentAtr,
-        suggestedTp: middle,
-        score: clamp01((longRsiMax - currentRsi) / longRsiMax),
-        policyDecision: "ok",
-      };
-    }
-    if (currentAdx < adxMax && bandwidth >= bandwidthMin && current.high >= upper && current.close < current.high && currentRsi > shortRsiMin) {
-      return {
-        side: "sell",
-        entryPrice: current.close,
-        suggestedSl: current.high + atrStopMultiple * currentAtr,
-        suggestedTp: middle,
-        score: clamp01((currentRsi - shortRsiMin) / (100 - shortRsiMin)),
-        policyDecision: "ok",
-      };
-    }
-    return null;
-  }
-
-  if (strategy.kind === "ema_trend") {
-    const adxMin = positiveConfig(config, "adx_min", 25);
-    const longRsiMin = positiveConfig(config, "rsi_long_min", 50);
-    const longRsiMax = positiveConfig(config, "rsi_long_max", 70);
-    const shortRsiMin = positiveConfig(config, "rsi_short_min", 30);
-    const shortRsiMax = positiveConfig(config, "rsi_short_max", 50);
-    const atrSpreadMultiple = positiveConfig(config, "atr_spread_multiple", 0.5);
-    const atrStopMultiple = positiveConfig(config, "atr_stop_multiple", 1.5);
+  if (strategy.kind === "momentum_breakout") {
+    const emaFast = computeEMA(closes, 9);
+    const emaSlow = computeEMA(closes, 21);
     const currentFast = emaFast[currentIndex];
     const currentSlow = emaSlow[currentIndex];
-    const previousFast = emaFast[previousIndex];
-    const previousSlow = emaSlow[previousIndex];
-    if (!allFinite(currentAtr, currentRsi, currentAdx, currentFast, currentSlow, previousFast, previousSlow)) return null;
+    if (!allFinite(currentFast, currentSlow)) return null;
+    const lookback = bars.slice(Math.max(0, currentIndex - 12), currentIndex);
+    if (lookback.length < 12) return null;
+    const priorHigh = Math.max(...lookback.map((bar) => bar.high));
+    const priorLow = Math.min(...lookback.map((bar) => bar.low));
+    const candleRange = Math.max(EPSILON, current.high - current.low);
+    const bullishBody = (current.close - current.open) / candleRange;
+    const bearishBody = (current.open - current.close) / candleRange;
+    const spreadQuality = clamp01(Math.abs(currentFast - currentSlow) / currentAtr);
+    const adxQuality = clamp01((currentAdx - 18) / 22);
+    const stopDistance = 1.2 * currentAtr;
 
     if (
-      currentFast > currentSlow && previousFast <= previousSlow && currentAdx >= adxMin &&
-      currentRsi > longRsiMin && currentRsi < longRsiMax && current.close > currentFast && current.close > currentSlow &&
-      Math.abs(currentFast - currentSlow) >= atrSpreadMultiple * currentAtr
+      currentFast > currentSlow && current.close > priorHigh && currentAdx >= 18 &&
+      currentRsi >= 52 && currentRsi <= 74 && bullishBody >= 0.5 &&
+      currentFast - currentSlow >= 0.12 * currentAtr
     ) {
-      const stopDistance = atrStopMultiple * currentAtr;
+      const breakoutQuality = clamp01((current.close - priorHigh) / currentAtr);
       return applyNewsDownweight({
-        side: "buy",
-        entryPrice: current.close,
+        side: "buy", entryPrice: current.close,
         suggestedSl: current.close - stopDistance,
-        suggestedTp: current.close + 2 * stopDistance,
-        score: clamp01(currentAdx / 50),
+        suggestedTp: current.close + 1.8 * stopDistance,
+        score: clamp01(0.55 + 0.15 * adxQuality + 0.15 * spreadQuality + 0.15 * breakoutQuality),
       });
     }
     if (
-      currentFast < currentSlow && previousFast >= previousSlow && currentAdx >= adxMin &&
-      currentRsi > shortRsiMin && currentRsi < shortRsiMax && current.close < currentFast && current.close < currentSlow &&
-      Math.abs(currentFast - currentSlow) >= atrSpreadMultiple * currentAtr
+      currentFast < currentSlow && current.close < priorLow && currentAdx >= 18 &&
+      currentRsi >= 26 && currentRsi <= 48 && bearishBody >= 0.5 &&
+      currentSlow - currentFast >= 0.12 * currentAtr
     ) {
-      const stopDistance = atrStopMultiple * currentAtr;
+      const breakoutQuality = clamp01((priorLow - current.close) / currentAtr);
       return applyNewsDownweight({
-        side: "sell",
-        entryPrice: current.close,
+        side: "sell", entryPrice: current.close,
         suggestedSl: current.close + stopDistance,
-        suggestedTp: current.close - 2 * stopDistance,
-        score: clamp01(currentAdx / 50),
+        suggestedTp: current.close - 1.8 * stopDistance,
+        score: clamp01(0.55 + 0.15 * adxQuality + 0.15 * spreadQuality + 0.15 * breakoutQuality),
+      });
+    }
+    return null;
+  }
+
+  if (strategy.kind === "confirmed_trend_pullback") {
+    const emaFast = computeEMA(closes, 20);
+    const emaSlow = computeEMA(closes, 50);
+    const currentFast = emaFast[currentIndex];
+    const previousFast = emaFast[previousIndex];
+    const currentSlow = emaSlow[currentIndex];
+    const previousSlow = emaSlow[previousIndex];
+    const slopeSlow = emaSlow[currentIndex - 5];
+    if (!allFinite(currentFast, previousFast, currentSlow, previousSlow, slopeSlow)) return null;
+    const recent = bars.slice(-5);
+    const swingLow = Math.min(...recent.map((bar) => bar.low));
+    const swingHigh = Math.max(...recent.map((bar) => bar.high));
+    const spreadQuality = clamp01(Math.abs(currentFast - currentSlow) / currentAtr);
+    const adxQuality = clamp01((currentAdx - 25) / 20);
+    // Keep the moderate preset to one execution leg under the existing score
+    // multiplier policy; selectivity comes from confirmation, not larger size.
+    const score = Math.min(0.69, 0.50 + 0.10 * adxQuality + 0.09 * spreadQuality);
+
+    if (
+      currentFast > currentSlow && currentSlow > slopeSlow && currentAdx >= 25 &&
+      currentFast - currentSlow >= 0.25 * currentAtr && currentRsi >= 50 && currentRsi <= 65 &&
+      previous.low <= previousFast && previous.close <= previousFast && previous.close > previousSlow &&
+      current.close > currentFast && current.close > current.open
+    ) {
+      const suggestedSl = Math.min(swingLow - 0.2 * currentAtr, current.close - 1.5 * currentAtr);
+      const risk = current.close - suggestedSl;
+      return applyNewsDownweight({
+        side: "buy", entryPrice: current.close, suggestedSl,
+        suggestedTp: current.close + 2 * risk, score,
+      });
+    }
+    if (
+      currentFast < currentSlow && currentSlow < slopeSlow && currentAdx >= 25 &&
+      currentSlow - currentFast >= 0.25 * currentAtr && currentRsi >= 35 && currentRsi <= 50 &&
+      previous.high >= previousFast && previous.close >= previousFast && previous.close < previousSlow &&
+      current.close < currentFast && current.close < current.open
+    ) {
+      const suggestedSl = Math.max(swingHigh + 0.2 * currentAtr, current.close + 1.5 * currentAtr);
+      const risk = suggestedSl - current.close;
+      return applyNewsDownweight({
+        side: "sell", entryPrice: current.close, suggestedSl,
+        suggestedTp: current.close - 2 * risk, score,
       });
     }
   }
@@ -621,15 +452,16 @@ Deno.serve(async (req: Request) => {
   try {
     const { data: strategies, error: strategiesError } = await admin
       .from("strategies")
-      .select("id, terminal_id, name, kind, symbols, delivery_mode, max_lot_size, signal_ttl_seconds, config")
-      .eq("enabled", true);
+      .select("id, terminal_id, name, kind, timeframe, symbols, delivery_mode, max_lot_size, signal_ttl_seconds, config")
+      .eq("enabled", true)
+      .in("kind", ["momentum_breakout", "confirmed_trend_pullback"]);
     if (strategiesError) return jsonResponse({ error: "strategies_fetch_failed", detail: strategiesError.message }, 500);
     if (!strategies || strategies.length === 0) return jsonResponse({ processed: 0, signals_generated: 0, commands_queued: 0 });
 
     const terminalIds = [...new Set(strategies.map((strategy) => strategy.terminal_id))];
     const { data: symbolSettings, error: symbolSettingsError } = await admin
       .from("symbol_settings")
-      .select("terminal_id, symbol, enabled, timeframes")
+      .select("terminal_id, symbol, enabled")
       .in("terminal_id", terminalIds);
     if (symbolSettingsError) {
       return jsonResponse({ error: "symbol_settings_fetch_failed", detail: symbolSettingsError.message }, 500);
@@ -651,19 +483,14 @@ Deno.serve(async (req: Request) => {
     for (const rawStrategy of strategies) {
       const strategy = rawStrategy as StrategyRow;
       if (!Array.isArray(strategy.symbols)) continue;
+      if (!supportedTimeframes.has(strategy.timeframe)) continue;
+      const timeframe = strategy.timeframe;
 
       for (const symbol of strategy.symbols) {
         if (typeof symbol !== "string" || symbol.length === 0) continue;
 
         const symbolSetting = settingsByTerminalSymbol.get(`${strategy.terminal_id}:${symbol}`);
         if (symbolSetting && !symbolSetting.enabled) continue;
-        const timeframes: string[] = symbolSetting
-          ? (Array.isArray(symbolSetting.timeframes)
-            ? symbolSetting.timeframes.filter((timeframe: string) => supportedTimeframes.has(timeframe))
-            : [])
-          : ["M5"];
-
-        for (const timeframe of timeframes) {
 
         const { data: descendingBars, error: barsError } = await admin
           .from("price_bars")
@@ -672,12 +499,12 @@ Deno.serve(async (req: Request) => {
           .eq("symbol", symbol)
           .eq("timeframe", timeframe)
           .order("bar_time", { ascending: false })
-          .limit(300);
+          .limit(100);
         if (barsError) {
           console.error(`strategy-signal-engine: price_bars fetch failed for ${strategy.id}/${symbol}: ${barsError.message}`);
           continue;
         }
-        if (!descendingBars || descendingBars.length < 30) continue; // expected while the EA's new bar feed warms up
+        if (!descendingBars || descendingBars.length < 60) continue; // expected while the EA's bar feed warms up
 
         const bars: PriceBar[] = [...descendingBars].reverse().map((bar) => ({
           bar_time: bar.bar_time,
@@ -687,7 +514,7 @@ Deno.serve(async (req: Request) => {
           close: Number(bar.close),
           volume: Number(bar.volume),
         })).filter((bar) => allFinite(bar.open, bar.high, bar.low, bar.close, bar.volume));
-        if (bars.length < 30) continue;
+        if (bars.length < 60) continue;
 
         const adx = computeADX(bars, 14);
         const latestAdx = adx[adx.length - 1];
@@ -875,7 +702,6 @@ Deno.serve(async (req: Request) => {
         }
         if (insertFailure) {
           console.error(`strategy-signal-engine: command insert failed for signal ${signal.id} after ${insertedLegs} legs: ${insertFailure}`);
-        }
         }
       }
     }

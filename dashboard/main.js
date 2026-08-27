@@ -356,35 +356,25 @@ document.getElementById('form-connect-account')?.addEventListener('submit', asyn
 // chip has its own remove button that puts the pair back in the dropdown.
 let strategySelectedSymbols = [];
 
-// v1.0.13 -- public.strategies.signal_family has been NOT NULL (no default)
-// since migration 020 (v1.0.3), but no insert path anywhere in this file
-// ever supplied it -- every Add-Strategy submission has been failing with
-// "null value in column signal_family ... violates not-null constraint"
-// since that migration shipped (confirmed: the strategies table has zero
-// rows). Maps each implemented strategy `kind` (strategy-signal-engine/
-// index.ts) to the architecture spec's signal_family taxonomy (spec §5.2,
-// S1-S10 catalog) so the dashboard's Strategies page and the future
-// family-level throttle engine can group correctly:
-//   vwap_reversion -> vwap_reversion (S2/S8, direct match)
-//   orb_breakout   -> breakout        (S3, opening range breakout)
-//   bb_fade        -> support_resistance_bounce (S6 -- fades a tested
-//                      band/level with rejection-wick confirmation, same
-//                      pattern bb_fade's current.close > current.low check
-//                      implements against the BB band)
-//   ema_trend      -> momentum        (S1 -- fires at the EMA9/EMA21
-//                      crossover itself, i.e. momentum continuation, not
-//                      a pullback-entry or H4 swing setup)
 const STRATEGY_KIND_SIGNAL_FAMILY = {
-  vwap_reversion: 'vwap_reversion',
-  orb_breakout: 'breakout',
-  bb_fade: 'support_resistance_bounce',
-  ema_trend: 'momentum',
+  momentum_breakout: 'breakout',
+  confirmed_trend_pullback: 'trend_pullback',
+};
+
+const ACTIVE_STRATEGY_KINDS = Object.keys(STRATEGY_KIND_SIGNAL_FAMILY);
+const TIMEFRAME_SIGNAL_TTL_SECONDS = {
+  M1: 60, M5: 300, M15: 900, M30: 1800,
+  H1: 3600, H4: 14400, D1: 86400, W1: 604800,
+};
+const STRATEGY_DESCRIPTIONS = {
+  momentum_breakout: 'Earlier entries using EMA alignment, RSI, ADX and a 12-candle price breakout.',
+  confirmed_trend_pullback: 'More selective entries after an established EMA/ADX trend pulls back and confirms continuation.',
 };
 
 function updateStrategyParameterVisibility() {
   const kind = document.getElementById('strategy-kind')?.value;
-  const emaFields = document.getElementById('strategy-ema-parameters');
-  if (emaFields) emaFields.hidden = kind !== 'ema_trend';
+  const description = document.getElementById('strategy-kind-description');
+  if (description) description.textContent = STRATEGY_DESCRIPTIONS[kind] || '';
 }
 
 document.getElementById('strategy-kind')?.addEventListener('change', updateStrategyParameterVisibility);
@@ -532,7 +522,7 @@ function resetStrategyModalToAddMode() {
   if (form) form.edit_id.value = '';
   document.getElementById('add-strategy-title').textContent = 'Add a strategy';
   document.getElementById('add-strategy-sub').textContent =
-    'Pick a ready-made strategy, choose which of your bound pairs it applies to, and name this configuration. Add as many separate configurations as you like — each one runs independently.';
+    'Choose a strategy, the pairs it applies to, and the candle timeframe it should evaluate. Each configuration runs independently.';
   document.getElementById('add-strategy-submit').textContent = 'Add strategy';
   document.getElementById('button-delete-strategy').hidden = true;
 }
@@ -565,10 +555,9 @@ function openEditStrategyModal(id) {
   form.edit_id.value = strategy.id;
   form.kind.value = strategy.kind;
   form.name.value = strategy.name;
+  form.timeframe.value = strategy.timeframe || 'M5';
   form.delivery_mode.value = strategy.delivery_mode;
   form.max_lot_size.value = strategy.max_lot_size;
-  form.ema_fast_period.value = strategy.config?.ema_fast_period ?? 9;
-  form.ema_slow_period.value = strategy.config?.ema_slow_period ?? 21;
   updateStrategyParameterVisibility();
 
   strategySelectedSymbols = (strategy.symbols || []).slice();
@@ -627,20 +616,17 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
   }
 
   const editId = form.edit_id.value;
-  const fastEma = Math.min(99, Math.max(1, parseInt(form.ema_fast_period.value, 10) || 9));
-  const slowEma = Math.min(100, Math.max(fastEma + 1, parseInt(form.ema_slow_period.value, 10) || 21));
-
   const payload = {
     terminal_id: state.activeTerminalId,
     name: form.name.value.trim(),
     kind: form.kind.value,
     signal_family: STRATEGY_KIND_SIGNAL_FAMILY[form.kind.value] || 'momentum',
     delivery_mode: form.delivery_mode.value,
+    timeframe: form.timeframe.value,
+    signal_ttl_seconds: TIMEFRAME_SIGNAL_TTL_SECONDS[form.timeframe.value] || 300,
     symbols,
     max_lot_size: parseFloat(form.max_lot_size.value) || 0.01,
-    config: form.kind.value === 'ema_trend'
-      ? { ...(state.strategies.find((strategy) => strategy.id === editId)?.config || {}), ema_fast_period: fastEma, ema_slow_period: slowEma }
-      : (state.strategies.find((strategy) => strategy.id === editId)?.config || {}),
+    config: state.strategies.find((strategy) => strategy.id === editId)?.config || {},
   };
 
   const { error } = editId
@@ -1411,10 +1397,11 @@ async function loadStrategies() {
   const { data, error } = await supabase
     .from('strategies')
     .select(
-      'id, name, kind, enabled, delivery_mode, symbols, max_lot_size, signal_ttl_seconds, ' +
+      'id, name, kind, timeframe, enabled, delivery_mode, symbols, max_lot_size, signal_ttl_seconds, ' +
         'news_posture, news_window_minutes, news_min_impact, news_exploit_size_multiplier, config'
     )
     .eq('terminal_id', state.activeTerminalId)
+    .in('kind', ACTIVE_STRATEGY_KINDS)
     .order('created_at', { ascending: true });
 
   if (error) {
@@ -1435,7 +1422,7 @@ function renderStrategies() {
 
   strategyList.innerHTML = state.strategies
     .map((s) => {
-      const symbolLabel = (s.symbols || []).slice(0, 2).join(' · ') || s.kind || 'Custom';
+      const symbolLabel = `${(s.symbols || []).slice(0, 2).join(' · ') || 'No pairs'} · ${s.timeframe || 'M5'}`;
       return `
       <div class="mini-table-row" data-strategy-id="${s.id}">
         <span class="avatar-badge" aria-hidden="true">${initials(s.name)}</span>
@@ -1958,13 +1945,13 @@ function renderPairsView() {
           </label>
         </div>
 
-        <div class="pair-strength${trend.stale ? ' is-stale' : ''}" aria-label="BUY versus SELL strength: ${trend.status}" title="${trend.detail}">
+        <div class="pair-strength${trend.stale ? ' is-stale' : ''}" aria-label="Trend strength: ${trend.status}" title="${trend.detail}">
           <div class="pair-strength-heading">
-            <span class="pair-card-section-label">BUY vs SELL strength</span>
+            <span class="pair-card-section-label">Trend Strength</span>
             <span class="pair-strength-pending">${trend.status}</span>
           </div>
           <div class="pair-strength-bar" role="meter" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="${Math.round(trend.score)}"><span style="left:${trend.position}%"></span></div>
-          <div class="pair-strength-labels"><span>SELL</span><span class="pair-strength-score">${trend.score > 0 ? '+' : ''}${Math.round(trend.score)}</span><span>BUY</span></div>
+          <div class="pair-strength-labels"><span>SELL</span><span>BUY</span></div>
         </div>
 
         <div>
@@ -3052,7 +3039,7 @@ function renderStrategyStatusTab() {
   const deliveryLabels = { auto: 'Auto', manual_confirm: 'Manual confirm' };
   list.innerHTML = state.strategies
     .map((s) => {
-      const symbolLabel = (s.symbols || []).join(' · ') || s.kind || 'Custom';
+      const symbolLabel = `${(s.symbols || []).join(' · ') || 'No pairs'} · ${s.timeframe || 'M5'}`;
       const statusTag = s.enabled ? '<span class="tag-badge tag-ok">Enabled</span>' : '<span class="tag-badge tag-neutral">Disabled</span>';
       const posture = s.news_posture || 'avoid';
       const isExploit = posture === 'exploit';
