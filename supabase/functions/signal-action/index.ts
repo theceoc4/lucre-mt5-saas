@@ -50,6 +50,16 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+function versionAtLeast(actual: unknown, required: string): boolean {
+  const parse = (value: unknown) => String(value ?? "").split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const left = parse(actual);
+  const right = parse(required);
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    if ((left[i] ?? 0) !== (right[i] ?? 0)) return (left[i] ?? 0) > (right[i] ?? 0);
+  }
+  return true;
+}
+
 // Simplified UTC session bucketing. London/NY overlap (12:00-16:00 UTC) is the
 // highest-liquidity window and is tagged 'overlap' rather than either session
 // individually. This is a heuristic pending a real session-calendar source.
@@ -91,14 +101,14 @@ Deno.serve(async (req: Request) => {
 
   const { data: delivery, error: deliveryError } = await admin
     .from("signal_deliveries")
-    .select("*, signals(*), mt5_terminals(id, user_id, max_open_positions)")
+    .select("*, signals(*), mt5_terminals(id, user_id, max_open_positions, ea_version)")
     .eq("id", body.signal_delivery_id)
     .maybeSingle();
 
   if (deliveryError) return jsonResponse({ error: "lookup_failed", detail: deliveryError.message }, 500);
   if (!delivery) return jsonResponse({ error: "signal_delivery_not_found" }, 404);
 
-  const terminal = delivery.mt5_terminals as unknown as { id: string; user_id: string; max_open_positions: number };
+  const terminal = delivery.mt5_terminals as unknown as { id: string; user_id: string; max_open_positions: number; ea_version: string | null };
   if (!terminal || terminal.user_id !== userData.user.id) return jsonResponse({ error: "forbidden" }, 403);
 
   // v1.0.2: pass the signal's strategy_id through onto the ea_commands row
@@ -112,8 +122,12 @@ Deno.serve(async (req: Request) => {
     symbol: string;
     side: "buy" | "sell";
     suggested_volume: number;
+    suggested_risk_percent: number | null;
     suggested_sl: number | null;
     suggested_tp: number | null;
+    entry_atr: number | null;
+    entry_spread_points: number | null;
+    initial_risk_distance: number | null;
     session: string | null;
     htf_regime: string | null;
     near_news_event: boolean;
@@ -122,6 +136,9 @@ Deno.serve(async (req: Request) => {
     expires_at: string;
   };
   if (!signal) return jsonResponse({ error: "signal_not_found" }, 404);
+  if (!versionAtLeast(terminal.ea_version, "1.0.29")) {
+    return jsonResponse({ error: "ea_upgrade_required", required_version: "1.0.29" }, 409);
+  }
 
   const now = new Date();
 
@@ -160,6 +177,7 @@ Deno.serve(async (req: Request) => {
   }
 
   let effectiveVolume = signal.suggested_volume;
+  let effectiveRiskPercent = Number(signal.suggested_risk_percent ?? 0.5);
   if (
     throttlePolicy?.decision === "downweight" &&
     throttlePolicy.downweight_factor != null &&
@@ -170,7 +188,13 @@ Deno.serve(async (req: Request) => {
     // insert-time gate (migration 032) never saw it, so apply the discount
     // now instead of shipping the un-discounted suggested_volume.
     effectiveVolume = Math.round(signal.suggested_volume * throttlePolicy.downweight_factor * 100) / 100;
+    effectiveRiskPercent *= throttlePolicy.downweight_factor;
   }
+
+  const { data: strategy } = await admin.from("strategies")
+    .select("name,kind,timeframe")
+    .eq("id", signal.strategy_id)
+    .maybeSingle();
 
   const symbolResolution = await resolveBrokerSymbol(admin, terminal.id, signal.symbol);
   if (symbolResolution.error) {
@@ -193,8 +217,13 @@ Deno.serve(async (req: Request) => {
       symbol: brokerSymbol,
       side: signal.side,
       volume: effectiveVolume,
+      risk_percent: effectiveRiskPercent,
       sl: signal.suggested_sl,
       tp: signal.suggested_tp,
+      entry_atr: signal.entry_atr,
+      entry_spread_points: signal.entry_spread_points,
+      initial_risk_distance: signal.initial_risk_distance,
+      auto_manage: true,
       idempotency_key: idempotencyKey,
       signal_delivery_id: delivery.id,
       strategy_id: signal.strategy_id ?? null,
@@ -202,6 +231,22 @@ Deno.serve(async (req: Request) => {
       htf_regime: signal.htf_regime,
       near_news_event: signal.near_news_event,
       news_event_id: signal.news_event_id,
+      strategy_name_at_entry: strategy?.name ?? "Strategy",
+      origin_detail: "strategy_manual_confirm",
+      risk_defined: true,
+      entry_context: {
+        version: 2,
+        captured_at: now.toISOString(),
+        origin: "strategy_manual_confirm",
+        strategy_name_at_entry: strategy?.name ?? "Strategy",
+        strategy_kind: strategy?.kind ?? null,
+        timeframe: strategy?.timeframe ?? null,
+        canonical_symbol: signal.symbol,
+        risk_percent_total: effectiveRiskPercent,
+        initial_atr: signal.entry_atr,
+        initial_risk_distance: signal.initial_risk_distance,
+        entry_spread_points: signal.entry_spread_points,
+      },
     })
     .select()
     .single();

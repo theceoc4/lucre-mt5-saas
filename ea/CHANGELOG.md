@@ -1,5 +1,13 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.29 — Broker-native adaptive risk and exit telemetry (2026-08-28)
+
+- Reports its EA version so the backend can safely gate newer execution capabilities.
+- Sizes strategy orders from percentage-of-balance risk using MT5 `OrderCalcProfit`, the live entry quote, and the protective stop.
+- Treats strategy lot size as a hard ceiling and always rounds calculated volume down to the broker lot step.
+- Reports MT5 close reasons (SL, TP, manual, expert, stop-out, rollover, or other) for outcome analysis.
+- Remains backward-compatible with fixed-volume manual orders and older commands that do not include `risk_percent`.
+
 ## v1.0.24 — Ephemeral live position stream (2026-08-25)
 
 - Broadcasts one aggregate mark-to-market snapshot at most every two seconds

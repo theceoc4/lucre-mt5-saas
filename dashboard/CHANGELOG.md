@@ -7,6 +7,13 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.29 — Adaptive strategy risk controls (2026-08-28)
+
+- Strategy setup now uses maximum lot size as a safety ceiling and adds configurable percentage risk per signal.
+- Default risk is 0.50% for Momentum Breakout and 0.35% for Confirmed Trend Pullback.
+- Strategy status now shows both percentage risk and the maximum-lot ceiling.
+- Added clearer execution errors for EA upgrade requirements and broker risk-sizing limits.
+
 ## v1.0.28 — Strategy rebuild and simplified trend meter (2026-08-27)
 
 - Renamed the pair-card meter to Trend Strength and removed its numeric score;

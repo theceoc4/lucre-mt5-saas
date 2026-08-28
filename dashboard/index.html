@@ -162,8 +162,12 @@
             <option value="manual_confirm">Manual confirm (tap-to-execute)</option>
             <option value="auto">Auto</option>
           </select>
-          <label for="strategy-lot" style="margin-top: var(--space-3);">Starting lot size</label>
-          <input id="strategy-lot" name="max_lot_size" type="number" step="0.01" min="0.01" value="0.01" />
+          <label for="strategy-lot" style="margin-top: var(--space-3);">Maximum lot size</label>
+          <input id="strategy-lot" name="max_lot_size" type="number" step="0.01" min="0.01" value="0.10" />
+          <p class="field-hint">Maximum lot cap; actual size is reduced to honor the risk percentage.</p>
+          <label for="strategy-risk-percent" style="margin-top: var(--space-3);">Risk per signal (%)</label>
+          <input id="strategy-risk-percent" name="risk_percent" type="number" step="0.05" min="0.05" max="5" value="0.50" />
+          <p class="field-hint">Total balance risk across all execution legs if the initial stop is hit.</p>
         </div>
       </div>
       <p class="auth-message" id="add-strategy-message" role="status"></p>

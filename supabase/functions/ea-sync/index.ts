@@ -72,6 +72,19 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+const CLOSE_REASONS = new Set(["sl", "tp", "manual", "agent", "stop_out", "rollover", "other"]);
+
+function closeReason(value?: string | null): string | null {
+  return value && CLOSE_REASONS.has(value) ? value : null;
+}
+
+function realizedR(position: Record<string, unknown>, closePrice: number): number | null {
+  const risk = Number(position.initial_risk_distance ?? 0);
+  const open = Number(position.open_price ?? 0);
+  if (!(risk > 0) || !(open > 0) || !(closePrice > 0)) return null;
+  return (position.side === "sell" ? open - closePrice : closePrice - open) / risk;
+}
+
 async function sha256Hex(input: string): Promise<string> {
   const data = new TextEncoder().encode(input);
   const digest = await crypto.subtle.digest("SHA-256", data);
@@ -119,6 +132,7 @@ interface ClosedDeal {
   swap?: number;
   fee?: number;
   close_time: string;
+  reason?: string;
 }
 
 interface AccountHistoryDeal {
@@ -168,6 +182,7 @@ Deno.serve(async (req: Request) => {
       account_login?: string;
       server?: string;
       is_live?: boolean;
+      ea_version?: string;
     };
     positions?: PositionReport[];
     command_results?: CommandResult[];
@@ -194,6 +209,7 @@ Deno.serve(async (req: Request) => {
     if (body.account.account_login !== undefined) accountUpdate.account_login = body.account.account_login;
     if (body.account.server !== undefined) accountUpdate.server = body.account.server;
     if (body.account.is_live !== undefined) accountUpdate.is_live = body.account.is_live;
+    if (body.account.ea_version !== undefined) accountUpdate.ea_version = body.account.ea_version;
   }
   const { error: heartbeatError } = await admin
     .from("mt5_terminals")
@@ -274,7 +290,7 @@ Deno.serve(async (req: Request) => {
             open_time: position.open_time,
             close_time: result.close_time ?? nowIso,
             profit: result.profit,
-            r_multiple: result.r_multiple ?? null,
+            r_multiple: result.r_multiple ?? realizedR(position, result.close_price),
             session: position.session ?? command.session,
             htf_regime: position.htf_regime ?? command.htf_regime,
             near_news_event: position.near_news_event ?? command.near_news_event,
@@ -286,6 +302,19 @@ Deno.serve(async (req: Request) => {
             entry_context: position.entry_context,
             net_profit: netProfit,
             outcome,
+            close_reason: command.source === "dashboard_close" ? "manual" : "agent",
+            initial_sl: position.initial_sl,
+            initial_tp: position.initial_tp,
+            initial_risk_distance: position.initial_risk_distance,
+            risk_percent: position.risk_percent,
+            entry_atr: position.entry_atr,
+            entry_spread_points: position.entry_spread_points,
+            mfe_price_distance: position.mfe_price_distance,
+            mae_price_distance: position.mae_price_distance,
+            mfe_r: position.mfe_r,
+            mae_r: position.mae_r,
+            max_unrealized_pl: position.max_unrealized_pl,
+            min_unrealized_pl: position.min_unrealized_pl,
           });
           if (tradeHistoryError) {
             processedResults.push({ ea_command_id: result.ea_command_id, ok: false, detail: `trade_history: ${tradeHistoryError.message}` });
@@ -295,6 +324,14 @@ Deno.serve(async (req: Request) => {
           await admin.from("positions").update({ status: "closed", updated_at: nowIso }).eq("id", position.id);
         }
       }
+    }
+
+    if (result.status === "executed" && command.command_type === "modify_sl_tp" && command.mt5_ticket) {
+      await admin.from("positions").update({
+        management_stage: command.management_stage ?? 0,
+        last_management_bar_time: command.management_source_bar_time ?? nowIso,
+        updated_at: nowIso,
+      }).eq("terminal_id", terminal.id).eq("mt5_ticket", command.mt5_ticket);
     }
 
     processedResults.push({ ea_command_id: result.ea_command_id, ok: true });
@@ -383,7 +420,7 @@ Deno.serve(async (req: Request) => {
         open_time: position.open_time,
         close_time: deal.close_time,
         profit: displayProfit,
-        r_multiple: null,
+        r_multiple: realizedR(position, deal.close_price),
         session: position.session ?? null,
         htf_regime: position.htf_regime ?? null,
         near_news_event: position.near_news_event ?? false,
@@ -395,6 +432,19 @@ Deno.serve(async (req: Request) => {
         entry_context: position.entry_context,
         net_profit: netProfit,
         outcome,
+        close_reason: closeReason(deal.reason),
+        initial_sl: position.initial_sl,
+        initial_tp: position.initial_tp,
+        initial_risk_distance: position.initial_risk_distance,
+        risk_percent: position.risk_percent,
+        entry_atr: position.entry_atr,
+        entry_spread_points: position.entry_spread_points,
+        mfe_price_distance: position.mfe_price_distance,
+        mae_price_distance: position.mae_price_distance,
+        mfe_r: position.mfe_r,
+        mae_r: position.mae_r,
+        max_unrealized_pl: position.max_unrealized_pl,
+        min_unrealized_pl: position.min_unrealized_pl,
       },
       { onConflict: "terminal_id,mt5_ticket", ignoreDuplicates: true },
     );
@@ -440,12 +490,19 @@ Deno.serve(async (req: Request) => {
     reportedTickets.add(p.mt5_ticket);
     const { data: existing } = await admin
       .from("positions")
-      .select("id")
+      .select("id, side, open_price, initial_sl, initial_risk_distance, mfe_price_distance, mae_price_distance, mfe_r, mae_r, max_unrealized_pl, min_unrealized_pl")
       .eq("terminal_id", terminal.id)
       .eq("mt5_ticket", p.mt5_ticket)
       .maybeSingle();
 
     if (existing) {
+      const openPrice = Number(existing.open_price ?? p.open_price);
+      const riskDistance = Number(existing.initial_risk_distance ?? 0)
+        || (existing.initial_sl ? Math.abs(openPrice - Number(existing.initial_sl)) : 0);
+      const favorableDistance = Math.max(0, p.side === "buy" ? p.current_price - openPrice : openPrice - p.current_price);
+      const adverseDistance = Math.max(0, p.side === "buy" ? openPrice - p.current_price : p.current_price - openPrice);
+      const mfeDistance = Math.max(Number(existing.mfe_price_distance ?? 0), favorableDistance);
+      const maeDistance = Math.max(Number(existing.mae_price_distance ?? 0), adverseDistance);
       await admin
         .from("positions")
         .update({
@@ -453,6 +510,13 @@ Deno.serve(async (req: Request) => {
           sl: p.sl ?? null,
           tp: p.tp ?? null,
           unrealized_pl: p.unrealized_pl,
+          initial_risk_distance: riskDistance || null,
+          mfe_price_distance: mfeDistance,
+          mae_price_distance: maeDistance,
+          mfe_r: riskDistance > 0 ? mfeDistance / riskDistance : null,
+          mae_r: riskDistance > 0 ? maeDistance / riskDistance : null,
+          max_unrealized_pl: Math.max(Number(existing.max_unrealized_pl ?? p.unrealized_pl), p.unrealized_pl),
+          min_unrealized_pl: Math.min(Number(existing.min_unrealized_pl ?? p.unrealized_pl), p.unrealized_pl),
           status: "open",
           closing_since: null,
           updated_at: nowIso,
@@ -482,6 +546,11 @@ Deno.serve(async (req: Request) => {
         origin_detail: string;
         risk_defined: boolean;
         entry_context: Record<string, unknown>;
+        risk_percent: number | null;
+        entry_atr: number | null;
+        entry_spread_points: number | null;
+        initial_risk_distance: number | null;
+        auto_manage: boolean;
       } = {
         strategy_id: p.strategy_id ?? null,
         session: null,
@@ -493,10 +562,15 @@ Deno.serve(async (req: Request) => {
         origin_detail: "mt5_direct_manual",
         risk_defined: false,
         entry_context: {},
+        risk_percent: null,
+        entry_atr: null,
+        entry_spread_points: null,
+        initial_risk_distance: null,
+        auto_manage: false,
       };
       const { data: openCommand } = await admin
         .from("ea_commands")
-        .select("strategy_id, session, htf_regime, near_news_event, news_event_id, source, strategy_name_at_entry, origin_detail, risk_defined, entry_context")
+        .select("strategy_id, session, htf_regime, near_news_event, news_event_id, source, strategy_name_at_entry, origin_detail, risk_defined, entry_context, risk_percent, entry_atr, entry_spread_points, initial_risk_distance, auto_manage")
         .eq("terminal_id", terminal.id)
         .eq("mt5_ticket", p.mt5_ticket)
         .eq("command_type", "open")
@@ -521,6 +595,11 @@ Deno.serve(async (req: Request) => {
           origin_detail: openCommand.origin_detail ?? openCommand.source ?? "dashboard_manual",
           risk_defined: openCommand.risk_defined ?? Boolean(p.sl),
           entry_context: openCommand.entry_context ?? {},
+          risk_percent: openCommand.risk_percent ?? null,
+          entry_atr: openCommand.entry_atr ?? null,
+          entry_spread_points: openCommand.entry_spread_points ?? null,
+          initial_risk_distance: openCommand.initial_risk_distance ?? null,
+          auto_manage: openCommand.auto_manage ?? false,
         };
       } else {
         const directContext = await captureMarketContext(admin, {
@@ -531,6 +610,8 @@ Deno.serve(async (req: Request) => {
           near_news_event: directContext.near_news_event, news_event_id: directContext.news_event_id,
           source: "manual_order", strategy_name_at_entry: "MT5 direct manual", origin_detail: "mt5_direct_manual",
           risk_defined: Boolean(p.sl), entry_context: directContext.context,
+          risk_percent: null, entry_atr: null, entry_spread_points: null,
+          initial_risk_distance: p.sl ? Math.abs(p.open_price - p.sl) : null, auto_manage: false,
         };
       }
 
@@ -557,6 +638,19 @@ Deno.serve(async (req: Request) => {
         origin_detail: openContext.origin_detail,
         risk_defined: openContext.risk_defined,
         entry_context: openContext.entry_context,
+        initial_sl: p.sl ?? null,
+        initial_tp: p.tp ?? null,
+        initial_risk_distance: p.sl ? Math.abs(p.open_price - p.sl) : openContext.initial_risk_distance,
+        risk_percent: openContext.risk_percent,
+        entry_atr: openContext.entry_atr,
+        entry_spread_points: openContext.entry_spread_points,
+        mfe_price_distance: 0,
+        mae_price_distance: 0,
+        mfe_r: 0,
+        mae_r: 0,
+        max_unrealized_pl: p.unrealized_pl,
+        min_unrealized_pl: p.unrealized_pl,
+        auto_manage: openContext.auto_manage,
         updated_at: nowIso,
       });
     }
@@ -581,7 +675,7 @@ Deno.serve(async (req: Request) => {
     const { data: trackedPositions } = await admin
       .from("positions")
       .select(
-        "id, mt5_ticket, symbol, side, volume, open_price, current_price, open_time, strategy_id, source, status, closing_since, session, htf_regime, near_news_event, news_event_id, strategy_name_at_entry, origin_detail, risk_defined, entry_context"
+        "id, mt5_ticket, symbol, side, volume, open_price, current_price, open_time, strategy_id, source, status, closing_since, session, htf_regime, near_news_event, news_event_id, strategy_name_at_entry, origin_detail, risk_defined, entry_context, initial_sl, initial_tp, initial_risk_distance, risk_percent, entry_atr, entry_spread_points, mfe_price_distance, mae_price_distance, mfe_r, mae_r, max_unrealized_pl, min_unrealized_pl"
       )
       .eq("terminal_id", terminal.id)
       .in("status", ["open", "closing"]);
@@ -647,6 +741,18 @@ Deno.serve(async (req: Request) => {
           outcome: "breakeven",
           close_reason: "reconciled_missing_ea_report",
           profit_verified: false,
+          initial_sl: pos.initial_sl,
+          initial_tp: pos.initial_tp,
+          initial_risk_distance: pos.initial_risk_distance,
+          risk_percent: pos.risk_percent,
+          entry_atr: pos.entry_atr,
+          entry_spread_points: pos.entry_spread_points,
+          mfe_price_distance: pos.mfe_price_distance,
+          mae_price_distance: pos.mae_price_distance,
+          mfe_r: pos.mfe_r,
+          mae_r: pos.mae_r,
+          max_unrealized_pl: pos.max_unrealized_pl,
+          min_unrealized_pl: pos.min_unrealized_pl,
         },
         { onConflict: "terminal_id,mt5_ticket", ignoreDuplicates: true }
       );

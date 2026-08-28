@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.24 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.29 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.24"
+#property version   "1.29"
 #property strict
 
 
@@ -700,6 +700,65 @@ bool EASync_ValidateOpenRisk(const string symbol, const bool is_buy, const doubl
 }
 
 //+------------------------------------------------------------------+
+//| Convert a percentage-of-balance risk budget into a broker-valid  |
+//| volume using the actual entry and protective stop. The command's |
+//| volume remains an upper bound. Volume is always rounded DOWN, so  |
+//| broker normalization can never silently increase intended risk.  |
+//+------------------------------------------------------------------+
+bool EASync_RiskSizedVolume(const string symbol, const bool is_buy,
+                            const double entry_price, const double stop_loss,
+                            const double risk_percent, const double max_volume,
+                            double &sized_volume, string &reason)
+{
+   if(risk_percent <= 0.0)
+   {
+      sized_volume = max_volume;
+      return true;
+   }
+   if(stop_loss <= 0.0 || max_volume <= 0.0)
+   {
+      reason = "risk_sizing_requires_stop_and_volume_cap";
+      return false;
+   }
+
+   double one_lot_profit = 0.0;
+   ENUM_ORDER_TYPE order_type = is_buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   if(!OrderCalcProfit(order_type, symbol, 1.0, entry_price, stop_loss, one_lot_profit))
+   {
+      reason = "risk_calculation_failed";
+      return false;
+   }
+   double risk_per_lot = MathAbs(one_lot_profit);
+   double risk_budget = AccountInfoDouble(ACCOUNT_BALANCE) * risk_percent / 100.0;
+   if(risk_per_lot <= 0.0 || risk_budget <= 0.0)
+   {
+      reason = "risk_calculation_failed";
+      return false;
+   }
+
+   double min_volume = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double broker_max = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double volume_step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   double raw_volume = risk_budget / risk_per_lot;
+   double capped_volume = MathMin(raw_volume, MathMin(max_volume,
+                                  MathMin(broker_max, LUCRE_HARD_MAX_VOLUME_PER_ORDER)));
+   if(min_volume <= 0.0 || volume_step <= 0.0 || capped_volume + 0.000000001 < min_volume)
+   {
+      reason = "risk_budget_below_min_volume";
+      return false;
+   }
+
+   double steps = MathFloor((capped_volume - min_volume + 0.000000001) / volume_step);
+   sized_volume = NormalizeDouble(min_volume + steps * volume_step, 8);
+   if(sized_volume < min_volume || sized_volume <= 0.0)
+   {
+      reason = "risk_budget_below_min_volume";
+      return false;
+   }
+   return true;
+}
+
+//+------------------------------------------------------------------+
 //| Executes one 'open'/'hedge_open' command: market order.           |
 //| hedge_open runs the identical path as open — see file header for  |
 //| why (backend doesn't yet accept basket tagging on the report).    |
@@ -709,7 +768,7 @@ bool EASync_ValidateOpenRisk(const string symbol, const bool is_buy, const doubl
 void EASync_ExecuteOpen(const string ea_command_id, const string symbol, const string side,
                          const double volume, const double sl, const double tp,
                          const double sl_pips, const double tp_pips, const int max_deviation,
-                         const string strategy_id, const string source)
+                         const string strategy_id, const string source, const double risk_percent)
 {
    // Idempotency guard (gap #2 fix): if a position tagged with this exact
    // command's comment already exists, this command was already executed —
@@ -746,11 +805,6 @@ void EASync_ExecuteOpen(const string ea_command_id, const string symbol, const s
    }
 
    string safety_reason = "";
-   if(!EASync_ValidateOpenVolume(symbol, volume, safety_reason))
-   {
-      EASync_QueueFailed(ea_command_id, safety_reason);
-      return;
-   }
    if(PositionsTotal() >= LUCRE_HARD_MAX_OPEN_POSITIONS)
    {
       EASync_QueueFailed(ea_command_id, "hard_max_open_positions_reached");
@@ -765,9 +819,19 @@ void EASync_ExecuteOpen(const string ea_command_id, const string symbol, const s
 
    double price = is_buy ? SymbolInfoDouble(symbol, SYMBOL_ASK) : SymbolInfoDouble(symbol, SYMBOL_BID);
 
+   double resolved_sl = EASync_ResolveStop(symbol, sl, sl_pips, price, is_buy, true);
+   double resolved_tp = EASync_ResolveStop(symbol, tp, tp_pips, price, is_buy, false);
+   double actual_volume = volume;
+   if(!EASync_RiskSizedVolume(symbol, is_buy, price, resolved_sl, risk_percent, volume, actual_volume, safety_reason)
+      || !EASync_ValidateOpenVolume(symbol, actual_volume, safety_reason))
+   {
+      EASync_QueueFailed(ea_command_id, safety_reason);
+      return;
+   }
+
    request.action       = TRADE_ACTION_DEAL;
    request.symbol       = symbol;
-   request.volume       = volume;
+   request.volume       = actual_volume;
    request.type         = is_buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
    request.price        = price;
    request.deviation    = max_deviation;
@@ -775,12 +839,10 @@ void EASync_ExecuteOpen(const string ea_command_id, const string symbol, const s
    request.comment      = "lh:" + EASync_CommandTradeTag(ea_command_id);
    // type_filling is set per-attempt inside EASync_SendOrderWithFillingFallback().
 
-   double resolved_sl = EASync_ResolveStop(symbol, sl, sl_pips, price, is_buy, true);
-   double resolved_tp = EASync_ResolveStop(symbol, tp, tp_pips, price, is_buy, false);
    // Discretionary dashboard orders may be intentionally stopless. They still
    // obey MT5/broker volume, quote, margin and AutoTrading constraints above;
    // automated strategy orders retain the mandatory-stop/risk ceiling.
-   if(source != "manual_order" && !EASync_ValidateOpenRisk(symbol, is_buy, volume, price, resolved_sl, safety_reason))
+   if(source != "manual_order" && !EASync_ValidateOpenRisk(symbol, is_buy, actual_volume, price, resolved_sl, safety_reason))
    {
       EASync_QueueFailed(ea_command_id, safety_reason);
       return;
@@ -797,7 +859,8 @@ void EASync_ExecuteOpen(const string ea_command_id, const string symbol, const s
 
    EASync_TrackStrategyForTicket(result.order, strategy_id);
    EASync_QueueExecutedOpen(ea_command_id, result.order);
-   PrintFormat("EASync: opened %s %.2f %s, ticket=%I64d, command=%s", side, volume, symbol, result.order, ea_command_id);
+   PrintFormat("EASync: opened %s %.2f %s (risk %.3f%%, cap %.2f), ticket=%I64d, command=%s",
+               side, actual_volume, symbol, risk_percent, volume, result.order, ea_command_id);
 }
 
 //+------------------------------------------------------------------+
@@ -1011,10 +1074,10 @@ void EASync_ExecuteCommand(const string id, const string command_type, const str
                            const string side, const double volume, const double sl, const double tp,
                            const long mt5_ticket, const int max_deviation,
                            const double sl_pips, const double tp_pips, const string strategy_id,
-                           const string source)
+                           const string source, const double risk_percent)
 {
    if(command_type == "open" || command_type == "hedge_open")
-      EASync_ExecuteOpen(id, symbol, side, volume, sl, tp, sl_pips, tp_pips, max_deviation, strategy_id, source);
+      EASync_ExecuteOpen(id, symbol, side, volume, sl, tp, sl_pips, tp_pips, max_deviation, strategy_id, source, risk_percent);
    else if(command_type == "modify" || command_type == "modify_sl_tp")
       EASync_ExecuteModify(id, mt5_ticket, sl, tp, sl_pips, tp_pips);
    else if(command_type == "close")
@@ -1138,12 +1201,13 @@ void EASync_ProcessPendingCommands(const string json)
             double tp_pips       = EASync_JsonGetNumber(json, obj_start, obj_end, "tp_pips");
             string strategy_id   = EASync_JsonGetRaw(json, obj_start, obj_end, "strategy_id");
             string source        = EASync_JsonGetRaw(json, obj_start, obj_end, "source");
+            double risk_percent  = EASync_JsonGetNumber(json, obj_start, obj_end, "risk_percent");
 
             if(id != "")
             {
                PrintFormat("EASync: executing command id=%s type=%s symbol=%s", id, command_type, symbol);
                EASync_ExecuteCommand(id, command_type, symbol, side, volume, sl, tp,
-                                      mt5_ticket, (int)max_deviation, sl_pips, tp_pips, strategy_id, source);
+                                      mt5_ticket, (int)max_deviation, sl_pips, tp_pips, strategy_id, source, risk_percent);
             }
             obj_start = -1;
          }
@@ -1168,7 +1232,8 @@ string EASync_BuildRequestBody()
       "\"margin_level\":" + DoubleToString(AccountInfoDouble(ACCOUNT_MARGIN_LEVEL), 2) + ","
       "\"account_login\":\"" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) + "\","
       "\"server\":\"" + EASync_JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\","
-      "\"is_live\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL ? "true" : "false")
+      "\"is_live\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL ? "true" : "false") + ","
+      "\"ea_version\":\"1.0.29\""
       + "}";
 
    string positions_json = "\"positions\":[";
@@ -1288,6 +1353,17 @@ string EASync_BuildAccountHistoryJson()
 //| accounts; a position that sits in 'closing' for over an hour would  |
 //| need a wider one-off scan, which is not expected in steady state.  |
 //+------------------------------------------------------------------+
+string EASync_DealReasonText(const long reason)
+{
+   if(reason == DEAL_REASON_SL) return "sl";
+   if(reason == DEAL_REASON_TP) return "tp";
+   if(reason == DEAL_REASON_CLIENT || reason == DEAL_REASON_MOBILE || reason == DEAL_REASON_WEB) return "manual";
+   if(reason == DEAL_REASON_EXPERT) return "agent";
+   if(reason == DEAL_REASON_SO) return "stop_out";
+   if(reason == DEAL_REASON_ROLLOVER) return "rollover";
+   return "other";
+}
+
 string EASync_BuildClosedDealsJson()
 {
    datetime now = TimeCurrent();
@@ -1329,6 +1405,7 @@ string EASync_BuildClosedDealsJson()
          double deal_fee = HistoryDealGetDouble(deal_ticket, DEAL_FEE);
          datetime close_time = (datetime)HistoryDealGetInteger(deal_ticket, DEAL_TIME);
          string symbol = HistoryDealGetString(deal_ticket, DEAL_SYMBOL);
+         string reason = EASync_DealReasonText((long)HistoryDealGetInteger(deal_ticket, DEAL_REASON));
 
          if(!first) json += ",";
          first = false;
@@ -1340,6 +1417,7 @@ string EASync_BuildClosedDealsJson()
             "\"commission\":" + DoubleToString(deal_commission, 2) + ","
             "\"swap\":" + DoubleToString(deal_swap, 2) + ","
             "\"fee\":" + DoubleToString(deal_fee, 2) + ","
+            "\"reason\":\"" + reason + "\","
             "\"close_time\":\"" + EASync_ToIso8601(close_time) + "\""
             "}";
       }

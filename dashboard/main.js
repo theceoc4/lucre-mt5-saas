@@ -370,11 +370,19 @@ const STRATEGY_DESCRIPTIONS = {
   momentum_breakout: 'Earlier entries using EMA alignment, RSI, ADX and a 12-candle price breakout.',
   confirmed_trend_pullback: 'More selective entries after an established EMA/ADX trend pulls back and confirms continuation.',
 };
+const STRATEGY_DEFAULT_RISK_PERCENT = {
+  momentum_breakout: 0.50,
+  confirmed_trend_pullback: 0.35,
+};
 
 function updateStrategyParameterVisibility() {
   const kind = document.getElementById('strategy-kind')?.value;
   const description = document.getElementById('strategy-kind-description');
   if (description) description.textContent = STRATEGY_DESCRIPTIONS[kind] || '';
+  const form = document.getElementById('form-add-strategy');
+  if (form && !form.edit_id.value && document.activeElement?.id === 'strategy-kind') {
+    form.risk_percent.value = STRATEGY_DEFAULT_RISK_PERCENT[kind] || 0.50;
+  }
 }
 
 document.getElementById('strategy-kind')?.addEventListener('change', updateStrategyParameterVisibility);
@@ -558,6 +566,7 @@ function openEditStrategyModal(id) {
   form.timeframe.value = strategy.timeframe || 'M5';
   form.delivery_mode.value = strategy.delivery_mode;
   form.max_lot_size.value = strategy.max_lot_size;
+  form.risk_percent.value = strategy.risk_percent ?? STRATEGY_DEFAULT_RISK_PERCENT[strategy.kind] ?? 0.50;
   updateStrategyParameterVisibility();
 
   strategySelectedSymbols = (strategy.symbols || []).slice();
@@ -626,6 +635,7 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
     signal_ttl_seconds: TIMEFRAME_SIGNAL_TTL_SECONDS[form.timeframe.value] || 300,
     symbols,
     max_lot_size: parseFloat(form.max_lot_size.value) || 0.01,
+    risk_percent: Math.min(5, Math.max(0.05, parseFloat(form.risk_percent.value) || 0.50)),
     config: state.strategies.find((strategy) => strategy.id === editId)?.config || {},
   };
 
@@ -1224,6 +1234,10 @@ function humanizeCommandFailure(error) {
     broker_volume_step_mismatch: 'The volume does not match this broker’s lot step.',
     hard_max_open_positions_reached: 'The EA account-position limit has been reached.',
     max_open_positions_reached: 'The terminal open-position limit has been reached.',
+    risk_budget_below_min_volume: 'The calculated risk is smaller than this broker’s minimum trade size.',
+    risk_calculation_failed: 'MT5 could not calculate the broker-specific risk for this order.',
+    risk_sizing_requires_stop_and_volume_cap: 'Adaptive sizing requires a protective stop and maximum lot size.',
+    ea_upgrade_required: 'Update the Lucre EA to v1.0.29 or newer to use adaptive risk sizing.',
   };
   return labels[error] || error || 'MT5 did not provide a failure reason.';
 }
@@ -1294,7 +1308,7 @@ async function loadTerminals() {
   const { data, error } = await supabase
     .from('mt5_terminals')
     .select(
-      'id, label, broker, account_login, server, is_live, status, equity, balance, margin_level, api_key_last_four, api_key_last_rotated_at, max_manual_lot_size, max_daily_loss_usd, max_open_positions, force_symbol_rescan, last_symbol_scan_at, realtime_topic_id'
+      'id, label, broker, account_login, server, is_live, status, equity, balance, margin_level, ea_version, api_key_last_four, api_key_last_rotated_at, max_manual_lot_size, max_daily_loss_usd, max_open_positions, force_symbol_rescan, last_symbol_scan_at, realtime_topic_id'
     )
     .order('created_at', { ascending: true });
 
@@ -1397,7 +1411,7 @@ async function loadStrategies() {
   const { data, error } = await supabase
     .from('strategies')
     .select(
-      'id, name, kind, timeframe, enabled, delivery_mode, symbols, max_lot_size, signal_ttl_seconds, ' +
+      'id, name, kind, timeframe, enabled, delivery_mode, symbols, max_lot_size, risk_percent, signal_ttl_seconds, ' +
         'news_posture, news_window_minutes, news_min_impact, news_exploit_size_multiplier, config'
     )
     .eq('terminal_id', state.activeTerminalId)
@@ -3051,7 +3065,7 @@ function renderStrategyStatusTab() {
             <div class="strategy-name">${s.name}${statusTag}</div>
             <div class="strategy-sub">${symbolLabel} · ${
         deliveryLabels[s.delivery_mode] || s.delivery_mode || '—'
-      } · max ${s.max_lot_size ?? '—'} lots · TTL ${s.signal_ttl_seconds ?? '—'}s</div>
+      } · ${s.risk_percent ?? '—'}% risk · max ${s.max_lot_size ?? '—'} lots · TTL ${s.signal_ttl_seconds ?? '—'}s</div>
           </div>
         </div>
         <div class="news-policy-panel" data-strategy-id="${s.id}">

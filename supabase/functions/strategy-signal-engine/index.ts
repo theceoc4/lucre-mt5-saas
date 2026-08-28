@@ -29,6 +29,7 @@ type PriceBar = {
   low: number;
   close: number;
   volume: number;
+  spread?: number | null;
 };
 
 type StrategyRow = {
@@ -40,6 +41,7 @@ type StrategyRow = {
   symbols: string[];
   delivery_mode: "auto" | "manual_confirm";
   max_lot_size: number | string;
+  risk_percent: number | string;
   signal_ttl_seconds: number | string;
   config: Record<string, unknown> | null;
 };
@@ -50,6 +52,8 @@ type SignalCandidate = {
   suggestedSl: number;
   suggestedTp: number;
   score: number;
+  entryAtr: number;
+  initialRiskDistance: number;
   // News policy starts here. An agent_policies cell can tighten this further.
   policyDecision: PolicyDecision;
 };
@@ -73,6 +77,16 @@ function finite(value: number | undefined): value is number {
 function numberValue(value: unknown, fallback: number): number {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function versionAtLeast(actual: unknown, required: string): boolean {
+  const parse = (value: unknown) => String(value ?? "").split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const left = parse(actual);
+  const right = parse(required);
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    if ((left[i] ?? 0) !== (right[i] ?? 0)) return (left[i] ?? 0) > (right[i] ?? 0);
+  }
+  return true;
 }
 
 function positiveConfig(config: Record<string, unknown> | null, key: string, fallback: number): number {
@@ -282,7 +296,9 @@ function evaluateStrategy(
     const bearishBody = (current.open - current.close) / candleRange;
     const spreadQuality = clamp01(Math.abs(currentFast - currentSlow) / currentAtr);
     const adxQuality = clamp01((currentAdx - 18) / 22);
-    const stopDistance = 1.2 * currentAtr;
+    const recent = bars.slice(-5);
+    const swingLow = Math.min(...recent.map((bar) => bar.low));
+    const swingHigh = Math.max(...recent.map((bar) => bar.high));
 
     if (
       currentFast > currentSlow && current.close > priorHigh && currentAdx >= 18 &&
@@ -290,11 +306,15 @@ function evaluateStrategy(
       currentFast - currentSlow >= 0.12 * currentAtr
     ) {
       const breakoutQuality = clamp01((current.close - priorHigh) / currentAtr);
+      const stopDistance = Math.max(1.5 * currentAtr, current.close - (swingLow - 0.2 * currentAtr));
+      if (stopDistance > 2.8 * currentAtr) return null;
+      const rewardMultiple = currentAdx >= 30 ? 2.2 : 1.8;
       return applyNewsDownweight({
         side: "buy", entryPrice: current.close,
         suggestedSl: current.close - stopDistance,
-        suggestedTp: current.close + 1.8 * stopDistance,
+        suggestedTp: current.close + rewardMultiple * stopDistance,
         score: clamp01(0.55 + 0.15 * adxQuality + 0.15 * spreadQuality + 0.15 * breakoutQuality),
+        entryAtr: currentAtr, initialRiskDistance: stopDistance,
       });
     }
     if (
@@ -303,11 +323,15 @@ function evaluateStrategy(
       currentSlow - currentFast >= 0.12 * currentAtr
     ) {
       const breakoutQuality = clamp01((priorLow - current.close) / currentAtr);
+      const stopDistance = Math.max(1.5 * currentAtr, (swingHigh + 0.2 * currentAtr) - current.close);
+      if (stopDistance > 2.8 * currentAtr) return null;
+      const rewardMultiple = currentAdx >= 30 ? 2.2 : 1.8;
       return applyNewsDownweight({
         side: "sell", entryPrice: current.close,
         suggestedSl: current.close + stopDistance,
-        suggestedTp: current.close - 1.8 * stopDistance,
+        suggestedTp: current.close - rewardMultiple * stopDistance,
         score: clamp01(0.55 + 0.15 * adxQuality + 0.15 * spreadQuality + 0.15 * breakoutQuality),
+        entryAtr: currentAtr, initialRiskDistance: stopDistance,
       });
     }
     return null;
@@ -337,11 +361,14 @@ function evaluateStrategy(
       previous.low <= previousFast && previous.close <= previousFast && previous.close > previousSlow &&
       current.close > currentFast && current.close > current.open
     ) {
-      const suggestedSl = Math.min(swingLow - 0.2 * currentAtr, current.close - 1.5 * currentAtr);
-      const risk = current.close - suggestedSl;
+      const risk = Math.max(1.8 * currentAtr, current.close - (swingLow - 0.25 * currentAtr));
+      if (risk > 3.2 * currentAtr) return null;
+      const suggestedSl = current.close - risk;
+      const rewardMultiple = currentAdx >= 35 ? 2.6 : 2.2;
       return applyNewsDownweight({
         side: "buy", entryPrice: current.close, suggestedSl,
-        suggestedTp: current.close + 2 * risk, score,
+        suggestedTp: current.close + rewardMultiple * risk, score,
+        entryAtr: currentAtr, initialRiskDistance: risk,
       });
     }
     if (
@@ -350,11 +377,14 @@ function evaluateStrategy(
       previous.high >= previousFast && previous.close >= previousFast && previous.close < previousSlow &&
       current.close < currentFast && current.close < current.open
     ) {
-      const suggestedSl = Math.max(swingHigh + 0.2 * currentAtr, current.close + 1.5 * currentAtr);
-      const risk = suggestedSl - current.close;
+      const risk = Math.max(1.8 * currentAtr, (swingHigh + 0.25 * currentAtr) - current.close);
+      if (risk > 3.2 * currentAtr) return null;
+      const suggestedSl = current.close + risk;
+      const rewardMultiple = currentAdx >= 35 ? 2.6 : 2.2;
       return applyNewsDownweight({
         side: "sell", entryPrice: current.close, suggestedSl,
-        suggestedTp: current.close - 2 * risk, score,
+        suggestedTp: current.close - rewardMultiple * risk, score,
+        entryAtr: currentAtr, initialRiskDistance: risk,
       });
     }
   }
@@ -426,6 +456,127 @@ async function reservePositionSlot(
   return { reserved: true };
 }
 
+async function manageOpenStrategyPositions(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  strategies: StrategyRow[],
+  eaVersionByTerminal: Map<string, unknown>,
+  nowIso: string,
+): Promise<number> {
+  if (strategies.length === 0) return 0;
+  const strategyById = new Map(strategies.map((strategy) => [strategy.id, strategy]));
+  const terminalIds = [...new Set(strategies.map((strategy) => strategy.terminal_id))];
+  const { data: positions, error } = await admin.from("positions")
+    .select("id,terminal_id,strategy_id,mt5_ticket,symbol,side,open_price,current_price,sl,tp,initial_risk_distance,entry_context,management_stage,last_management_bar_time")
+    .in("terminal_id", terminalIds).eq("status", "open").eq("auto_manage", true);
+  if (error) {
+    console.error("strategy-signal-engine: managed-position fetch failed", error.message);
+    return 0;
+  }
+
+  let queued = 0;
+  for (const position of positions ?? []) {
+    const strategy = strategyById.get(String(position.strategy_id));
+    if (!strategy || !versionAtLeast(eaVersionByTerminal.get(strategy.terminal_id), "1.0.29")) continue;
+    const { count: pendingManagementCount } = await admin.from("ea_commands")
+      .select("id", { count: "exact", head: true })
+      .eq("terminal_id", position.terminal_id)
+      .eq("mt5_ticket", position.mt5_ticket)
+      .eq("command_type", "modify_sl_tp")
+      .in("status", ["queued", "sent", "acknowledged"]);
+    if ((pendingManagementCount ?? 0) > 0) continue;
+    const risk = Number(position.initial_risk_distance);
+    const open = Number(position.open_price);
+    const mark = Number(position.current_price);
+    if (!(risk > EPSILON) || !Number.isFinite(open) || !Number.isFinite(mark)) continue;
+    const context = position.entry_context && typeof position.entry_context === "object" ? position.entry_context : {};
+    const canonicalSymbol = typeof context.canonical_symbol === "string" ? context.canonical_symbol : position.symbol;
+    const { data: descendingBars, error: barsError } = await admin.from("price_bars")
+      .select("bar_time,open,high,low,close,volume")
+      .eq("terminal_id", position.terminal_id).eq("symbol", canonicalSymbol).eq("timeframe", strategy.timeframe)
+      .order("bar_time", { ascending: false }).limit(60);
+    if (barsError || !descendingBars || descendingBars.length < 55) continue;
+    const bars: PriceBar[] = [...descendingBars].reverse().map((bar) => ({
+      bar_time: String(bar.bar_time), open: Number(bar.open), high: Number(bar.high),
+      low: Number(bar.low), close: Number(bar.close), volume: Number(bar.volume),
+    }));
+    const sourceBarTime = bars[bars.length - 1].bar_time;
+    if (position.last_management_bar_time && sourceBarTime <= position.last_management_bar_time) continue;
+    const atrValues = computeATR(bars, 14);
+    const adxValues = computeADX(bars, 14);
+    const ema20 = computeEMA(bars.map((bar) => bar.close), 20);
+    const atr = atrValues[atrValues.length - 1];
+    const adx = adxValues[adxValues.length - 1];
+    const latestClose = bars[bars.length - 1].close;
+    const latestEma = ema20[ema20.length - 1];
+    if (!allFinite(atr, adx, latestClose, latestEma) || atr <= EPSILON) continue;
+    const favorable = position.side === "buy" ? mark - open : open - mark;
+    const currentR = favorable / risk;
+    if (currentR < 1) {
+      await admin.from("positions").update({ last_management_bar_time: sourceBarTime }).eq("id", position.id);
+      continue;
+    }
+
+    const isBuy = position.side === "buy";
+    const currentSl = Number(position.sl) || 0;
+    const currentTp = Number(position.tp) || 0;
+    const breakEven = isBuy ? open + 0.05 * atr : open - 0.05 * atr;
+    let desiredSl = breakEven;
+    let stage = 1;
+    if (currentR >= 1.5) {
+      stage = 2;
+      const recent = bars.slice(-5);
+      const trailMultiple = strategy.kind === "confirmed_trend_pullback" ? 1.8 : 1.5;
+      if (isBuy) {
+        const swing = Math.min(...recent.map((bar) => bar.low)) - 0.2 * atr;
+        desiredSl = Math.max(breakEven, Math.min(swing, latestClose - trailMultiple * atr));
+      } else {
+        const swing = Math.max(...recent.map((bar) => bar.high)) + 0.2 * atr;
+        desiredSl = Math.min(breakEven, Math.max(swing, latestClose + trailMultiple * atr));
+      }
+    }
+    const stopImproves = isBuy ? desiredSl > currentSl + EPSILON : currentSl <= 0 || desiredSl < currentSl - EPSILON;
+    if ((isBuy && desiredSl >= mark) || (!isBuy && desiredSl <= mark)) {
+      await admin.from("positions").update({ last_management_bar_time: sourceBarTime }).eq("id", position.id);
+      continue;
+    }
+
+    const strongContinuation = adx >= 30 && (isBuy ? latestClose > latestEma : latestClose < latestEma);
+    const extendedR = strategy.kind === "confirmed_trend_pullback" ? 3.0 : 2.6;
+    const extendedTp = isBuy ? open + extendedR * risk : open - extendedR * risk;
+    const tpImproves = strongContinuation && (isBuy
+      ? extendedTp > currentTp + EPSILON
+      : currentTp <= 0 || extendedTp < currentTp - EPSILON);
+    if (!stopImproves && !tpImproves) {
+      await admin.from("positions").update({ last_management_bar_time: sourceBarTime }).eq("id", position.id);
+      continue;
+    }
+
+    const { error: commandError } = await admin.from("ea_commands").insert({
+      terminal_id: position.terminal_id,
+      source: "auto_signal",
+      command_type: "modify_sl_tp",
+      mt5_ticket: position.mt5_ticket,
+      sl: stopImproves ? desiredSl : currentSl,
+      tp: tpImproves ? extendedTp : currentTp,
+      strategy_id: strategy.id,
+      idempotency_key: `manage:${position.id}:${sourceBarTime}`,
+      auto_manage: true,
+      management_stage: stage,
+      management_source_bar_time: sourceBarTime,
+      strategy_name_at_entry: strategy.name,
+      origin_detail: "adaptive_trade_management",
+      risk_defined: true,
+      entry_context: { version: 1, action: stage === 1 ? "break_even" : "atr_structure_trail", current_r: currentR },
+    });
+    if (!commandError) queued++;
+    else if (commandError.code !== "23505") {
+      console.error(`strategy-signal-engine: management command failed for ${position.id}: ${commandError.message}`);
+    }
+  }
+  return queued;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return jsonResponse({ error: "method_not_allowed" }, 405);
 
@@ -452,13 +603,19 @@ Deno.serve(async (req: Request) => {
   try {
     const { data: strategies, error: strategiesError } = await admin
       .from("strategies")
-      .select("id, terminal_id, name, kind, timeframe, symbols, delivery_mode, max_lot_size, signal_ttl_seconds, config")
+      .select("id, terminal_id, name, kind, timeframe, symbols, delivery_mode, max_lot_size, risk_percent, signal_ttl_seconds, config")
       .eq("enabled", true)
       .in("kind", ["momentum_breakout", "confirmed_trend_pullback"]);
     if (strategiesError) return jsonResponse({ error: "strategies_fetch_failed", detail: strategiesError.message }, 500);
-    if (!strategies || strategies.length === 0) return jsonResponse({ processed: 0, signals_generated: 0, commands_queued: 0 });
+    const activeStrategies = strategies ?? [];
+    if (activeStrategies.length === 0) return jsonResponse({ processed: 0, signals_generated: 0, commands_queued: 0 });
 
-    const terminalIds = [...new Set(strategies.map((strategy) => strategy.terminal_id))];
+    const terminalIds = [...new Set(activeStrategies.map((strategy) => strategy.terminal_id))];
+    const { data: terminalCapabilities, error: capabilitiesError } = terminalIds.length > 0
+      ? await admin.from("mt5_terminals").select("id,ea_version").in("id", terminalIds)
+      : { data: [], error: null };
+    if (capabilitiesError) return jsonResponse({ error: "terminal_capabilities_fetch_failed", detail: capabilitiesError.message }, 500);
+    const eaVersionByTerminal = new Map((terminalCapabilities ?? []).map((terminal) => [terminal.id, terminal.ea_version]));
     const { data: symbolSettings, error: symbolSettingsError } = await admin
       .from("symbol_settings")
       .select("terminal_id, symbol, enabled")
@@ -480,7 +637,7 @@ Deno.serve(async (req: Request) => {
     let signalsGenerated = 0;
     let commandsQueued = 0;
 
-    for (const rawStrategy of strategies) {
+    for (const rawStrategy of activeStrategies) {
       const strategy = rawStrategy as StrategyRow;
       if (!Array.isArray(strategy.symbols)) continue;
       if (!supportedTimeframes.has(strategy.timeframe)) continue;
@@ -494,7 +651,7 @@ Deno.serve(async (req: Request) => {
 
         const { data: descendingBars, error: barsError } = await admin
           .from("price_bars")
-          .select("bar_time, open, high, low, close, volume")
+          .select("bar_time, open, high, low, close, volume, spread")
           .eq("terminal_id", strategy.terminal_id)
           .eq("symbol", symbol)
           .eq("timeframe", timeframe)
@@ -513,6 +670,7 @@ Deno.serve(async (req: Request) => {
           low: Number(bar.low),
           close: Number(bar.close),
           volume: Number(bar.volume),
+          spread: bar.spread == null ? null : Number(bar.spread),
         })).filter((bar) => allFinite(bar.open, bar.high, bar.low, bar.close, bar.volume));
         if (bars.length < 60) continue;
 
@@ -544,6 +702,7 @@ Deno.serve(async (req: Request) => {
         if (recentSignal) continue;
 
         const baseVolume = Math.max(0, numberValue(strategy.max_lot_size, 0));
+        const baseRiskPercent = Math.min(5, Math.max(0.01, numberValue(strategy.risk_percent, 0.5)));
         if (baseVolume <= 0) {
           console.error(`strategy-signal-engine: strategy ${strategy.id} has non-positive max_lot_size; signal skipped`);
           continue;
@@ -559,8 +718,12 @@ Deno.serve(async (req: Request) => {
             source_bar_time: sourceBarTime,
             side: candidate.side,
             suggested_volume: baseVolume,
+            suggested_risk_percent: baseRiskPercent,
             suggested_sl: candidate.suggestedSl,
             suggested_tp: candidate.suggestedTp,
+            entry_atr: candidate.entryAtr,
+            entry_spread_points: bars[bars.length - 1].spread ?? null,
+            initial_risk_distance: candidate.initialRiskDistance,
             entry_price_ref: candidate.entryPrice,
             session,
             htf_regime: regime,
@@ -597,6 +760,12 @@ Deno.serve(async (req: Request) => {
 
         if (strategy.delivery_mode === "manual_confirm") continue;
 
+        if (!versionAtLeast(eaVersionByTerminal.get(strategy.terminal_id), "1.0.29")) {
+          await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
+          console.warn(`strategy-signal-engine: terminal ${strategy.terminal_id} requires EA v1.0.29 for risk-sized auto execution`);
+          continue;
+        }
+
         const policy = await policyForCell(admin, strategy.terminal_id, strategy.id, symbol, session, regime, news.near);
         if (policy.error) {
           await admin.from("signals").update({ policy_decision: "block" }).eq("id", signal.id);
@@ -618,8 +787,9 @@ Deno.serve(async (req: Request) => {
         }
 
         const nearNewsFactor = news.near ? positiveConfig(strategy.config, "news_volume_factor", 0.5) : 1;
-        const effectiveVolume = baseVolume * (policy.decision === "downweight" ? policy.factor : 1) * nearNewsFactor;
-        if (!Number.isFinite(effectiveVolume) || effectiveVolume <= 0) {
+        const effectiveRiskPercent = baseRiskPercent *
+          (policy.decision === "downweight" ? policy.factor : 1) * nearNewsFactor;
+        if (!Number.isFinite(effectiveRiskPercent) || effectiveRiskPercent <= 0) {
           await admin.from("signals").update({ policy_decision: "block" }).eq("id", signal.id);
           await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
           continue;
@@ -628,6 +798,7 @@ Deno.serve(async (req: Request) => {
         // Any downweight (adaptive-policy or near-news) caps the multiplier at
         // one. Otherwise score 0.85+ gets three entries, 0.70+ gets two.
         const positionCount = finalDecision === "downweight" ? 1 : candidate.score >= 0.85 ? 3 : candidate.score >= 0.7 ? 2 : 1;
+        const riskPercentPerLeg = effectiveRiskPercent / positionCount;
         const resolution = await resolveBrokerSymbol(admin, strategy.terminal_id, symbol);
         if (resolution.error || !resolution.brokerSymbol) {
           await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
@@ -658,9 +829,14 @@ Deno.serve(async (req: Request) => {
             command_type: "open",
             symbol: resolution.brokerSymbol,
             side: candidate.side,
-            volume: effectiveVolume,
+            volume: baseVolume,
+            risk_percent: riskPercentPerLeg,
             sl: candidate.suggestedSl,
             tp: candidate.suggestedTp,
+            entry_atr: candidate.entryAtr,
+            entry_spread_points: bars[bars.length - 1].spread ?? null,
+            initial_risk_distance: candidate.initialRiskDistance,
+            auto_manage: true,
             idempotency_key: `sig:${signal.id}:${leg}`,
             signal_delivery_id: leg === 1 ? delivery.id : null,
             strategy_id: strategy.id,
@@ -672,10 +848,14 @@ Deno.serve(async (req: Request) => {
             origin_detail: "strategy_auto",
             risk_defined: true,
             entry_context: {
-              version: 1, captured_at: nowIso, origin: "strategy_auto",
+              version: 2, captured_at: nowIso, origin: "strategy_auto",
               strategy_name_at_entry: strategy.name, session_definition: "utc-v1",
               regime_model: `adx14-${timeframe.toLowerCase()}-v1`, regime_quality: "strategy_grade",
-              risk_defined: true,
+              risk_defined: true, timeframe, strategy_kind: strategy.kind,
+              canonical_symbol: symbol,
+              risk_percent_total: effectiveRiskPercent, risk_percent_leg: riskPercentPerLeg,
+              initial_atr: candidate.entryAtr, initial_risk_distance: candidate.initialRiskDistance,
+              entry_spread_points: bars[bars.length - 1].spread ?? null,
             },
           };
           const { data: command, error: commandError } = await admin
@@ -706,6 +886,12 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    commandsQueued += await manageOpenStrategyPositions(
+      admin,
+      activeStrategies as StrategyRow[],
+      eaVersionByTerminal,
+      nowIso,
+    );
     return jsonResponse({ processed, signals_generated: signalsGenerated, commands_queued: commandsQueued });
   } catch (error) {
     console.error("strategy-signal-engine: unhandled error", error);
