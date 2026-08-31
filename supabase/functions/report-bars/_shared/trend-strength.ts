@@ -2,15 +2,17 @@
 // Direction and regime confidence are intentionally separate so a weak,
 // choppy EMA crossover cannot produce a strong meter reading.
 
-export const TREND_MODEL_VERSION = "trend-strength-v1";
+export const TREND_MODEL_VERSION = "trend-strength-v2";
 export const TREND_BAR_LIMIT = 160;
 export const TREND_TIMEFRAME_WEIGHTS: Record<string, number> = {
-  M1: 0.05,
-  M5: 0.10,
-  M15: 0.20,
-  H1: 0.30,
-  H4: 0.25,
-  D1: 0.10,
+  M1: 0.03,
+  M5: 0.07,
+  M15: 0.15,
+  M30: 0.10,
+  H1: 0.25,
+  H4: 0.22,
+  D1: 0.13,
+  W1: 0.05,
 };
 
 export type TrendBar = {

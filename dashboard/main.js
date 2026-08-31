@@ -31,6 +31,7 @@ const state = {
   trendStates: [],
   calendarEvents: [],
   scenarioStats: [],
+  portfolioRisk: null,
   activeTab: 'overview',
   // v1.0.14 — item 3: P/L Over Time card filters (timeframe + manual/auto/all).
   plFilter: { timeframe: '30d', source: 'all' },
@@ -231,7 +232,30 @@ document.getElementById('button-settings')?.addEventListener('click', () => {
   }
   renderSymbolSettingsList();
   renderSymbolMappingPanel();
+  loadPortfolioRiskSettings();
   window.LucreUI?.openModal('modal-platform-settings');
+});
+
+async function loadPortfolioRiskSettings() {
+  const form = document.getElementById('form-portfolio-risk');
+  if (!form || !state.activeTerminalId) return;
+  const { data, error } = await supabase.from('portfolio_risk_settings').select('*').eq('terminal_id', state.activeTerminalId).maybeSingle();
+  if (error) { console.error('portfolio risk settings load error', error); return; }
+  state.portfolioRisk = data;
+  const values = data || { enabled: true, max_total_open_risk_percent: 3, max_symbol_open_risk_percent: 1.5, max_positions_per_symbol: 2, max_daily_realized_loss_percent: 3 };
+  form.enabled.checked = values.enabled !== false;
+  for (const field of ['max_total_open_risk_percent','max_symbol_open_risk_percent','max_positions_per_symbol','max_daily_realized_loss_percent']) form[field].value = values[field];
+}
+
+document.getElementById('form-portfolio-risk')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget, message = document.getElementById('portfolio-risk-message');
+  const payload = { terminal_id: state.activeTerminalId, enabled: form.enabled.checked,
+    max_total_open_risk_percent: Number(form.max_total_open_risk_percent.value), max_symbol_open_risk_percent: Number(form.max_symbol_open_risk_percent.value),
+    max_positions_per_symbol: Number(form.max_positions_per_symbol.value), max_daily_realized_loss_percent: Number(form.max_daily_realized_loss_percent.value) };
+  const { error } = await supabase.from('portfolio_risk_settings').upsert(payload, { onConflict: 'terminal_id' });
+  if (message) { message.style.color = error ? 'var(--color-danger)' : 'var(--color-accent)'; message.textContent = error ? error.message : 'Risk limits saved.'; }
+  if (!error) state.portfolioRisk = payload;
 });
 document.getElementById('form-account-profile')?.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -343,9 +367,7 @@ document.getElementById('form-connect-account')?.addEventListener('submit', asyn
 // ---------------------------------------------------------------------------
 // Add strategy modal
 // ---------------------------------------------------------------------------
-// v1.0.11 -- "Add a strategy" now offers a fixed set of pre-built,
-// pre-configured strategies (see #strategy-kind options) instead of a
-// free-parameter form.
+// v1.0.30 -- template parameters plus a validated, declarative rule builder.
 // v1.0.12 -- the Symbols field was a native <select multiple>, which (a)
 // requires holding Cmd/Ctrl to select more than one pair — most users just
 // click each pair in turn, which replaces the previous selection instead
@@ -355,10 +377,16 @@ document.getElementById('form-connect-account')?.addEventListener('submit', asyn
 // Each add removes that pair from the dropdown (can't add twice); each
 // chip has its own remove button that puts the pair back in the dropdown.
 let strategySelectedSymbols = [];
+let strategyRuleRows = [];
 
 const STRATEGY_KIND_SIGNAL_FAMILY = {
   momentum_breakout: 'breakout',
   confirmed_trend_pullback: 'trend_pullback',
+  multi_timeframe_trend_pullback: 'trend_pullback',
+  range_mean_reversion: 'vwap_reversion',
+  volatility_compression_breakout: 'breakout',
+  news_continuation: 'momentum',
+  custom_rules: 'momentum',
 };
 
 const ACTIVE_STRATEGY_KINDS = Object.keys(STRATEGY_KIND_SIGNAL_FAMILY);
@@ -369,16 +397,79 @@ const TIMEFRAME_SIGNAL_TTL_SECONDS = {
 const STRATEGY_DESCRIPTIONS = {
   momentum_breakout: 'Earlier entries using EMA alignment, RSI, ADX and a 12-candle price breakout.',
   confirmed_trend_pullback: 'More selective entries after an established EMA/ADX trend pulls back and confirms continuation.',
+  multi_timeframe_trend_pullback: 'Uses a higher-timeframe trend as the bias and a lower-timeframe pullback as the entry.',
+  range_mean_reversion: 'Trades failed moves outside a volatility band only while ADX indicates a range.',
+  volatility_compression_breakout: 'Waits for ATR compression, then requires range expansion, price breakout, and volume confirmation.',
+  news_continuation: 'Waits for released economic data, confirms the implied currency direction, then trades a post-release breakout.',
+  custom_rules: 'Build an allowlisted set of numeric market conditions. Every rule for the chosen direction must pass.',
 };
 const STRATEGY_DEFAULT_RISK_PERCENT = {
   momentum_breakout: 0.50,
   confirmed_trend_pullback: 0.35,
+  multi_timeframe_trend_pullback: 0.35,
+  range_mean_reversion: 0.25,
+  volatility_compression_breakout: 0.35,
+  news_continuation: 0.20,
+  custom_rules: 0.25,
 };
+
+const RULE_METRICS = {
+  trend_score: 'Trend score (-100 to 100)', rsi14: 'RSI 14', adx14: 'ADX 14',
+  ema_spread_atr: 'EMA 20–50 spread / ATR', close_ema20_atr: 'Close distance from EMA 20 / ATR',
+  breakout20_atr: '20-bar breakout distance / ATR', atr_ratio: 'ATR / median ATR',
+  volume_ratio: 'Volume / median volume', spread_ratio: 'Spread / median spread', linearity: 'Price linearity (0–1)',
+};
+const RULE_OPERATOR_LABELS = { gt: '>', gte: '≥', lt: '<', lte: '≤', eq: '=' };
+
+function renderStrategyRuleRows() {
+  const list = document.getElementById('strategy-rule-list');
+  if (!list) return;
+  list.innerHTML = strategyRuleRows.map((rule, index) => `
+    <div class="strategy-rule-row" data-rule-index="${index}">
+      <select data-rule-field="side"><option value="long" ${rule.side === 'long' ? 'selected' : ''}>BUY</option><option value="short" ${rule.side === 'short' ? 'selected' : ''}>SELL</option></select>
+      <select data-rule-field="timeframe">${Object.keys(TIMEFRAME_SIGNAL_TTL_SECONDS).map((tf) => `<option value="${tf}" ${rule.timeframe === tf ? 'selected' : ''}>${tf}</option>`).join('')}</select>
+      <select data-rule-field="metric">${Object.entries(RULE_METRICS).map(([value, label]) => `<option value="${value}" ${rule.metric === value ? 'selected' : ''}>${label}</option>`).join('')}</select>
+      <select data-rule-field="operator">${Object.entries(RULE_OPERATOR_LABELS).map(([value, label]) => `<option value="${value}" ${rule.operator === value ? 'selected' : ''}>${label}</option>`).join('')}</select>
+      <input data-rule-field="value" type="number" step="0.01" value="${Number(rule.value) || 0}" aria-label="Rule value" />
+      <button type="button" class="btn-secondary btn-xs" data-remove-rule="${index}" aria-label="Remove rule">×</button>
+    </div>`).join('') || '<p class="field-hint">Add at least one BUY or SELL rule.</p>';
+}
+
+document.getElementById('button-add-strategy-rule')?.addEventListener('click', () => {
+  strategyRuleRows.push({ side: 'long', timeframe: document.getElementById('strategy-timeframe')?.value || 'M15', metric: 'trend_score', operator: 'gte', value: 35 });
+  renderStrategyRuleRows();
+});
+document.getElementById('strategy-rule-list')?.addEventListener('change', (event) => {
+  const row = event.target.closest('[data-rule-index]');
+  const field = event.target.dataset.ruleField;
+  if (!row || !field) return;
+  const index = Number(row.dataset.ruleIndex);
+  strategyRuleRows[index][field] = field === 'value' ? Number(event.target.value) : event.target.value;
+});
+document.getElementById('strategy-rule-list')?.addEventListener('click', (event) => {
+  const index = event.target.dataset.removeRule;
+  if (index == null) return;
+  strategyRuleRows.splice(Number(index), 1); renderStrategyRuleRows();
+});
 
 function updateStrategyParameterVisibility() {
   const kind = document.getElementById('strategy-kind')?.value;
   const description = document.getElementById('strategy-kind-description');
   if (description) description.textContent = STRATEGY_DESCRIPTIONS[kind] || '';
+  const isCustom = kind === 'custom_rules';
+  const customPanel = document.getElementById('strategy-custom-rules');
+  const templatePanel = document.getElementById('strategy-template-parameters');
+  if (customPanel) customPanel.hidden = !isCustom;
+  if (templatePanel) templatePanel.hidden = isCustom;
+  const biasField = document.getElementById('strategy-bias-timeframe-field');
+  if (biasField) biasField.hidden = kind !== 'multi_timeframe_trend_pullback';
+  const rangeParameters = document.getElementById('strategy-range-parameters');
+  const compressionParameters = document.getElementById('strategy-compression-parameters');
+  const newsParameters = document.getElementById('strategy-news-parameters');
+  if (rangeParameters) rangeParameters.hidden = kind !== 'range_mean_reversion';
+  if (compressionParameters) compressionParameters.hidden = kind !== 'volatility_compression_breakout';
+  if (newsParameters) newsParameters.hidden = kind !== 'news_continuation';
+  if (isCustom) renderStrategyRuleRows();
   const form = document.getElementById('form-add-strategy');
   if (form && !form.edit_id.value && document.activeElement?.id === 'strategy-kind') {
     form.risk_percent.value = STRATEGY_DEFAULT_RISK_PERCENT[kind] || 0.50;
@@ -533,6 +624,9 @@ function resetStrategyModalToAddMode() {
     'Choose a strategy, the pairs it applies to, and the candle timeframe it should evaluate. Each configuration runs independently.';
   document.getElementById('add-strategy-submit').textContent = 'Add strategy';
   document.getElementById('button-delete-strategy').hidden = true;
+  document.getElementById('button-run-strategy-backtest').hidden = true;
+  document.getElementById('button-promote-strategy').hidden = true;
+  document.getElementById('strategy-run-mode-live-option').disabled = true;
 }
 
 document.getElementById('button-add-strategy')?.addEventListener('click', () => {
@@ -542,6 +636,8 @@ document.getElementById('button-add-strategy')?.addEventListener('click', () => 
   }
   const form = document.getElementById('form-add-strategy');
   form.reset();
+  form.run_mode.value = 'shadow';
+  strategyRuleRows = [];
   updateStrategyParameterVisibility();
   resetStrategyModalToAddMode();
   strategySelectedSymbols = [];
@@ -567,6 +663,26 @@ function openEditStrategyModal(id) {
   form.delivery_mode.value = strategy.delivery_mode;
   form.max_lot_size.value = strategy.max_lot_size;
   form.risk_percent.value = strategy.risk_percent ?? STRATEGY_DEFAULT_RISK_PERCENT[strategy.kind] ?? 0.50;
+  form.run_mode.value = strategy.run_mode || 'live';
+  document.getElementById('strategy-run-mode-live-option').disabled = strategy.run_mode !== 'live';
+  form.direction_mode.value = strategy.direction_mode || 'both';
+  form.bias_timeframe.value = strategy.bias_timeframe || '';
+  form.cooldown_minutes.value = strategy.cooldown_minutes ?? 0;
+  form.max_concurrent_positions.value = strategy.max_concurrent_positions ?? 1;
+  form.max_spread_points.value = strategy.max_spread_points ?? '';
+  const allowedSessions = strategy.allowed_sessions || ['asia', 'london', 'overlap', 'ny'];
+  form.querySelectorAll('input[name="allowed_sessions"]').forEach((input) => { input.checked = allowedSessions.includes(input.value); });
+  const config = strategy.config || {};
+  const exits = strategy.exit_config || {};
+  form.adx_min.value = config.adx_min ?? 25; form.breakout_lookback.value = config.breakout_lookback ?? 20;
+  form.ema_fast.value = config.ema_fast ?? 20; form.ema_slow.value = config.ema_slow ?? 50;
+  form.stop_atr.value = exits.stop_atr ?? config.stop_atr ?? 1.8; form.target_r.value = exits.target_r ?? config.target_r ?? 2.2;
+  form.breakeven_r.value = exits.breakeven_r ?? 1; form.trailing_start_r.value = exits.trailing_start_r ?? 1.5;
+  form.trail_atr.value = exits.trail_atr ?? 1.5;
+  form.band_deviation.value = config.band_deviation ?? 2; form.rsi_oversold.value = config.rsi_oversold ?? 38; form.rsi_overbought.value = config.rsi_overbought ?? 62;
+  form.compression_atr_ratio.value = config.compression_atr_ratio ?? 0.85; form.expansion_atr_ratio.value = config.expansion_atr_ratio ?? 1;
+  form.volume_ratio_min.value = config.volume_ratio_min ?? 1; form.settle_minutes.value = config.settle_minutes ?? 5;
+  strategyRuleRows = ['long', 'short'].flatMap((side) => (strategy.rule_definition?.[side] || []).map((rule) => ({ side, ...rule })));
   updateStrategyParameterVisibility();
 
   strategySelectedSymbols = (strategy.symbols || []).slice();
@@ -578,9 +694,46 @@ function openEditStrategyModal(id) {
     'Update this configuration\'s pairs, delivery mode, or lot size. Changes apply to future signals only — in-flight signals and open positions are unaffected.';
   document.getElementById('add-strategy-submit').textContent = 'Save changes';
   document.getElementById('button-delete-strategy').hidden = false;
+  document.getElementById('button-run-strategy-backtest').hidden = false;
+  document.getElementById('button-promote-strategy').hidden = strategy.run_mode === 'live';
 
   window.LucreUI.openModal('modal-add-strategy');
 }
+
+document.getElementById('button-run-strategy-backtest')?.addEventListener('click', async () => {
+  const form = document.getElementById('form-add-strategy');
+  const strategyId = form.edit_id.value;
+  const symbol = strategySelectedSymbols[0];
+  const msg = document.getElementById('add-strategy-message');
+  if (!strategyId || !symbol) return;
+  msg.style.color = 'var(--color-text-muted)';
+  msg.textContent = `Testing ${symbol} against the retained closed-candle history…`;
+  const { data, error } = await supabase.functions.invoke('strategy-backtest', { body: { strategy_id: strategyId, symbol } });
+  if (error || data?.error) {
+    msg.style.color = 'var(--color-danger, #c0432f)';
+    msg.textContent = data?.error || error?.message || 'Backtest failed.';
+    return;
+  }
+  const pct = data.win_rate == null ? '—' : `${Math.round(data.win_rate * 100)}%`;
+  const expectancy = data.expectancy_r == null ? '—' : `${Number(data.expectancy_r).toFixed(2)}R`;
+  const validation = data.validation_expectancy_r == null ? '—' : `${Number(data.validation_expectancy_r).toFixed(2)}R`;
+  msg.style.color = 'var(--color-accent)';
+  msg.textContent = `${symbol}: ${data.trade_count} trades · ${pct} wins · ${expectancy} expectancy · ${validation} validation expectancy. Diagnostic only; slippage is not modeled.`;
+});
+
+document.getElementById('button-promote-strategy')?.addEventListener('click', async () => {
+  const strategyId = document.getElementById('form-add-strategy').edit_id.value;
+  const msg = document.getElementById('add-strategy-message');
+  if (!strategyId) return;
+  msg.style.color = 'var(--color-text-muted)'; msg.textContent = 'Checking shadow and validation results…';
+  const { error } = await supabase.rpc('promote_strategy_to_live', { p_strategy_id: strategyId });
+  if (error) { msg.style.color = 'var(--color-danger, #c0432f)'; msg.textContent = error.message; return; }
+  msg.style.color = 'var(--color-accent)'; msg.textContent = 'Strategy promoted to live signal generation.';
+  await loadStrategies();
+  document.getElementById('strategy-run-mode-live-option').disabled = false;
+  document.getElementById('form-add-strategy').run_mode.value = 'live';
+  document.getElementById('button-promote-strategy').hidden = true;
+});
 
 async function handleDeleteStrategy(id) {
   const strategy = state.strategies.find((s) => s.id === id);
@@ -623,8 +776,38 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
     msg.textContent = 'Add at least one pair before saving.';
     return;
   }
+  if (form.kind.value === 'custom_rules' && strategyRuleRows.length === 0) {
+    msg.textContent = 'Add at least one custom BUY or SELL rule before saving.';
+    return;
+  }
+  const allowedSessions = [...form.querySelectorAll('input[name="allowed_sessions"]:checked')].map((input) => input.value);
+  if (allowedSessions.length === 0) {
+    msg.textContent = 'Select at least one trading session.';
+    return;
+  }
 
   const editId = form.edit_id.value;
+  const existingConfig = state.strategies.find((strategy) => strategy.id === editId)?.config || {};
+  const numeric = (field, fallback) => Number.isFinite(parseFloat(form[field]?.value)) ? parseFloat(form[field].value) : fallback;
+  const config = {
+    ...existingConfig,
+    ema_fast: Math.round(numeric('ema_fast', 20)), ema_slow: Math.round(numeric('ema_slow', 50)),
+    adx_min: numeric('adx_min', 25), breakout_lookback: Math.round(numeric('breakout_lookback', 20)),
+    stop_atr: numeric('stop_atr', 1.8), target_r: numeric('target_r', 2.2),
+    band_deviation: numeric('band_deviation', 2), rsi_oversold: numeric('rsi_oversold', 38), rsi_overbought: numeric('rsi_overbought', 62),
+    compression_atr_ratio: numeric('compression_atr_ratio', 0.85), expansion_atr_ratio: numeric('expansion_atr_ratio', 1),
+    volume_ratio_min: numeric('volume_ratio_min', 1), settle_minutes: numeric('settle_minutes', 5),
+  };
+  const exitConfig = {
+    stop_atr: numeric('stop_atr', 1.8), target_r: numeric('target_r', 2.2),
+    breakeven_r: numeric('breakeven_r', 1), trailing_start_r: numeric('trailing_start_r', 1.5),
+    trail_atr: numeric('trail_atr', 1.5), swing_lookback: 5, max_stop_atr: 4,
+  };
+  const ruleDefinition = form.kind.value === 'custom_rules' ? {
+    version: 1,
+    long: strategyRuleRows.filter((rule) => rule.side === 'long').map(({ side: _side, ...rule }) => ({ ...rule, value: Number(rule.value) })),
+    short: strategyRuleRows.filter((rule) => rule.side === 'short').map(({ side: _side, ...rule }) => ({ ...rule, value: Number(rule.value) })),
+  } : null;
   const payload = {
     terminal_id: state.activeTerminalId,
     name: form.name.value.trim(),
@@ -636,7 +819,16 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
     symbols,
     max_lot_size: parseFloat(form.max_lot_size.value) || 0.01,
     risk_percent: Math.min(5, Math.max(0.05, parseFloat(form.risk_percent.value) || 0.50)),
-    config: state.strategies.find((strategy) => strategy.id === editId)?.config || {},
+    run_mode: form.run_mode.value,
+    direction_mode: form.direction_mode.value,
+    allowed_sessions: allowedSessions,
+    bias_timeframe: form.kind.value === 'multi_timeframe_trend_pullback' ? (form.bias_timeframe.value || 'H4') : null,
+    cooldown_minutes: Math.max(0, Math.min(10080, Math.round(numeric('cooldown_minutes', 0)))),
+    max_concurrent_positions: Math.max(1, Math.min(20, Math.round(numeric('max_concurrent_positions', 1)))),
+    max_spread_points: form.max_spread_points.value ? numeric('max_spread_points', null) : null,
+    config,
+    exit_config: exitConfig,
+    rule_definition: ruleDefinition,
   };
 
   const { error } = editId
@@ -1412,7 +1604,8 @@ async function loadStrategies() {
     .from('strategies')
     .select(
       'id, name, kind, timeframe, enabled, delivery_mode, symbols, max_lot_size, risk_percent, signal_ttl_seconds, ' +
-        'news_posture, news_window_minutes, news_min_impact, news_exploit_size_multiplier, config'
+        'news_posture, news_window_minutes, news_min_impact, news_exploit_size_multiplier, config, run_mode, bias_timeframe, ' +
+        'rule_definition, exit_config, allowed_sessions, direction_mode, cooldown_minutes, max_concurrent_positions, max_spread_points, min_shadow_signals, promoted_at'
     )
     .eq('terminal_id', state.activeTerminalId)
     .in('kind', ACTIVE_STRATEGY_KINDS)
@@ -1423,6 +1616,15 @@ async function loadStrategies() {
     return;
   }
   state.strategies = data || [];
+  const [{ data: shadowRows }, { data: backtestRows }] = await Promise.all([
+    supabase.from('strategy_shadow_signals').select('strategy_id,status,result_r').eq('terminal_id', state.activeTerminalId).limit(5000),
+    supabase.from('strategy_backtest_runs').select('strategy_id,status,trade_count,expectancy_r,validation_expectancy_r,completed_at').eq('terminal_id', state.activeTerminalId).eq('status', 'completed').order('completed_at', { ascending: false }).limit(500),
+  ]);
+  state.strategies.forEach((strategy) => {
+    const resolved = (shadowRows || []).filter((row) => row.strategy_id === strategy.id && row.status !== 'pending');
+    strategy.shadow_summary = { resolved: resolved.length, expectancy_r: resolved.length ? resolved.reduce((sum, row) => sum + Number(row.result_r || 0), 0) / resolved.length : null };
+    strategy.latest_backtest = (backtestRows || []).find((row) => row.strategy_id === strategy.id) || null;
+  });
   renderStrategies();
   renderStrategyStatusTab();
 }
@@ -1437,12 +1639,13 @@ function renderStrategies() {
   strategyList.innerHTML = state.strategies
     .map((s) => {
       const symbolLabel = `${(s.symbols || []).slice(0, 2).join(' · ') || 'No pairs'} · ${s.timeframe || 'M5'}`;
+      const modeTag = s.run_mode === 'shadow' ? '<span class="tag-badge tag-warn">Shadow</span>' : '<span class="tag-badge tag-ok">Live</span>';
       return `
       <div class="mini-table-row" data-strategy-id="${s.id}">
         <span class="avatar-badge" aria-hidden="true">${initials(s.name)}</span>
         <div class="mini-table-meta">
-          <div class="strategy-name">${s.name}</div>
-          <div class="strategy-sub">${symbolLabel}</div>
+          <div class="strategy-name">${s.name}${modeTag}</div>
+          <div class="strategy-sub">${symbolLabel}${s.run_mode === 'shadow' ? ` · ${s.shadow_summary?.resolved || 0}/${s.min_shadow_signals || 20} resolved shadow signals` : ''}</div>
         </div>
         <div class="mini-table-stats">
           <label class="strategy-toggle">

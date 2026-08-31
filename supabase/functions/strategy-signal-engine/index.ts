@@ -1,4 +1,4 @@
-// v1.0.28 — strategy-signal-engine
+// v1.0.30 — strategy-signal-engine
 //
 // Internal once-per-minute sweep invoked by pg_cron -> pg_net. It evaluates all
 // enabled terminal strategies against their configured CLOSED-candle timeframe, creates
@@ -44,6 +44,37 @@ type StrategyRow = {
   risk_percent: number | string;
   signal_ttl_seconds: number | string;
   config: Record<string, unknown> | null;
+  run_mode: "shadow" | "live";
+  bias_timeframe?: string | null;
+  rule_definition?: RuleDefinition | null;
+  exit_config?: Record<string, unknown> | null;
+  allowed_sessions?: Session[] | null;
+  direction_mode?: "both" | "long_only" | "short_only";
+  cooldown_minutes?: number | string;
+  max_concurrent_positions?: number | string;
+  max_spread_points?: number | string | null;
+  news_posture?: "avoid" | "neutral" | "exploit";
+  news_window_minutes?: number | string;
+  news_min_impact?: "low" | "medium" | "high";
+  news_exploit_size_multiplier?: number | string;
+};
+
+type RuleCondition = {
+  metric: "rsi14" | "adx14" | "ema_spread_atr" | "close_ema20_atr" | "breakout20_atr" |
+    "atr_ratio" | "volume_ratio" | "spread_ratio" | "trend_score" | "linearity";
+  timeframe: string;
+  operator: "gt" | "gte" | "lt" | "lte" | "eq";
+  value: number;
+};
+
+type RuleDefinition = { version: 1; long?: RuleCondition[]; short?: RuleCondition[] };
+type NewsContext = {
+  near: boolean;
+  news_event_id: string | null;
+  minutes_to_event: number | null;
+  impact: string | null;
+  implied_side: Side | null;
+  has_direction: boolean;
 };
 
 type SignalCandidate = {
@@ -104,26 +135,39 @@ function sessionForNow(date: Date): Session {
   return "asia";
 }
 
-// Default +/-30 minute medium/high-impact calendar-event guard, copied from
-// signal-action/index.ts so all generated signals carry the same news context.
-async function nearNewsCheck(
+// One canonical, symbol-aware news lookup. The prior implementation queried
+// any global medium/high event and could downweight EURUSD for an unrelated
+// currency before the database trigger refined the context.
+async function newsContextForStrategy(
   // deno-lint-ignore no-explicit-any
   admin: any,
+  strategy: StrategyRow,
+  symbol: string,
   at: Date,
-  windowMinutes = 30,
-): Promise<{ near: boolean; news_event_id: string | null }> {
-  const from = new Date(at.getTime() - windowMinutes * 60_000).toISOString();
-  const to = new Date(at.getTime() + windowMinutes * 60_000).toISOString();
-  const { data } = await admin
-    .from("calendar_events")
-    .select("id")
-    .in("impact", ["medium", "high"])
-    .gte("event_time", from)
-    .lte("event_time", to)
-    .order("event_time", { ascending: true })
-    .limit(1);
-  if (data && data.length > 0) return { near: true, news_event_id: data[0].id };
-  return { near: false, news_event_id: null };
+): Promise<NewsContext> {
+  const windowMinutes = Math.max(1, Math.min(240, numberValue(strategy.news_window_minutes, 30)));
+  const minImpact = String(strategy.news_min_impact ?? "medium");
+  const { data, error } = await admin.rpc("news_context", {
+    p_symbol: symbol, p_at: at.toISOString(), p_window_minutes: windowMinutes, p_min_impact: minImpact,
+  });
+  if (error || !data || data.length === 0) {
+    if (error) console.error(`strategy-signal-engine: news context failed for ${symbol}: ${error.message}`);
+    return { near: false, news_event_id: null, minutes_to_event: null, impact: null, implied_side: null, has_direction: false };
+  }
+  const event = data[0];
+  const minutes = numberValue(event.minutes_to_event, 0);
+  let impliedSide: Side | null = null;
+  const currency = typeof event.currency === "string" ? event.currency.toUpperCase() : "";
+  const baseline = event.forecast ?? event.previous;
+  if (symbol.length === 6 && currency && event.actual != null && baseline != null && Number(event.actual) !== Number(baseline)) {
+    const bullishCurrency = (Number(event.actual) > Number(baseline)) === Boolean(event.effective_higher_is_bullish);
+    if (currency === symbol.slice(0, 3).toUpperCase()) impliedSide = bullishCurrency ? "buy" : "sell";
+    if (currency === symbol.slice(3, 6).toUpperCase()) impliedSide = bullishCurrency ? "sell" : "buy";
+  }
+  return {
+    near: true, news_event_id: event.event_id, minutes_to_event: minutes,
+    impact: event.impact ?? null, implied_side: impliedSide, has_direction: impliedSide !== null,
+  };
 }
 
 function computeEMA(closes: number[], period: number): number[] {
@@ -253,11 +297,134 @@ function allFinite(...values: number[]): boolean {
   return values.every((value) => Number.isFinite(value));
 }
 
-function evaluateStrategy(
+function median(values: number[]): number {
+  if (values.length === 0) return Number.NaN;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function correlationWithTime(values: number[]): number {
+  if (values.length < 2) return 0;
+  const xMean = (values.length - 1) / 2;
+  const yMean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  let covariance = 0, xVariance = 0, yVariance = 0;
+  values.forEach((value, index) => {
+    const x = index - xMean, y = value - yMean;
+    covariance += x * y; xVariance += x * x; yVariance += y * y;
+  });
+  const denominator = Math.sqrt(xVariance * yVariance);
+  return denominator > EPSILON ? covariance / denominator : 0;
+}
+
+function metricValue(metric: RuleCondition["metric"], bars: PriceBar[]): number {
+  if (bars.length < 60) return Number.NaN;
+  const closes = bars.map((bar) => bar.close);
+  const index = bars.length - 1;
+  const atrValues = computeATR(bars, 14);
+  const atr = atrValues[index];
+  if (!finite(atr) || atr <= EPSILON) return Number.NaN;
+  if (metric === "rsi14") return computeRSI(closes, 14)[index];
+  if (metric === "adx14") return computeADX(bars, 14)[index];
+  const ema20 = computeEMA(closes, 20)[index];
+  const ema50 = computeEMA(closes, 50)[index];
+  if (metric === "ema_spread_atr") return (ema20 - ema50) / atr;
+  if (metric === "close_ema20_atr") return (closes[index] - ema20) / atr;
+  if (metric === "breakout20_atr") {
+    const prior = bars.slice(-21, -1);
+    const high = Math.max(...prior.map((bar) => bar.high));
+    const low = Math.min(...prior.map((bar) => bar.low));
+    return closes[index] > high ? (closes[index] - high) / atr
+      : closes[index] < low ? (closes[index] - low) / atr : 0;
+  }
+  if (metric === "atr_ratio") {
+    const recent = atrValues.filter(Number.isFinite).slice(-50);
+    const baseline = median(recent);
+    return baseline > EPSILON ? atr / baseline : 1;
+  }
+  if (metric === "volume_ratio") {
+    const baseline = median(bars.slice(-31, -1).map((bar) => bar.volume));
+    return baseline > EPSILON ? bars[index].volume / baseline : 1;
+  }
+  if (metric === "spread_ratio") {
+    const spreads = bars.slice(-31, -1).map((bar) => Number(bar.spread)).filter((value) => Number.isFinite(value) && value > 0);
+    const baseline = median(spreads);
+    return baseline > EPSILON && Number(bars[index].spread) > 0 ? Number(bars[index].spread) / baseline : 1;
+  }
+  const linearity = Math.abs(correlationWithTime(closes.slice(-30)));
+  if (metric === "linearity") return linearity;
+  if (metric === "trend_score") {
+    const rsi = computeRSI(closes, 14)[index];
+    const adx = computeADX(bars, 14)[index];
+    const direction = clamp01(Math.abs((ema20 - ema50) / atr)) * Math.sign(ema20 - ema50);
+    const confidence = clamp01((adx - 15) / 25) * (0.5 + 0.5 * linearity);
+    return 100 * (0.75 * direction + 0.25 * Math.max(-1, Math.min(1, (rsi - 50) / 20))) * confidence;
+  }
+  return Number.NaN;
+}
+
+function compareRule(actual: number, operator: RuleCondition["operator"], expected: number): boolean {
+  if (!Number.isFinite(actual) || !Number.isFinite(expected)) return false;
+  if (operator === "gt") return actual > expected;
+  if (operator === "gte") return actual >= expected;
+  if (operator === "lt") return actual < expected;
+  if (operator === "lte") return actual <= expected;
+  return Math.abs(actual - expected) <= 1e-6;
+}
+
+function customRuleSide(
+  conditions: RuleCondition[] | undefined,
+  barsByTimeframe: Map<string, PriceBar[]>,
+): { matched: boolean; metrics: Record<string, number> } {
+  if (!conditions || conditions.length === 0) return { matched: false, metrics: {} };
+  const metrics: Record<string, number> = {};
+  for (const condition of conditions) {
+    const bars = barsByTimeframe.get(condition.timeframe) ?? [];
+    const actual = metricValue(condition.metric, bars);
+    metrics[`${condition.timeframe}.${condition.metric}`] = actual;
+    if (!compareRule(actual, condition.operator, Number(condition.value))) return { matched: false, metrics };
+  }
+  return { matched: true, metrics };
+}
+
+function candidateFromSide(
   strategy: StrategyRow,
   bars: PriceBar[],
-  nearNews: boolean,
+  side: Side,
+  score: number,
+  news: NewsContext,
 ): SignalCandidate | null {
+  const current = bars[bars.length - 1];
+  const atr = computeATR(bars, 14)[bars.length - 1];
+  if (!current || !finite(atr) || atr <= EPSILON) return null;
+  const exits = strategy.exit_config ?? {};
+  const stopAtr = positiveConfig(exits, "stop_atr", positiveConfig(strategy.config, "stop_atr", 1.8));
+  const swingLookback = Math.max(2, Math.min(50, Math.floor(positiveConfig(exits, "swing_lookback", 5))));
+  const targetR = positiveConfig(exits, "target_r", positiveConfig(strategy.config, "target_r", 2.0));
+  const recent = bars.slice(-swingLookback);
+  const swingStop = side === "buy"
+    ? current.close - (Math.min(...recent.map((bar) => bar.low)) - 0.2 * atr)
+    : (Math.max(...recent.map((bar) => bar.high)) + 0.2 * atr) - current.close;
+  const risk = Math.max(stopAtr * atr, swingStop);
+  if (!(risk > EPSILON) || risk > positiveConfig(exits, "max_stop_atr", 4) * atr) return null;
+  const newsCaution = news.near && (strategy.news_posture ?? "avoid") === "avoid";
+  const newsFactor = positiveConfig(strategy.config, "news_score_factor", 0.5);
+  const finalScore = newsCaution ? clamp01(score * newsFactor) : clamp01(score);
+  return {
+    side, entryPrice: current.close,
+    suggestedSl: side === "buy" ? current.close - risk : current.close + risk,
+    suggestedTp: side === "buy" ? current.close + targetR * risk : current.close - targetR * risk,
+    score: finalScore, entryAtr: atr, initialRiskDistance: risk,
+    policyDecision: newsCaution ? "downweight" : "ok",
+  };
+}
+
+function evaluateStrategy(
+  strategy: StrategyRow,
+  barsByTimeframe: Map<string, PriceBar[]>,
+  news: NewsContext,
+): SignalCandidate | null {
+  const bars = barsByTimeframe.get(strategy.timeframe) ?? [];
   const currentIndex = bars.length - 1;
   const previousIndex = currentIndex - 1;
   const current = bars[currentIndex];
@@ -266,29 +433,108 @@ function evaluateStrategy(
 
   const config = strategy.config;
   const closes = bars.map((bar) => bar.close);
-  const atr = computeATR(bars, 14);
-  const rsi = computeRSI(closes, 14);
-  const adx = computeADX(bars, 14);
+  const atr = computeATR(bars, Math.max(2, Math.min(100, Math.floor(positiveConfig(config, "atr_period", 14)))));
+  const rsi = computeRSI(closes, Math.max(2, Math.min(100, Math.floor(positiveConfig(config, "rsi_period", 14)))));
+  const adx = computeADX(bars, Math.max(2, Math.min(100, Math.floor(positiveConfig(config, "adx_period", 14)))));
   const currentAtr = atr[currentIndex];
   const currentRsi = rsi[currentIndex];
   const currentAdx = adx[currentIndex];
   const newsScoreFactor = positiveConfig(config, "news_score_factor", 0.5);
+  const newsCaution = news.near && (strategy.news_posture ?? "avoid") === "avoid";
   const applyNewsDownweight = (candidate: Omit<SignalCandidate, "policyDecision">): SignalCandidate => ({
     ...candidate,
-    score: nearNews ? clamp01(candidate.score * newsScoreFactor) : candidate.score,
-    policyDecision: nearNews ? "downweight" : "ok",
+    score: newsCaution ? clamp01(candidate.score * newsScoreFactor) : candidate.score,
+    policyDecision: newsCaution ? "downweight" : "ok",
   });
 
   if (!allFinite(currentAtr, currentRsi, currentAdx) || currentAtr <= EPSILON) return null;
 
+  if (strategy.kind === "custom_rules") {
+    const definition = strategy.rule_definition;
+    if (!definition || definition.version !== 1) return null;
+    const long = customRuleSide(definition.long, barsByTimeframe);
+    const short = customRuleSide(definition.short, barsByTimeframe);
+    if (long.matched === short.matched) return null; // ambiguous or no match
+    return candidateFromSide(strategy, bars, long.matched ? "buy" : "sell", 0.72, news);
+  }
+
+  if (strategy.kind === "multi_timeframe_trend_pullback") {
+    const biasTimeframe = strategy.bias_timeframe || String(config?.bias_timeframe ?? "H4");
+    const biasBars = barsByTimeframe.get(biasTimeframe) ?? [];
+    if (biasBars.length < 60) return null;
+    const biasCloses = biasBars.map((bar) => bar.close);
+    const biasIndex = biasBars.length - 1;
+    const biasFast = computeEMA(biasCloses, Math.floor(positiveConfig(config, "bias_ema_fast", 20)))[biasIndex];
+    const biasSlow = computeEMA(biasCloses, Math.floor(positiveConfig(config, "bias_ema_slow", 50)))[biasIndex];
+    const biasAdx = computeADX(biasBars, 14)[biasIndex];
+    const entryEma = computeEMA(closes, Math.floor(positiveConfig(config, "entry_ema", 20)));
+    if (!allFinite(biasFast, biasSlow, biasAdx, entryEma[currentIndex], entryEma[previousIndex])) return null;
+    const minBiasAdx = positiveConfig(config, "bias_adx_min", 25);
+    const longMatch = biasFast > biasSlow && biasAdx >= minBiasAdx && previous.low <= entryEma[previousIndex] &&
+      current.close > entryEma[currentIndex] && current.close > current.open && currentRsi >= positiveConfig(config, "rsi_long_min", 50);
+    const shortMatch = biasFast < biasSlow && biasAdx >= minBiasAdx && previous.high >= entryEma[previousIndex] &&
+      current.close < entryEma[currentIndex] && current.close < current.open && currentRsi <= positiveConfig(config, "rsi_short_max", 50);
+    if (longMatch === shortMatch) return null;
+    return candidateFromSide(strategy, bars, longMatch ? "buy" : "sell", 0.76, news);
+  }
+
+  if (strategy.kind === "range_mean_reversion") {
+    const period = Math.max(10, Math.min(100, Math.floor(positiveConfig(config, "band_period", 20))));
+    if (closes.length < period + 2 || currentAdx > positiveConfig(config, "adx_max", 20)) return null;
+    const window = closes.slice(-period);
+    const mean = window.reduce((sum, value) => sum + value, 0) / window.length;
+    const deviation = Math.sqrt(window.reduce((sum, value) => sum + (value - mean) ** 2, 0) / window.length);
+    const band = positiveConfig(config, "band_deviation", 2) * deviation;
+    const previousWindow = closes.slice(-period - 1, -1);
+    const previousMean = previousWindow.reduce((sum, value) => sum + value, 0) / previousWindow.length;
+    const previousDeviation = Math.sqrt(previousWindow.reduce((sum, value) => sum + (value - previousMean) ** 2, 0) / previousWindow.length);
+    const longMatch = previous.close < previousMean - positiveConfig(config, "band_deviation", 2) * previousDeviation &&
+      current.close > mean - band && currentRsi <= positiveConfig(config, "rsi_oversold", 38);
+    const shortMatch = previous.close > previousMean + positiveConfig(config, "band_deviation", 2) * previousDeviation &&
+      current.close < mean + band && currentRsi >= positiveConfig(config, "rsi_overbought", 62);
+    if (longMatch === shortMatch) return null;
+    return candidateFromSide(strategy, bars, longMatch ? "buy" : "sell", 0.70, news);
+  }
+
+  if (strategy.kind === "volatility_compression_breakout") {
+    const atrValues = computeATR(bars, 14).filter(Number.isFinite);
+    const baselineAtr = median(atrValues.slice(-60, -1));
+    const atrRatio = baselineAtr > EPSILON ? currentAtr / baselineAtr : 1;
+    const lookback = Math.max(8, Math.min(50, Math.floor(positiveConfig(config, "breakout_lookback", 20))));
+    const prior = bars.slice(-lookback - 1, -1);
+    const priorHigh = Math.max(...prior.map((bar) => bar.high));
+    const priorLow = Math.min(...prior.map((bar) => bar.low));
+    const priorAtr = median(atrValues.slice(-Math.min(10, atrValues.length), -1));
+    const wasCompressed = baselineAtr > EPSILON && priorAtr / baselineAtr <= positiveConfig(config, "compression_atr_ratio", 0.85);
+    const volumeRatio = metricValue("volume_ratio", bars);
+    const longMatch = wasCompressed && current.close > priorHigh && atrRatio >= positiveConfig(config, "expansion_atr_ratio", 1.0) &&
+      volumeRatio >= positiveConfig(config, "volume_ratio_min", 1.0);
+    const shortMatch = wasCompressed && current.close < priorLow && atrRatio >= positiveConfig(config, "expansion_atr_ratio", 1.0) &&
+      volumeRatio >= positiveConfig(config, "volume_ratio_min", 1.0);
+    if (longMatch === shortMatch) return null;
+    return candidateFromSide(strategy, bars, longMatch ? "buy" : "sell", 0.74, news);
+  }
+
+  if (strategy.kind === "news_continuation") {
+    const settleMinutes = positiveConfig(config, "settle_minutes", 5);
+    if (!news.has_direction || news.minutes_to_event == null || news.minutes_to_event > 0 || Math.abs(news.minutes_to_event) < settleMinutes) return null;
+    const lookback = Math.max(2, Math.min(20, Math.floor(positiveConfig(config, "breakout_lookback", 3))));
+    const prior = bars.slice(-lookback - 1, -1);
+    const brokeUp = current.close > Math.max(...prior.map((bar) => bar.high));
+    const brokeDown = current.close < Math.min(...prior.map((bar) => bar.low));
+    if ((news.implied_side === "buy" && !brokeUp) || (news.implied_side === "sell" && !brokeDown)) return null;
+    return candidateFromSide(strategy, bars, news.implied_side!, 0.78, { ...news, near: false });
+  }
+
   if (strategy.kind === "momentum_breakout") {
-    const emaFast = computeEMA(closes, 9);
-    const emaSlow = computeEMA(closes, 21);
+    const emaFast = computeEMA(closes, Math.floor(positiveConfig(config, "ema_fast", 9)));
+    const emaSlow = computeEMA(closes, Math.floor(positiveConfig(config, "ema_slow", 21)));
     const currentFast = emaFast[currentIndex];
     const currentSlow = emaSlow[currentIndex];
     if (!allFinite(currentFast, currentSlow)) return null;
-    const lookback = bars.slice(Math.max(0, currentIndex - 12), currentIndex);
-    if (lookback.length < 12) return null;
+    const breakoutLookback = Math.max(3, Math.min(100, Math.floor(positiveConfig(config, "breakout_lookback", 12))));
+    const lookback = bars.slice(Math.max(0, currentIndex - breakoutLookback), currentIndex);
+    if (lookback.length < breakoutLookback) return null;
     const priorHigh = Math.max(...lookback.map((bar) => bar.high));
     const priorLow = Math.min(...lookback.map((bar) => bar.low));
     const candleRange = Math.max(EPSILON, current.high - current.low);
@@ -301,14 +547,14 @@ function evaluateStrategy(
     const swingHigh = Math.max(...recent.map((bar) => bar.high));
 
     if (
-      currentFast > currentSlow && current.close > priorHigh && currentAdx >= 18 &&
-      currentRsi >= 52 && currentRsi <= 74 && bullishBody >= 0.5 &&
-      currentFast - currentSlow >= 0.12 * currentAtr
+      currentFast > currentSlow && current.close > priorHigh && currentAdx >= positiveConfig(config, "adx_min", 18) &&
+      currentRsi >= positiveConfig(config, "rsi_long_min", 52) && currentRsi <= positiveConfig(config, "rsi_long_max", 74) && bullishBody >= positiveConfig(config, "body_min", 0.5) &&
+      currentFast - currentSlow >= positiveConfig(config, "ema_separation_atr", 0.12) * currentAtr
     ) {
       const breakoutQuality = clamp01((current.close - priorHigh) / currentAtr);
-      const stopDistance = Math.max(1.5 * currentAtr, current.close - (swingLow - 0.2 * currentAtr));
-      if (stopDistance > 2.8 * currentAtr) return null;
-      const rewardMultiple = currentAdx >= 30 ? 2.2 : 1.8;
+      const stopDistance = Math.max(positiveConfig(config, "stop_atr", 1.5) * currentAtr, current.close - (swingLow - 0.2 * currentAtr));
+      if (stopDistance > positiveConfig(config, "max_stop_atr", 2.8) * currentAtr) return null;
+      const rewardMultiple = currentAdx >= positiveConfig(config, "strong_adx", 30) ? positiveConfig(config, "strong_target_r", 2.2) : positiveConfig(config, "target_r", 1.8);
       return applyNewsDownweight({
         side: "buy", entryPrice: current.close,
         suggestedSl: current.close - stopDistance,
@@ -318,14 +564,14 @@ function evaluateStrategy(
       });
     }
     if (
-      currentFast < currentSlow && current.close < priorLow && currentAdx >= 18 &&
-      currentRsi >= 26 && currentRsi <= 48 && bearishBody >= 0.5 &&
-      currentSlow - currentFast >= 0.12 * currentAtr
+      currentFast < currentSlow && current.close < priorLow && currentAdx >= positiveConfig(config, "adx_min", 18) &&
+      currentRsi >= positiveConfig(config, "rsi_short_min", 26) && currentRsi <= positiveConfig(config, "rsi_short_max", 48) && bearishBody >= positiveConfig(config, "body_min", 0.5) &&
+      currentSlow - currentFast >= positiveConfig(config, "ema_separation_atr", 0.12) * currentAtr
     ) {
       const breakoutQuality = clamp01((priorLow - current.close) / currentAtr);
-      const stopDistance = Math.max(1.5 * currentAtr, (swingHigh + 0.2 * currentAtr) - current.close);
-      if (stopDistance > 2.8 * currentAtr) return null;
-      const rewardMultiple = currentAdx >= 30 ? 2.2 : 1.8;
+      const stopDistance = Math.max(positiveConfig(config, "stop_atr", 1.5) * currentAtr, (swingHigh + 0.2 * currentAtr) - current.close);
+      if (stopDistance > positiveConfig(config, "max_stop_atr", 2.8) * currentAtr) return null;
+      const rewardMultiple = currentAdx >= positiveConfig(config, "strong_adx", 30) ? positiveConfig(config, "strong_target_r", 2.2) : positiveConfig(config, "target_r", 1.8);
       return applyNewsDownweight({
         side: "sell", entryPrice: current.close,
         suggestedSl: current.close + stopDistance,
@@ -338,8 +584,8 @@ function evaluateStrategy(
   }
 
   if (strategy.kind === "confirmed_trend_pullback") {
-    const emaFast = computeEMA(closes, 20);
-    const emaSlow = computeEMA(closes, 50);
+    const emaFast = computeEMA(closes, Math.floor(positiveConfig(config, "ema_fast", 20)));
+    const emaSlow = computeEMA(closes, Math.floor(positiveConfig(config, "ema_slow", 50)));
     const currentFast = emaFast[currentIndex];
     const previousFast = emaFast[previousIndex];
     const currentSlow = emaSlow[currentIndex];
@@ -356,15 +602,15 @@ function evaluateStrategy(
     const score = Math.min(0.69, 0.50 + 0.10 * adxQuality + 0.09 * spreadQuality);
 
     if (
-      currentFast > currentSlow && currentSlow > slopeSlow && currentAdx >= 25 &&
-      currentFast - currentSlow >= 0.25 * currentAtr && currentRsi >= 50 && currentRsi <= 65 &&
+      currentFast > currentSlow && currentSlow > slopeSlow && currentAdx >= positiveConfig(config, "adx_min", 25) &&
+      currentFast - currentSlow >= positiveConfig(config, "ema_separation_atr", 0.25) * currentAtr && currentRsi >= positiveConfig(config, "rsi_long_min", 50) && currentRsi <= positiveConfig(config, "rsi_long_max", 65) &&
       previous.low <= previousFast && previous.close <= previousFast && previous.close > previousSlow &&
       current.close > currentFast && current.close > current.open
     ) {
-      const risk = Math.max(1.8 * currentAtr, current.close - (swingLow - 0.25 * currentAtr));
-      if (risk > 3.2 * currentAtr) return null;
+      const risk = Math.max(positiveConfig(config, "stop_atr", 1.8) * currentAtr, current.close - (swingLow - 0.25 * currentAtr));
+      if (risk > positiveConfig(config, "max_stop_atr", 3.2) * currentAtr) return null;
       const suggestedSl = current.close - risk;
-      const rewardMultiple = currentAdx >= 35 ? 2.6 : 2.2;
+      const rewardMultiple = currentAdx >= positiveConfig(config, "strong_adx", 35) ? positiveConfig(config, "strong_target_r", 2.6) : positiveConfig(config, "target_r", 2.2);
       return applyNewsDownweight({
         side: "buy", entryPrice: current.close, suggestedSl,
         suggestedTp: current.close + rewardMultiple * risk, score,
@@ -372,15 +618,15 @@ function evaluateStrategy(
       });
     }
     if (
-      currentFast < currentSlow && currentSlow < slopeSlow && currentAdx >= 25 &&
-      currentSlow - currentFast >= 0.25 * currentAtr && currentRsi >= 35 && currentRsi <= 50 &&
+      currentFast < currentSlow && currentSlow < slopeSlow && currentAdx >= positiveConfig(config, "adx_min", 25) &&
+      currentSlow - currentFast >= positiveConfig(config, "ema_separation_atr", 0.25) * currentAtr && currentRsi >= positiveConfig(config, "rsi_short_min", 35) && currentRsi <= positiveConfig(config, "rsi_short_max", 50) &&
       previous.high >= previousFast && previous.close >= previousFast && previous.close < previousSlow &&
       current.close < currentFast && current.close < current.open
     ) {
-      const risk = Math.max(1.8 * currentAtr, (swingHigh + 0.25 * currentAtr) - current.close);
-      if (risk > 3.2 * currentAtr) return null;
+      const risk = Math.max(positiveConfig(config, "stop_atr", 1.8) * currentAtr, (swingHigh + 0.25 * currentAtr) - current.close);
+      if (risk > positiveConfig(config, "max_stop_atr", 3.2) * currentAtr) return null;
       const suggestedSl = current.close + risk;
-      const rewardMultiple = currentAdx >= 35 ? 2.6 : 2.2;
+      const rewardMultiple = currentAdx >= positiveConfig(config, "strong_adx", 35) ? positiveConfig(config, "strong_target_r", 2.6) : positiveConfig(config, "target_r", 2.2);
       return applyNewsDownweight({
         side: "sell", entryPrice: current.close, suggestedSl,
         suggestedTp: current.close - rewardMultiple * risk, score,
@@ -512,7 +758,10 @@ async function manageOpenStrategyPositions(
     if (!allFinite(atr, adx, latestClose, latestEma) || atr <= EPSILON) continue;
     const favorable = position.side === "buy" ? mark - open : open - mark;
     const currentR = favorable / risk;
-    if (currentR < 1) {
+    const exitConfig = strategy.exit_config ?? {};
+    const breakEvenAtR = positiveConfig(exitConfig, "breakeven_r", 1);
+    const trailAtR = positiveConfig(exitConfig, "trailing_start_r", 1.5);
+    if (currentR < breakEvenAtR) {
       await admin.from("positions").update({ last_management_bar_time: sourceBarTime }).eq("id", position.id);
       continue;
     }
@@ -523,10 +772,10 @@ async function manageOpenStrategyPositions(
     const breakEven = isBuy ? open + 0.05 * atr : open - 0.05 * atr;
     let desiredSl = breakEven;
     let stage = 1;
-    if (currentR >= 1.5) {
+    if (currentR >= trailAtR) {
       stage = 2;
       const recent = bars.slice(-5);
-      const trailMultiple = strategy.kind === "confirmed_trend_pullback" ? 1.8 : 1.5;
+      const trailMultiple = positiveConfig(exitConfig, "trail_atr", strategy.kind === "confirmed_trend_pullback" ? 1.8 : 1.5);
       if (isBuy) {
         const swing = Math.min(...recent.map((bar) => bar.low)) - 0.2 * atr;
         desiredSl = Math.max(breakEven, Math.min(swing, latestClose - trailMultiple * atr));
@@ -541,8 +790,8 @@ async function manageOpenStrategyPositions(
       continue;
     }
 
-    const strongContinuation = adx >= 30 && (isBuy ? latestClose > latestEma : latestClose < latestEma);
-    const extendedR = strategy.kind === "confirmed_trend_pullback" ? 3.0 : 2.6;
+    const strongContinuation = adx >= positiveConfig(exitConfig, "extend_adx", 30) && (isBuy ? latestClose > latestEma : latestClose < latestEma);
+    const extendedR = positiveConfig(exitConfig, "extended_target_r", strategy.kind === "confirmed_trend_pullback" ? 3.0 : 2.6);
     const extendedTp = isBuy ? open + extendedR * risk : open - extendedR * risk;
     const tpImproves = strongContinuation && (isBuy
       ? extendedTp > currentTp + EPSILON
@@ -577,6 +826,49 @@ async function manageOpenStrategyPositions(
   return queued;
 }
 
+async function settleShadowSignals(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  strategy: StrategyRow,
+  symbol: string,
+  bars: PriceBar[],
+  nowIso: string,
+): Promise<void> {
+  const { data: pending, error } = await admin.from("strategy_shadow_signals")
+    .select("id,side,entry_price,sl,tp,initial_risk_distance,source_bar_time,expires_at,mfe_r,mae_r")
+    .eq("strategy_id", strategy.id).eq("symbol", symbol).eq("timeframe", strategy.timeframe).eq("status", "pending");
+  if (error || !pending) return;
+  for (const signal of pending) {
+    const risk = Number(signal.initial_risk_distance);
+    const entry = Number(signal.entry_price);
+    const subsequent = bars.filter((bar) => bar.bar_time > signal.source_bar_time);
+    let mfeR = Number(signal.mfe_r) || 0, maeR = Number(signal.mae_r) || 0;
+    let status: "pending" | "won" | "lost" | "expired" = "pending";
+    let resultR: number | null = null;
+    for (const bar of subsequent) {
+      const favorable = signal.side === "buy" ? bar.high - entry : entry - bar.low;
+      const adverse = signal.side === "buy" ? entry - bar.low : bar.high - entry;
+      mfeR = Math.max(mfeR, favorable / risk);
+      maeR = Math.max(maeR, adverse / risk);
+      const hitStop = signal.side === "buy" ? bar.low <= Number(signal.sl) : bar.high >= Number(signal.sl);
+      const hitTarget = signal.side === "buy" ? bar.high >= Number(signal.tp) : bar.low <= Number(signal.tp);
+      // OHLC cannot reveal intrabar ordering; when both are touched, use the
+      // conservative result instead of inflating simulated performance.
+      if (hitStop) { status = "lost"; resultR = -1; break; }
+      if (hitTarget) { status = "won"; resultR = Math.abs(Number(signal.tp) - entry) / risk; break; }
+    }
+    if (status === "pending" && new Date(signal.expires_at).getTime() <= new Date(nowIso).getTime()) {
+      status = "expired";
+      const last = bars[bars.length - 1]?.close ?? entry;
+      resultR = (signal.side === "buy" ? last - entry : entry - last) / risk;
+    }
+    await admin.from("strategy_shadow_signals").update({
+      status, result_r: resultR, mfe_r: mfeR, mae_r: maeR,
+      resolved_at: status === "pending" ? null : nowIso,
+    }).eq("id", signal.id);
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return jsonResponse({ error: "method_not_allowed" }, 405);
 
@@ -603,9 +895,9 @@ Deno.serve(async (req: Request) => {
   try {
     const { data: strategies, error: strategiesError } = await admin
       .from("strategies")
-      .select("id, terminal_id, name, kind, timeframe, symbols, delivery_mode, max_lot_size, risk_percent, signal_ttl_seconds, config")
+      .select("id, terminal_id, name, kind, timeframe, symbols, delivery_mode, max_lot_size, risk_percent, signal_ttl_seconds, config, run_mode, bias_timeframe, rule_definition, exit_config, allowed_sessions, direction_mode, cooldown_minutes, max_concurrent_positions, max_spread_points, news_posture, news_window_minutes, news_min_impact, news_exploit_size_multiplier")
       .eq("enabled", true)
-      .in("kind", ["momentum_breakout", "confirmed_trend_pullback"]);
+      .in("kind", ["momentum_breakout", "confirmed_trend_pullback", "multi_timeframe_trend_pullback", "range_mean_reversion", "volatility_compression_breakout", "news_continuation", "custom_rules"]);
     if (strategiesError) return jsonResponse({ error: "strategies_fetch_failed", detail: strategiesError.message }, 500);
     const activeStrategies = strategies ?? [];
     if (activeStrategies.length === 0) return jsonResponse({ processed: 0, signals_generated: 0, commands_queued: 0 });
@@ -631,7 +923,10 @@ Deno.serve(async (req: Request) => {
     const now = new Date();
     const nowIso = now.toISOString();
     const session = sessionForNow(now);
-    const news = await nearNewsCheck(admin, now);
+    const { data: calendarHealth } = await admin.from("market_feed_health")
+      .select("last_received_at").eq("feed_name", "economic_calendar").maybeSingle();
+    const calendarFresh = calendarHealth?.last_received_at &&
+      now.getTime() - new Date(calendarHealth.last_received_at).getTime() <= 15 * 60_000;
     const budgets = new Map<string, TerminalPositionBudget>();
     let processed = 0;
     let signalsGenerated = 0;
@@ -641,6 +936,8 @@ Deno.serve(async (req: Request) => {
       const strategy = rawStrategy as StrategyRow;
       if (!Array.isArray(strategy.symbols)) continue;
       if (!supportedTimeframes.has(strategy.timeframe)) continue;
+      if (strategy.kind === "news_continuation" && !calendarFresh) continue;
+      if (Array.isArray(strategy.allowed_sessions) && !strategy.allowed_sessions.includes(session)) continue;
       const timeframe = strategy.timeframe;
 
       for (const symbol of strategy.symbols) {
@@ -649,29 +946,30 @@ Deno.serve(async (req: Request) => {
         const symbolSetting = settingsByTerminalSymbol.get(`${strategy.terminal_id}:${symbol}`);
         if (symbolSetting && !symbolSetting.enabled) continue;
 
-        const { data: descendingBars, error: barsError } = await admin
-          .from("price_bars")
-          .select("bar_time, open, high, low, close, volume, spread")
-          .eq("terminal_id", strategy.terminal_id)
-          .eq("symbol", symbol)
-          .eq("timeframe", timeframe)
-          .order("bar_time", { ascending: false })
-          .limit(100);
-        if (barsError) {
-          console.error(`strategy-signal-engine: price_bars fetch failed for ${strategy.id}/${symbol}: ${barsError.message}`);
-          continue;
+        const requiredTimeframes = new Set<string>([timeframe]);
+        if (strategy.bias_timeframe) requiredTimeframes.add(strategy.bias_timeframe);
+        if (strategy.kind === "multi_timeframe_trend_pullback" && !strategy.bias_timeframe) requiredTimeframes.add("H4");
+        for (const condition of [...(strategy.rule_definition?.long ?? []), ...(strategy.rule_definition?.short ?? [])]) {
+          if (supportedTimeframes.has(condition.timeframe)) requiredTimeframes.add(condition.timeframe);
         }
-        if (!descendingBars || descendingBars.length < 60) continue; // expected while the EA's bar feed warms up
-
-        const bars: PriceBar[] = [...descendingBars].reverse().map((bar) => ({
-          bar_time: bar.bar_time,
-          open: Number(bar.open),
-          high: Number(bar.high),
-          low: Number(bar.low),
-          close: Number(bar.close),
-          volume: Number(bar.volume),
-          spread: bar.spread == null ? null : Number(bar.spread),
-        })).filter((bar) => allFinite(bar.open, bar.high, bar.low, bar.close, bar.volume));
+        const barsByTimeframe = new Map<string, PriceBar[]>();
+        let missingBars = false;
+        for (const requiredTimeframe of requiredTimeframes) {
+          const { data: descendingBars, error: barsError } = await admin.from("price_bars")
+            .select("bar_time, open, high, low, close, volume, spread")
+            .eq("terminal_id", strategy.terminal_id).eq("symbol", symbol).eq("timeframe", requiredTimeframe)
+            .order("bar_time", { ascending: false }).limit(240);
+          if (barsError || !descendingBars || descendingBars.length < 60) {
+            if (barsError) console.error(`strategy-signal-engine: price_bars fetch failed for ${strategy.id}/${symbol}/${requiredTimeframe}: ${barsError.message}`);
+            missingBars = true; break;
+          }
+          barsByTimeframe.set(requiredTimeframe, [...descendingBars].reverse().map((bar) => ({
+            bar_time: bar.bar_time, open: Number(bar.open), high: Number(bar.high), low: Number(bar.low),
+            close: Number(bar.close), volume: Number(bar.volume), spread: bar.spread == null ? null : Number(bar.spread),
+          })).filter((bar) => allFinite(bar.open, bar.high, bar.low, bar.close, bar.volume)));
+        }
+        if (missingBars) continue;
+        const bars = barsByTimeframe.get(timeframe) ?? [];
         if (bars.length < 60) continue;
 
         const adx = computeADX(bars, 14);
@@ -680,8 +978,24 @@ Deno.serve(async (req: Request) => {
         const regime: Regime = latestAdx >= 25 ? "trending" : "ranging";
         processed++;
 
-        const candidate = evaluateStrategy(strategy, bars, news.near);
+        await settleShadowSignals(admin, strategy, symbol, bars, nowIso);
+
+        const news = await newsContextForStrategy(admin, strategy, symbol, now);
+        const candidate = evaluateStrategy(strategy, barsByTimeframe, news);
         if (!candidate) continue;
+        if (news.has_direction && news.minutes_to_event != null && news.minutes_to_event <= 0 && news.implied_side !== candidate.side) continue;
+        if (strategy.direction_mode === "long_only" && candidate.side === "sell") continue;
+        if (strategy.direction_mode === "short_only" && candidate.side === "buy") continue;
+        const latestSpread = Number(bars[bars.length - 1].spread);
+        if (strategy.max_spread_points != null && Number.isFinite(latestSpread) && latestSpread > numberValue(strategy.max_spread_points, Number.POSITIVE_INFINITY)) continue;
+
+        const cooldownMinutes = Math.max(0, Math.floor(numberValue(strategy.cooldown_minutes, 0)));
+        if (cooldownMinutes > 0) {
+          const { count: cooldownSignals } = await admin.from("signals").select("id", { count: "exact", head: true })
+            .eq("strategy_id", strategy.id).eq("symbol", symbol)
+            .gte("generated_at", new Date(now.getTime() - cooldownMinutes * 60_000).toISOString());
+          if ((cooldownSignals ?? 0) > 0) continue;
+        }
 
         const ttlSeconds = Math.max(1, Math.floor(numberValue(strategy.signal_ttl_seconds, 60)));
         const sourceBarTime = bars[bars.length - 1].bar_time;
@@ -700,6 +1014,28 @@ Deno.serve(async (req: Request) => {
           continue;
         }
         if (recentSignal) continue;
+
+        if (strategy.run_mode === "shadow") {
+          const shadowBars = Math.max(5, Math.min(500, Math.floor(positiveConfig(strategy.config, "shadow_horizon_bars", 50))));
+          const timeframeSeconds: Record<string, number> = {
+            M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400, D1: 86400, W1: 604800,
+          };
+          const { error: shadowError } = await admin.from("strategy_shadow_signals").insert({
+            terminal_id: strategy.terminal_id, strategy_id: strategy.id, symbol, timeframe,
+            source_bar_time: sourceBarTime, side: candidate.side, entry_price: candidate.entryPrice,
+            sl: candidate.suggestedSl, tp: candidate.suggestedTp,
+            initial_risk_distance: candidate.initialRiskDistance,
+            expires_at: new Date(now.getTime() + shadowBars * timeframeSeconds[timeframe] * 1000).toISOString(),
+            evaluation_context: {
+              version: 1, strategy_kind: strategy.kind, definition_version: 1,
+              regime, news, score: candidate.score, rule_definition: strategy.rule_definition ?? null,
+            },
+          });
+          if (shadowError && shadowError.code !== "23505") {
+            console.error(`strategy-signal-engine: shadow insert failed for ${strategy.id}/${symbol}: ${shadowError.message}`);
+          }
+          continue;
+        }
 
         const baseVolume = Math.max(0, numberValue(strategy.max_lot_size, 0));
         const baseRiskPercent = Math.min(5, Math.max(0.01, numberValue(strategy.risk_percent, 0.5)));
@@ -786,12 +1122,30 @@ Deno.serve(async (req: Request) => {
           continue;
         }
 
-        const nearNewsFactor = news.near ? positiveConfig(strategy.config, "news_volume_factor", 0.5) : 1;
+        const avoidNewsFactor = news.near && (strategy.news_posture ?? "avoid") === "avoid"
+          ? positiveConfig(strategy.config, "news_volume_factor", 0.5) : 1;
+        const exploitNewsFactor = news.has_direction && news.minutes_to_event != null && news.minutes_to_event <= 0 &&
+            strategy.news_posture === "exploit" && news.implied_side === candidate.side
+          ? Math.min(3, positiveConfig(strategy as unknown as Record<string, unknown>, "news_exploit_size_multiplier", 1.5)) * (regime === "trending" ? 1.25 : 1)
+          : 1;
         const effectiveRiskPercent = baseRiskPercent *
-          (policy.decision === "downweight" ? policy.factor : 1) * nearNewsFactor;
+          (policy.decision === "downweight" ? policy.factor : 1) * avoidNewsFactor * exploitNewsFactor;
         if (!Number.isFinite(effectiveRiskPercent) || effectiveRiskPercent <= 0) {
           await admin.from("signals").update({ policy_decision: "block" }).eq("id", signal.id);
           await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
+          continue;
+        }
+
+        const { data: riskGate, error: riskGateError } = await admin.rpc("portfolio_risk_gate", {
+          p_terminal_id: strategy.terminal_id,
+          p_strategy_id: strategy.id,
+          p_symbol: symbol,
+          p_proposed_risk_percent: effectiveRiskPercent,
+        });
+        if (riskGateError || !riskGate?.[0]?.allowed) {
+          await admin.from("signals").update({ policy_decision: "block" }).eq("id", signal.id);
+          await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
+          if (riskGateError) console.error(`strategy-signal-engine: portfolio risk gate failed: ${riskGateError.message}`);
           continue;
         }
 

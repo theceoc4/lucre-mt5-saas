@@ -454,5 +454,8 @@ verify_jwt = false
 [functions.strategy-signal-engine]
 verify_jwt = false
 
+[functions.strategy-backtest]
+verify_jwt = true
+
 [functions.account-management]
 verify_jwt = true

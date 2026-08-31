@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.29 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.30 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.29"
+#property version   "1.30"
 #property strict
 
 
@@ -2857,10 +2857,10 @@ datetime g_pr_last_report = 0;
 
 // v1.0.22 -- historical warm-up and outage recovery are staggered so a large
 // symbol/timeframe selection cannot create an unbounded Edge Function body.
-#define PR_BACKFILL_BARS 300
+#define PR_BACKFILL_BARS 1000
 #define PR_MAX_BACKFILL_SERIES_PER_RUN 2
 #define PR_MAX_RECOVERY_SERIES_PER_RUN 2
-#define PR_MAX_BARS_PER_REQUEST 1200
+#define PR_MAX_BARS_PER_REQUEST 2200
 string   g_pr_series_keys[];
 datetime g_pr_series_last_sent[];
 
@@ -3032,7 +3032,7 @@ void PriceReporter_Run()
          datetime last_sent = PriceReporter_LastSent(series_key);
          bool is_backfill = (last_sent == 0);
          if(is_backfill && backfill_series >= PR_MAX_BACKFILL_SERIES_PER_RUN)
-            continue; // stagger startup so one request never contains every 300-bar series
+            continue; // stagger startup so one request never contains every 1,000-bar series
          ENUM_TIMEFRAMES period = PriceReporter_TimeframeEnum(timeframe);
          int period_seconds = PeriodSeconds(period);
          int missing_estimate = (period_seconds > 0 && last_sent > 0)

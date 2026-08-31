@@ -2571,3 +2571,26 @@ body {
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
 }
+.strategy-rule-list {
+  display: grid;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.strategy-rule-row {
+  display: grid;
+  grid-template-columns: 84px 76px minmax(190px, 1fr) 64px 90px 38px;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.strategy-rule-row select,
+.strategy-rule-row input { min-width: 0; }
+
+.strategy-session-options { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
+.strategy-session-options label { display: inline-flex; align-items: center; gap: var(--space-2); font-size: 0.85rem; }
+
+@media (max-width: 720px) {
+  .strategy-rule-row { grid-template-columns: 1fr 1fr; }
+  .strategy-rule-row select:nth-child(3) { grid-column: 1 / -1; }
+}

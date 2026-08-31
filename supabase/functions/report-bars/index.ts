@@ -1,4 +1,4 @@
-// v1.0.22 — report-bars
+// v1.0.30 — report-bars
 //
 // The MT5 EA posts newly closed bars for selected symbol/timeframe series.
 // This function reverse-resolves each broker-native spelling to the terminal's
@@ -35,8 +35,8 @@ const CORS_HEADERS = {
 };
 
 const MAX_SERIES_PER_REQUEST = 400; // 50 symbols x 8 timeframes
-const MAX_BARS_PER_SYMBOL = 300;
-const MAX_BARS_PER_REQUEST = 1200;
+const MAX_BARS_PER_SYMBOL = 1000;
+const MAX_BARS_PER_REQUEST = 2200;
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -174,6 +174,18 @@ async function updateTrendStates(
     .from("symbol_trend_state")
     .upsert(payload, { onConflict: "terminal_id,symbol" });
   if (upsertError) warnings.push(`Trend state upsert failed: ${upsertError.message}`);
+  if (!upsertError) {
+    const historyRows = payload.filter((row) => row.source_bar_time).map((row) => ({
+      terminal_id: row.terminal_id, symbol: row.symbol, source_bar_time: row.source_bar_time,
+      score: row.score, confidence: row.confidence, regime: row.regime,
+      timeframe_scores: row.timeframe_scores, model_version: row.model_version, computed_at: row.computed_at,
+    }));
+    if (historyRows.length > 0) {
+      const { error: historyError } = await admin.from("symbol_trend_history")
+        .upsert(historyRows, { onConflict: "terminal_id,symbol,source_bar_time" });
+      if (historyError) warnings.push(`Trend history upsert failed: ${historyError.message}`);
+    }
+  }
   return { updated: upsertError ? 0 : payload.length, warnings };
 }
 
