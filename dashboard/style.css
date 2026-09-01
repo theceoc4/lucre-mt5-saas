@@ -2571,7 +2571,33 @@ body {
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
 }
-.strategy-builder-modal { max-width: 760px; }
+.strategy-builder-modal {
+  max-width: 760px;
+  color-scheme: light;
+}
+
+/* Native select menus do not reliably inherit a themed ancestor's colors.
+   Keep every strategy-builder select — including dynamically nested indicator
+   parameters and AND/OR controls — on the same palette as the modal. */
+.strategy-builder-modal select {
+  border: 1px solid var(--color-border-strong);
+  background-color: var(--color-surface-2);
+  color: var(--color-text);
+}
+.strategy-builder-modal select option,
+.strategy-builder-modal select optgroup {
+  background-color: var(--color-surface-2);
+  color: var(--color-text);
+}
+[data-theme='dark'] .strategy-builder-modal {
+  color-scheme: dark;
+}
+[data-theme='dark'] .strategy-builder-modal select,
+[data-theme='dark'] .strategy-builder-modal select option,
+[data-theme='dark'] .strategy-builder-modal select optgroup {
+  background-color: var(--color-surface-2);
+  color: var(--color-text);
+}
 .strategy-builder-grid { display: grid; gap: var(--space-3); align-items: start; }
 .strategy-builder-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .field-label-note { color: var(--color-text-faint); font-weight: 500; }
