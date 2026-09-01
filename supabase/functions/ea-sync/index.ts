@@ -1,4 +1,4 @@
-// v1.0.34 — durable candle-feed checkpoints and strategy freshness lanes.
+// v1.0.35 — verified candle bootstrap lifecycle and freshness manifest.
 // v1.0.2 — ea-sync
 //
 // The MQL5 EA polls this every 1-2s. It is the ONLY function EAs talk to and the
@@ -797,19 +797,6 @@ Deno.serve(async (req: Request) => {
     (symbolSettings ?? []).map((setting) => [setting.symbol, setting]),
   );
 
-  const { data: feedStates, error: feedStatesError } = await admin
-    .from("price_feed_series_state")
-    .select("symbol,timeframe,latest_bar_time")
-    .eq("terminal_id", terminal.id);
-  if (feedStatesError) {
-    return jsonResponse({ error: "price_feed_state_fetch_failed", detail: feedStatesError.message }, 500);
-  }
-  const feedStatesBySymbol = new Map<string, Record<string, string>>();
-  for (const state of feedStates ?? []) {
-    if (!feedStatesBySymbol.has(state.symbol)) feedStatesBySymbol.set(state.symbol, {});
-    feedStatesBySymbol.get(state.symbol)![state.timeframe] = state.latest_bar_time;
-  }
-
   // Active strategy inputs must win over general dashboard/trend collection.
   // The mapping array is sorted for older EAs, while priority_timeframes lets
   // v1.0.30+ explicitly run those series before its round-robin background
@@ -847,6 +834,47 @@ Deno.serve(async (req: Request) => {
       priorityRankBySymbol.set(symbol, Math.min(rank, priorityRankBySymbol.get(symbol) ?? 99));
     }
   }
+
+  const desiredFeedSeries = (mappings ?? []).flatMap((mapping) => {
+    const setting = settingsBySymbol.get(mapping.canonical_symbol);
+    const enabled = setting?.enabled !== false;
+    const priorityTimeframes = priorityTimeframesBySymbol.get(mapping.canonical_symbol) ?? new Set<string>();
+    const symbolRank = priorityRankBySymbol.get(mapping.canonical_symbol) ?? 99;
+    return supportedTimeframes.map((timeframe) => ({
+      symbol: mapping.canonical_symbol,
+      timeframe,
+      enabled,
+      priority_rank: priorityTimeframes.has(timeframe) ? symbolRank : 99,
+    }));
+  });
+  const { error: reconcileFeedError } = await admin.rpc("reconcile_price_feed_manifest", {
+    p_terminal_id: terminal.id,
+    p_desired: desiredFeedSeries,
+  });
+  if (reconcileFeedError) {
+    return jsonResponse({ error: "price_feed_manifest_reconcile_failed", detail: reconcileFeedError.message }, 500);
+  }
+
+  const { data: feedStates, error: feedStatesError } = await admin
+    .from("price_feed_series_state")
+    .select("symbol,timeframe,latest_bar_time,oldest_bar_time,history_bar_count,bootstrap_generation,bootstrap_required,status")
+    .eq("terminal_id", terminal.id);
+  if (feedStatesError) {
+    return jsonResponse({ error: "price_feed_state_fetch_failed", detail: feedStatesError.message }, 500);
+  }
+  type FeedState = {
+    latest_bar_time: string | null;
+    oldest_bar_time: string | null;
+    history_bar_count: number;
+    bootstrap_generation: number;
+    bootstrap_required: boolean;
+    status: string;
+  };
+  const feedStatesBySymbol = new Map<string, Record<string, FeedState>>();
+  for (const state of feedStates ?? []) {
+    if (!feedStatesBySymbol.has(state.symbol)) feedStatesBySymbol.set(state.symbol, {});
+    feedStatesBySymbol.get(state.symbol)![state.timeframe] = state as FeedState;
+  }
   const orderedMappings = [...(mappings ?? [])].sort((left, right) => {
     const rankDelta = (priorityRankBySymbol.get(left.canonical_symbol) ?? 99) -
       (priorityRankBySymbol.get(right.canonical_symbol) ?? 99);
@@ -882,7 +910,23 @@ Deno.serve(async (req: Request) => {
       // restart instead of blindly replaying 1,000 bars for every series.
       feed_checkpoints: Object.fromEntries(
         Object.entries(feedStatesBySymbol.get(m.canonical_symbol) ?? {})
-          .map(([timeframe, latestBarTime]) => [timeframe, latestBarTime]),
+          .filter(([, state]) => Boolean(state.latest_bar_time))
+          .map(([timeframe, state]) => [timeframe, state.latest_bar_time]),
+      ),
+      feed_bootstrap_generations: Object.fromEntries(
+        Object.entries(feedStatesBySymbol.get(m.canonical_symbol) ?? {})
+          .map(([timeframe, state]) => [timeframe, state.bootstrap_generation]),
+      ),
+      feed_bootstrap_required: Object.entries(feedStatesBySymbol.get(m.canonical_symbol) ?? {})
+        .filter(([, state]) => state.bootstrap_required)
+        .map(([timeframe]) => timeframe),
+      feed_history_counts: Object.fromEntries(
+        Object.entries(feedStatesBySymbol.get(m.canonical_symbol) ?? {})
+          .map(([timeframe, state]) => [timeframe, state.history_bar_count]),
+      ),
+      feed_statuses: Object.fromEntries(
+        Object.entries(feedStatesBySymbol.get(m.canonical_symbol) ?? {})
+          .map(([timeframe, state]) => [timeframe, state.status]),
       ),
     })),
     force_symbol_rescan: terminal.force_symbol_rescan ?? false,

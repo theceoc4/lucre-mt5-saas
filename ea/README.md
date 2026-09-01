@@ -1,4 +1,4 @@
-# LucreHubEA — v1.0.32 (single-file build)
+# LucreHubEA — v1.0.33 (single-file build)
 
 ## What changed in this build
 
@@ -89,10 +89,12 @@ constants in `mt5_ea/LucreHubEA.mq5` before changing risk policy.
   to 300 closed candles and reports broker precision, tick volume, spread and
   real volume.
 
-Before deployment, apply migrations through 056 and deploy the functions,
-then compile this EA in MetaEditor. Version 1.0.32 restores each candle
-reporter's cursor from Supabase after restarts, preventing a full-universe
-historical replay from starving active strategy feeds.
+Before deployment, apply migrations through 057 and deploy the functions,
+then compile this EA in MetaEditor. Version 1.0.33 separates a lightweight
+all-series freshness sweep from clean historical bootstrap work. New and
+re-enabled pairs import up to 1,000 closed candles on all eight timeframes,
+while every enabled series continues receiving current candles during that
+background bootstrap.
 
 ## Functional behavior
 

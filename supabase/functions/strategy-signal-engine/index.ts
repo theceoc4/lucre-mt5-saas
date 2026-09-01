@@ -1094,6 +1094,19 @@ Deno.serve(async (req: Request) => {
     const settingsByTerminalSymbol = new Map(
       (symbolSettings ?? []).map((setting) => [`${setting.terminal_id}:${setting.symbol}`, setting]),
     );
+    const { data: feedStates, error: feedStatesError } = await admin
+      .from("price_feed_series_state")
+      .select("terminal_id,symbol,timeframe,status,bootstrap_required,history_bar_count,latest_bar_time")
+      .in("terminal_id", terminalIds);
+    if (feedStatesError) {
+      return jsonResponse({ error: "price_feed_states_fetch_failed", detail: feedStatesError.message }, 500);
+    }
+    const feedStateBySeries = new Map(
+      (feedStates ?? []).map((state) => [
+        `${state.terminal_id}:${state.symbol}:${state.timeframe}`,
+        state,
+      ]),
+    );
 
     const now = new Date();
     const nowIso = now.toISOString();
@@ -1160,6 +1173,19 @@ Deno.serve(async (req: Request) => {
         const barsByTimeframe = new Map<string, PriceBar[]>();
         let missingBars = false;
         for (const requiredTimeframe of requiredTimeframes) {
+          const feedState = feedStateBySeries.get(
+            `${strategy.terminal_id}:${symbol}:${requiredTimeframe}`,
+          );
+          if (!feedState || feedState.bootstrap_required || feedState.history_bar_count < 500) {
+            recordEvaluation(strategy, symbol, "missing_bars", feedState?.latest_bar_time ?? null, null, {
+              required_timeframe: requiredTimeframe,
+              feed_status: feedState?.status ?? "missing",
+              bootstrap_required: feedState?.bootstrap_required ?? true,
+              available_bars: feedState?.history_bar_count ?? 0,
+              required_history_bars: 500,
+            });
+            missingBars = true; break;
+          }
           const barLimit = requiredTimeframe === timeframe && strategy.rule_definition?.version === 2
             ? indicatorWarmupBars(strategy.rule_definition)
             : 240;

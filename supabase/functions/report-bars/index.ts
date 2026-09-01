@@ -1,4 +1,4 @@
-// v1.0.34 — report-bars
+// v1.0.35 — report-bars
 //
 // The MT5 EA posts newly closed bars for selected symbol/timeframe series.
 // This function reverse-resolves each broker-native spelling to the terminal's
@@ -60,6 +60,8 @@ interface IncomingSymbolBars {
   broker_symbol: string;
   timeframe?: string; // omitted by pre-v1.0.22 EAs, meaning M5
   source_digits?: number;
+  bootstrap_generation?: number;
+  snapshot_complete?: boolean;
   bars: IncomingBar[];
 }
 
@@ -280,6 +282,7 @@ Deno.serve(async (req: Request) => {
     spread: number | null;
     real_volume: number | null;
   }> = [];
+  const ingestMetadata = new Map<string, { bootstrap_generation: number; snapshot_complete: boolean }>();
 
   for (const symbolPayload of body.symbols) {
     const canonicalSymbol = canonicalByBroker.get(symbolPayload.broker_symbol);
@@ -289,6 +292,11 @@ Deno.serve(async (req: Request) => {
     }
 
     const timeframe = symbolPayload.timeframe ?? "M5";
+    ingestMetadata.set(`${canonicalSymbol}:${timeframe}`, {
+      bootstrap_generation: Number.isInteger(symbolPayload.bootstrap_generation)
+        ? Math.max(0, Number(symbolPayload.bootstrap_generation)) : 0,
+      snapshot_complete: symbolPayload.snapshot_complete === true,
+    });
     const sourceDigits = Number.isInteger(symbolPayload.source_digits) &&
         Number(symbolPayload.source_digits) >= 0 && Number(symbolPayload.source_digits) <= 12
       ? Number(symbolPayload.source_digits)
@@ -332,7 +340,11 @@ Deno.serve(async (req: Request) => {
     .from("price_bars")
     .upsert(rows, {
       onConflict: "terminal_id,symbol,timeframe,bar_time",
-      ignoreDuplicates: true,
+      // A verified bootstrap is an authoritative broker snapshot, so matching
+      // timestamps must refresh OHLCV/spread metadata as well as fill gaps.
+      // Normal freshness batches rarely conflict because the EA advances from
+      // the server checkpoint, while retries remain safely idempotent.
+      ignoreDuplicates: false,
     });
 
   if (upsertError) return jsonResponse({ error: "upsert_failed", detail: upsertError.message }, 500);
@@ -347,6 +359,8 @@ Deno.serve(async (req: Request) => {
     timeframe: string;
     accepted_through: string;
     bar_count: number;
+    bootstrap_generation: number;
+    snapshot_complete: boolean;
   }>();
   for (const row of rows) {
     const key = `${row.symbol}:${row.timeframe}`;
@@ -361,6 +375,8 @@ Deno.serve(async (req: Request) => {
         timeframe: row.timeframe,
         accepted_through: row.bar_time,
         bar_count: 1,
+        bootstrap_generation: ingestMetadata.get(key)?.bootstrap_generation ?? 0,
+        snapshot_complete: ingestMetadata.get(key)?.snapshot_complete ?? false,
       });
     }
   }
@@ -376,6 +392,8 @@ Deno.serve(async (req: Request) => {
       timeframe: series.timeframe,
       latest_bar_time: series.accepted_through,
       bar_count: series.bar_count,
+      bootstrap_generation: series.bootstrap_generation,
+      snapshot_complete: series.snapshot_complete,
     })),
   });
   if (checkpointError) {
@@ -395,8 +413,12 @@ Deno.serve(async (req: Request) => {
     // Keep the old field during the EA rollout; it historically meant rows
     // accepted for insertion, not necessarily newly-created database rows.
     upserted: rows.length,
-    series: acceptedSeries.map(({ broker_symbol, timeframe, accepted_through, bar_count }) => ({
+    series: acceptedSeries.map(({
       broker_symbol, timeframe, accepted_through, bar_count,
+      bootstrap_generation, snapshot_complete,
+    }) => ({
+      broker_symbol, timeframe, accepted_through, bar_count,
+      bootstrap_generation, snapshot_complete,
     })),
     trend_update_scheduled: true,
     warnings,

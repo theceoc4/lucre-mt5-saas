@@ -7,6 +7,22 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.35 — Verified candle bootstrap lifecycle (2026-09-01)
+
+- Tracks desired, pending, bootstrapping, live, incomplete, error, and disabled
+  state for every terminal/symbol/timeframe series.
+- New and re-enabled pairs receive a new clean-bootstrap generation across all
+  eight timeframes; normal EA restarts reuse a verified server baseline.
+- Strategies remain safely in `Waiting for candle history` until every candle
+  series they consume has at least 500 verified retained bars.
+- Current-candle collection and historical bootstrap now run as independent
+  lanes, preventing large snapshots or one unavailable broker series from
+  starving the rest of the enabled universe.
+- Removed or replaced broker mappings are disabled in the lifecycle manifest,
+  so health totals only cover series the terminal can actually report.
+- Clean snapshots authoritatively refresh matching broker candles, including
+  OHLCV, spread, real volume, and source precision, instead of only filling gaps.
+
 ## v1.0.34 — Durable broker candle-feed checkpoints (2026-09-01)
 
 - Added a per-terminal, per-symbol, per-timeframe feed-state table initialized

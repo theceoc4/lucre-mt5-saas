@@ -1,5 +1,22 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.33 — Verified bootstrap plus non-starvable freshness (2026-09-01)
+
+- Checks the newest three closed candles for every enabled symbol/timeframe on
+  every local price pass; history recovery can no longer consume this lane.
+- Separately uploads up to two clean 1,000-candle snapshots per pass for new,
+  re-enabled, incomplete, or gap-detected series.
+- Reads server bootstrap generations and verified history counts from
+  `ea-sync`, then immediately refreshes the manifest after successful snapshots.
+- Logs broker/timeframe-specific `CopyRates` and synchronization failures and
+  retries them without blocking healthy symbols.
+- Keeps payloads bounded to 400 series/1,200 freshness bars or two 1,000-bar
+  bootstrap series per request.
+- Server manifests disable removed or replaced broker mappings so unreachable
+  historical rows no longer appear in the active-health total.
+- Clean snapshot uploads can now correct existing broker candle values at the
+  same timestamp, not just fill missing timestamps.
+
 ## v1.0.32 — Durable server candle checkpoints (2026-09-01)
 
 - Reads Supabase's latest accepted candle checkpoint for every broker symbol

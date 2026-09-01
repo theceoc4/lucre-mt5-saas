@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.32 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.33 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.32"
+#property version   "1.33"
 #property strict
 
 
@@ -1233,7 +1233,7 @@ string EASync_BuildRequestBody()
       "\"account_login\":\"" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) + "\","
       "\"server\":\"" + EASync_JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\","
       "\"is_live\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL ? "true" : "false") + ","
-      "\"ea_version\":\"1.0.32\""
+      "\"ea_version\":\"1.0.33\""
       + "}";
 
    string positions_json = "\"positions\":[";
@@ -2858,11 +2858,13 @@ datetime g_pr_last_report = 0;
 // v1.0.22 -- historical warm-up and outage recovery are staggered so a large
 // symbol/timeframe selection cannot create an unbounded Edge Function body.
 #define PR_BACKFILL_BARS 1000
-#define PR_MAX_BACKFILL_SERIES_PER_RUN 2
-#define PR_MAX_RECOVERY_SERIES_PER_RUN 2
-#define PR_MAX_BARS_PER_REQUEST 2200
+#define PR_FRESHNESS_BARS 3
+#define PR_MIN_BOOTSTRAP_BARS 500
+#define PR_MAX_BOOTSTRAP_SERIES_PER_RUN 2
 string   g_pr_series_keys[];
 datetime g_pr_series_last_sent[];
+string   g_pr_bootstrap_keys[];
+int      g_pr_bootstrap_generations[];
 int      g_pr_priority_cursor = 0;
 int      g_pr_background_cursor = 0;
 
@@ -2897,6 +2899,33 @@ void PriceReporter_MarkSent(const string series_key, const datetime bar_time)
       g_pr_series_last_sent[index] = bar_time;
 }
 
+int PriceReporter_BootstrapIndex(const string series_key)
+{
+   for(int i = 0; i < ArraySize(g_pr_bootstrap_keys); i++)
+      if(g_pr_bootstrap_keys[i] == series_key) return i;
+   return -1;
+}
+
+int PriceReporter_CompletedBootstrapGeneration(const string series_key)
+{
+   int index = PriceReporter_BootstrapIndex(series_key);
+   return (index >= 0) ? g_pr_bootstrap_generations[index] : 0;
+}
+
+void PriceReporter_MarkBootstrapComplete(const string series_key, const int generation)
+{
+   int index = PriceReporter_BootstrapIndex(series_key);
+   if(index < 0)
+   {
+      index = ArraySize(g_pr_bootstrap_keys);
+      ArrayResize(g_pr_bootstrap_keys, index + 1);
+      ArrayResize(g_pr_bootstrap_generations, index + 1);
+      g_pr_bootstrap_keys[index] = series_key;
+   }
+   if(generation > g_pr_bootstrap_generations[index])
+      g_pr_bootstrap_generations[index] = generation;
+}
+
 //+------------------------------------------------------------------+
 //| One currently bound canonical/broker pair read from ea-sync.       |
 //+------------------------------------------------------------------+
@@ -2907,6 +2936,9 @@ struct PriceReporterBoundSymbol
    string report_timeframes;
    string priority_timeframes;
    string feed_checkpoints;
+   string feed_bootstrap_generations;
+   string feed_bootstrap_required;
+   string feed_history_counts;
 };
 
 //+------------------------------------------------------------------+
@@ -2927,6 +2959,21 @@ datetime PriceReporter_ServerCheckpoint(const string checkpoints_json, const str
    if(checkpoints_json == "") return 0;
    string raw = EASync_JsonGetRaw(checkpoints_json, 0, StringLen(checkpoints_json), timeframe);
    return PriceReporter_IsoToTime(raw);
+}
+
+int PriceReporter_ServerBootstrapGeneration(const string generations_json, const string timeframe)
+{
+   if(generations_json == "") return 1;
+   string raw = EASync_JsonGetRaw(generations_json, 0, StringLen(generations_json), timeframe);
+   int generation = (int)StringToInteger(raw);
+   return (generation > 0) ? generation : 1;
+}
+
+int PriceReporter_ServerHistoryCount(const string counts_json, const string timeframe)
+{
+   if(counts_json == "") return 0;
+   string raw = EASync_JsonGetRaw(counts_json, 0, StringLen(counts_json), timeframe);
+   return (int)StringToInteger(raw);
 }
 
 ENUM_TIMEFRAMES PriceReporter_TimeframeEnum(const string timeframe)
@@ -2982,6 +3029,9 @@ int PriceReporter_ParseBoundSymbols(const string json, PriceReporterBoundSymbol 
             string timeframes = EASync_JsonGetRaw(json, obj_start, obj_end, "report_timeframes");
             string priority_timeframes = EASync_JsonGetRaw(json, obj_start, obj_end, "priority_timeframes");
             string feed_checkpoints = EASync_JsonGetRaw(json, obj_start, obj_end, "feed_checkpoints");
+            string feed_bootstrap_generations = EASync_JsonGetRaw(json, obj_start, obj_end, "feed_bootstrap_generations");
+            string feed_bootstrap_required = EASync_JsonGetRaw(json, obj_start, obj_end, "feed_bootstrap_required");
+            string feed_history_counts = EASync_JsonGetRaw(json, obj_start, obj_end, "feed_history_counts");
             if(canonical != "" && broker != "")
             {
                ArrayResize(out_symbols, count + 1);
@@ -2991,6 +3041,9 @@ int PriceReporter_ParseBoundSymbols(const string json, PriceReporterBoundSymbol 
                out_symbols[count].report_timeframes = (timeframes == "") ? "[\"M5\"]" : timeframes;
                out_symbols[count].priority_timeframes = (priority_timeframes == "") ? "[]" : priority_timeframes;
                out_symbols[count].feed_checkpoints = (feed_checkpoints == "") ? "{}" : feed_checkpoints;
+               out_symbols[count].feed_bootstrap_generations = (feed_bootstrap_generations == "") ? "{}" : feed_bootstrap_generations;
+               out_symbols[count].feed_bootstrap_required = (feed_bootstrap_required == "") ? "[]" : feed_bootstrap_required;
+               out_symbols[count].feed_history_counts = (feed_history_counts == "") ? "{}" : feed_history_counts;
                count++;
             }
             obj_start = -1;
@@ -3003,184 +3056,13 @@ int PriceReporter_ParseBoundSymbols(const string json, PriceReporterBoundSymbol 
    return count;
 }
 
-//+------------------------------------------------------------------+
-//| Reports newly closed bars for each user-selected symbol/timeframe. |
-//| CopyRates start_pos=1 always excludes the live, forming candle.     |
-//+------------------------------------------------------------------+
-void PriceReporter_Run()
+bool PriceReporter_SendPayload(const string symbols_json,
+                               const int sent_series,
+                               const int sent_bars,
+                               const string lane)
 {
-   g_pr_last_report = TimeCurrent();
-
-   string last_response = EASync_GetLastResponse();
-   if(last_response == "")
-   {
-      Print("PriceReporter: waiting for first successful ea-sync response with bound_symbols");
-      return;
-   }
-
-   PriceReporterBoundSymbol bound[];
-   int bound_count = PriceReporter_ParseBoundSymbols(last_response, bound);
-   if(bound_count <= 0)
-   {
-      Print("PriceReporter: no bound symbols in cached ea-sync response");
-      return;
-   }
-
-   string symbols_json = "\"symbols\":[";
-   int sent_series = 0;
-   int sent_bars = 0;
-   int backfill_series = 0;
-   int recovery_series = 0;
-   string pending_keys[];
-   datetime pending_times[];
-   string timeframe_names[] = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"};
-
-   // Build one ordered work queue: active-strategy series first, then every
-   // other visible symbol/timeframe. Independent cursors rotate both groups so
-   // a slow history download or bounded recovery batch cannot permanently
-   // starve series later in the broker's symbol list.
-   string candidate_brokers[];
-   string candidate_timeframes[];
-   string candidate_checkpoints[];
-   int priority_count = 0;
-   for(int pass = 0; pass < 2; pass++)
-   {
-      for(int i = 0; i < bound_count; i++)
-      {
-         for(int tf_index = 0; tf_index < ArraySize(timeframe_names); tf_index++)
-         {
-            string timeframe = timeframe_names[tf_index];
-            if(StringFind(bound[i].report_timeframes, "\"" + timeframe + "\"") < 0)
-               continue;
-            bool is_priority = StringFind(bound[i].priority_timeframes, "\"" + timeframe + "\"") >= 0;
-            if((pass == 0 && !is_priority) || (pass == 1 && is_priority))
-               continue;
-            int candidate_index = ArraySize(candidate_brokers);
-            ArrayResize(candidate_brokers, candidate_index + 1);
-            ArrayResize(candidate_timeframes, candidate_index + 1);
-            ArrayResize(candidate_checkpoints, candidate_index + 1);
-            candidate_brokers[candidate_index] = bound[i].broker_symbol;
-            candidate_timeframes[candidate_index] = timeframe;
-            candidate_checkpoints[candidate_index] = bound[i].feed_checkpoints;
-            if(pass == 0) priority_count++;
-         }
-      }
-   }
-
-   int candidate_count = ArraySize(candidate_brokers);
-   int background_count = candidate_count - priority_count;
-   for(int work_index = 0; work_index < candidate_count; work_index++)
-   {
-      int candidate_index;
-      if(work_index < priority_count)
-         candidate_index = (g_pr_priority_cursor + work_index) % priority_count;
-      else
-         candidate_index = priority_count + ((g_pr_background_cursor + work_index - priority_count) % background_count);
-
-      string broker_symbol = candidate_brokers[candidate_index];
-      string timeframe = candidate_timeframes[candidate_index];
-      if(!SymbolInfoInteger(broker_symbol, SYMBOL_SELECT))
-      {
-         if(!SymbolSelect(broker_symbol, true))
-         {
-            PrintFormat("PriceReporter: SymbolSelect failed for %s; skipped", broker_symbol);
-            continue;
-         }
-      }
-
-      int digits = (int)SymbolInfoInteger(broker_symbol, SYMBOL_DIGITS);
-      if(digits < 0 || digits > 12) digits = 8;
-
-      string series_key = broker_symbol + "|" + timeframe;
-      datetime last_sent = PriceReporter_LastSent(series_key);
-      datetime server_checkpoint = PriceReporter_ServerCheckpoint(
-         candidate_checkpoints[candidate_index], timeframe
-      );
-      // Supabase remembers accepted progress across terminal/VPS restarts.
-      // The checkpoint only ever moves forward, so a delayed ea-sync response
-      // cannot roll back a newer in-process cursor.
-      if(server_checkpoint > last_sent)
-      {
-         PriceReporter_MarkSent(series_key, server_checkpoint);
-         last_sent = server_checkpoint;
-      }
-      bool is_backfill = (last_sent == 0);
-      if(is_backfill && backfill_series >= PR_MAX_BACKFILL_SERIES_PER_RUN)
-         continue;
-      ENUM_TIMEFRAMES period = PriceReporter_TimeframeEnum(timeframe);
-      int period_seconds = PeriodSeconds(period);
-      int missing_estimate = (period_seconds > 0 && last_sent > 0)
-         ? (int)((TimeCurrent() - last_sent) / period_seconds) + 2
-         : 1;
-      int bars_requested = is_backfill
-         ? PR_BACKFILL_BARS
-         : MathMin(PR_BACKFILL_BARS, MathMax(1, missing_estimate));
-      bool is_recovery = (!is_backfill && bars_requested > 3);
-      if(is_recovery && recovery_series >= PR_MAX_RECOVERY_SERIES_PER_RUN)
-         continue;
-      int remaining_capacity = PR_MAX_BARS_PER_REQUEST - sent_bars;
-      if(remaining_capacity <= 0)
-         break;
-      bars_requested = MathMin(bars_requested, remaining_capacity);
-      MqlRates rates[];
-      ResetLastError();
-      int copied = CopyRates(broker_symbol, period, 1, bars_requested, rates);
-      if(copied <= 0)
-      {
-         if(copied < 0)
-            PrintFormat("PriceReporter: CopyRates failed for %s %s, error %d", broker_symbol, timeframe, GetLastError());
-         continue;
-      }
-
-      string bars_json = "";
-      int included = 0;
-      datetime newest_time = last_sent;
-      for(int r = 0; r < copied; r++)
-      {
-         if(rates[r].time <= last_sent) continue;
-         if(included > 0) bars_json += ",";
-         bars_json +=
-            "{\"time\":\"" + EASync_ToIso8601(rates[r].time) + "\","
-            "\"open\":" + DoubleToString(rates[r].open, digits) + ","
-            "\"high\":" + DoubleToString(rates[r].high, digits) + ","
-            "\"low\":" + DoubleToString(rates[r].low, digits) + ","
-            "\"close\":" + DoubleToString(rates[r].close, digits) + ","
-            "\"volume\":" + IntegerToString((long)rates[r].tick_volume) + ","
-            "\"spread\":" + IntegerToString((long)rates[r].spread) + ","
-            "\"real_volume\":" + IntegerToString((long)rates[r].real_volume) + "}";
-         included++;
-         sent_bars++;
-         if(rates[r].time > newest_time) newest_time = rates[r].time;
-      }
-      if(included == 0) continue;
-      if(is_backfill) backfill_series++;
-      if(is_recovery) recovery_series++;
-
-      if(sent_series > 0) symbols_json += ",";
-      symbols_json +=
-         "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
-         "\"timeframe\":\"" + timeframe + "\","
-         "\"source_digits\":" + IntegerToString(digits) + ","
-         "\"bars\":[" + bars_json + "]}";
-      sent_series++;
-
-      int pending_index = ArraySize(pending_keys);
-      ArrayResize(pending_keys, pending_index + 1);
-      ArrayResize(pending_times, pending_index + 1);
-      pending_keys[pending_index] = series_key;
-      pending_times[pending_index] = newest_time;
-   }
-
-   if(priority_count > 0) g_pr_priority_cursor = (g_pr_priority_cursor + 1) % priority_count;
-   if(background_count > 0) g_pr_background_cursor = (g_pr_background_cursor + 1) % background_count;
-
-   if(sent_series == 0)
-   {
-      Print("PriceReporter: no newly closed bars");
-      return;
-   }
-
-   string body = "{" + symbols_json + "]}";
+   if(sent_series <= 0) return true;
+   string body = "{\"symbols\":[" + symbols_json + "]}";
    string url = g_pr_base_url + "/functions/v1/report-bars";
    string headers = "Content-Type: application/json\r\nx-api-key: " + g_pr_api_key + "\r\n";
 
@@ -3201,18 +3083,276 @@ void PriceReporter_Run()
                      "Expert Advisors > Allow WebRequest for listed URL.", g_pr_base_url);
       else
          PrintFormat("PriceReporter: WebRequest failed, error %d", err);
-      return;
+      return false;
    }
 
    string response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
-   PrintFormat("PriceReporter: sent %d series / %d newly closed bars, HTTP %d", sent_series, sent_bars, status);
-   if(status == 200)
+   PrintFormat("PriceReporter: %s lane sent %d series / %d bars, HTTP %d",
+               lane, sent_series, sent_bars, status);
+   if(status == 200) return true;
+   PrintFormat("PriceReporter: report-bars returned HTTP %d: %s", status, response);
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Two-lane candle collection. The freshness lane checks EVERY       |
+//| enabled series on every pass and can never be consumed by history |
+//| work. The bootstrap lane separately repairs up to two complete    |
+//| 1,000-candle snapshots per pass.                                  |
+//+------------------------------------------------------------------+
+void PriceReporter_Run()
+{
+   g_pr_last_report = TimeCurrent();
+   string last_response = EASync_GetLastResponse();
+   if(last_response == "")
    {
-      for(int i = 0; i < ArraySize(pending_keys); i++)
-         PriceReporter_MarkSent(pending_keys[i], pending_times[i]);
+      Print("PriceReporter: waiting for first successful ea-sync response with bound_symbols");
+      return;
    }
-   else
-      PrintFormat("PriceReporter: report-bars returned HTTP %d: %s", status, response);
+
+   PriceReporterBoundSymbol bound[];
+   int bound_count = PriceReporter_ParseBoundSymbols(last_response, bound);
+   if(bound_count <= 0)
+   {
+      Print("PriceReporter: no bound symbols in cached ea-sync response");
+      return;
+   }
+
+   string timeframe_names[] = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"};
+   string candidate_brokers[];
+   string candidate_timeframes[];
+   string candidate_checkpoints[];
+   string candidate_required[];
+   string candidate_generations_json[];
+   string candidate_counts_json[];
+   int priority_count = 0;
+
+   for(int pass = 0; pass < 2; pass++)
+   {
+      for(int i = 0; i < bound_count; i++)
+      {
+         for(int tf_index = 0; tf_index < ArraySize(timeframe_names); tf_index++)
+         {
+            string timeframe = timeframe_names[tf_index];
+            if(StringFind(bound[i].report_timeframes, "\"" + timeframe + "\"") < 0) continue;
+            bool is_priority = StringFind(bound[i].priority_timeframes, "\"" + timeframe + "\"") >= 0;
+            if((pass == 0 && !is_priority) || (pass == 1 && is_priority)) continue;
+            int index = ArraySize(candidate_brokers);
+            ArrayResize(candidate_brokers, index + 1);
+            ArrayResize(candidate_timeframes, index + 1);
+            ArrayResize(candidate_checkpoints, index + 1);
+            ArrayResize(candidate_required, index + 1);
+            ArrayResize(candidate_generations_json, index + 1);
+            ArrayResize(candidate_counts_json, index + 1);
+            candidate_brokers[index] = bound[i].broker_symbol;
+            candidate_timeframes[index] = timeframe;
+            candidate_checkpoints[index] = bound[i].feed_checkpoints;
+            candidate_required[index] = bound[i].feed_bootstrap_required;
+            candidate_generations_json[index] = bound[i].feed_bootstrap_generations;
+            candidate_counts_json[index] = bound[i].feed_history_counts;
+            if(pass == 0) priority_count++;
+         }
+      }
+   }
+
+   int candidate_count = ArraySize(candidate_brokers);
+   bool needs_bootstrap[];
+   bool forced_gap[];
+   int generations[];
+   ArrayResize(needs_bootstrap, candidate_count);
+   ArrayResize(forced_gap, candidate_count);
+   ArrayResize(generations, candidate_count);
+
+   string freshness_json = "";
+   int freshness_series = 0;
+   int freshness_bars = 0;
+   string freshness_keys[];
+   datetime freshness_times[];
+
+   for(int i = 0; i < candidate_count; i++)
+   {
+      string broker_symbol = candidate_brokers[i];
+      string timeframe = candidate_timeframes[i];
+      if(!SymbolInfoInteger(broker_symbol, SYMBOL_SELECT) && !SymbolSelect(broker_symbol, true))
+      {
+         PrintFormat("PriceReporter: SymbolSelect failed for %s; will retry", broker_symbol);
+         needs_bootstrap[i] = true;
+         continue;
+      }
+
+      ENUM_TIMEFRAMES period = PriceReporter_TimeframeEnum(timeframe);
+      string series_key = broker_symbol + "|" + timeframe;
+      datetime last_sent = PriceReporter_LastSent(series_key);
+      datetime server_checkpoint = PriceReporter_ServerCheckpoint(candidate_checkpoints[i], timeframe);
+      if(server_checkpoint > last_sent)
+      {
+         PriceReporter_MarkSent(series_key, server_checkpoint);
+         last_sent = server_checkpoint;
+      }
+
+      generations[i] = PriceReporter_ServerBootstrapGeneration(candidate_generations_json[i], timeframe);
+      bool server_requires = StringFind(candidate_required[i], "\"" + timeframe + "\"") >= 0;
+      int history_count = PriceReporter_ServerHistoryCount(candidate_counts_json[i], timeframe);
+      int bar_shift = (last_sent > 0) ? iBarShift(broker_symbol, period, last_sent, false) : -1;
+      forced_gap[i] = (last_sent > 0 && bar_shift > PR_FRESHNESS_BARS + 1);
+      needs_bootstrap[i] = server_requires || history_count < PR_MIN_BOOTSTRAP_BARS ||
+                           last_sent == 0 || forced_gap[i];
+
+      MqlRates rates[];
+      ResetLastError();
+      int copied = CopyRates(broker_symbol, period, 1, PR_FRESHNESS_BARS, rates);
+      if(copied <= 0)
+      {
+         PrintFormat("PriceReporter: freshness CopyRates unavailable for %s %s, error %d, synchronized=%d; will retry",
+                     broker_symbol, timeframe, GetLastError(),
+                     (int)SeriesInfoInteger(broker_symbol, period, SERIES_SYNCHRONIZED));
+         continue;
+      }
+
+      int digits = (int)SymbolInfoInteger(broker_symbol, SYMBOL_DIGITS);
+      if(digits < 0 || digits > 12) digits = 8;
+      string bars_json = "";
+      int included = 0;
+      datetime newest_time = last_sent;
+      for(int r = 0; r < copied; r++)
+      {
+         if(rates[r].time <= last_sent) continue;
+         if(included > 0) bars_json += ",";
+         bars_json +=
+            "{\"time\":\"" + EASync_ToIso8601(rates[r].time) + "\","
+            "\"open\":" + DoubleToString(rates[r].open, digits) + ","
+            "\"high\":" + DoubleToString(rates[r].high, digits) + ","
+            "\"low\":" + DoubleToString(rates[r].low, digits) + ","
+            "\"close\":" + DoubleToString(rates[r].close, digits) + ","
+            "\"volume\":" + IntegerToString((long)rates[r].tick_volume) + ","
+            "\"spread\":" + IntegerToString((long)rates[r].spread) + ","
+            "\"real_volume\":" + IntegerToString((long)rates[r].real_volume) + "}";
+         included++;
+         freshness_bars++;
+         if(rates[r].time > newest_time) newest_time = rates[r].time;
+      }
+      if(included == 0) continue;
+      if(freshness_series > 0) freshness_json += ",";
+      freshness_json +=
+         "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
+         "\"timeframe\":\"" + timeframe + "\","
+         "\"source_digits\":" + IntegerToString(digits) + ","
+         "\"bars\":[" + bars_json + "]}";
+      freshness_series++;
+      int pending = ArraySize(freshness_keys);
+      ArrayResize(freshness_keys, pending + 1);
+      ArrayResize(freshness_times, pending + 1);
+      freshness_keys[pending] = series_key;
+      freshness_times[pending] = newest_time;
+   }
+
+   if(freshness_series > 0)
+   {
+      if(!PriceReporter_SendPayload(freshness_json, freshness_series, freshness_bars, "freshness")) return;
+      for(int i = 0; i < ArraySize(freshness_keys); i++)
+         PriceReporter_MarkSent(freshness_keys[i], freshness_times[i]);
+   }
+
+   int selected[];
+   for(int pass = 0; pass < 2 && ArraySize(selected) < PR_MAX_BOOTSTRAP_SERIES_PER_RUN; pass++)
+   {
+      int range_start = (pass == 0) ? 0 : priority_count;
+      int range_count = (pass == 0) ? priority_count : candidate_count - priority_count;
+      if(range_count <= 0) continue;
+      int cursor = (pass == 0) ? g_pr_priority_cursor : g_pr_background_cursor;
+      for(int offset = 0; offset < range_count && ArraySize(selected) < PR_MAX_BOOTSTRAP_SERIES_PER_RUN; offset++)
+      {
+         int index = range_start + ((cursor + offset) % range_count);
+         string key = candidate_brokers[index] + "|" + candidate_timeframes[index];
+         bool generation_due = PriceReporter_CompletedBootstrapGeneration(key) < generations[index];
+         if(!needs_bootstrap[index] || (!generation_due && !forced_gap[index])) continue;
+         int selected_count = ArraySize(selected);
+         ArrayResize(selected, selected_count + 1);
+         selected[selected_count] = index;
+      }
+   }
+   if(priority_count > 0) g_pr_priority_cursor = (g_pr_priority_cursor + 1) % priority_count;
+   int background_count = candidate_count - priority_count;
+   if(background_count > 0) g_pr_background_cursor = (g_pr_background_cursor + 1) % background_count;
+
+   string bootstrap_json = "";
+   int bootstrap_series = 0;
+   int bootstrap_bars = 0;
+   string bootstrap_keys[];
+   datetime bootstrap_times[];
+   int bootstrap_generations[];
+   int bootstrap_counts[];
+   for(int selected_index = 0; selected_index < ArraySize(selected); selected_index++)
+   {
+      int i = selected[selected_index];
+      string broker_symbol = candidate_brokers[i];
+      string timeframe = candidate_timeframes[i];
+      ENUM_TIMEFRAMES period = PriceReporter_TimeframeEnum(timeframe);
+      MqlRates rates[];
+      ResetLastError();
+      int copied = CopyRates(broker_symbol, period, 1, PR_BACKFILL_BARS, rates);
+      if(copied <= 0)
+      {
+         PrintFormat("PriceReporter: bootstrap CopyRates unavailable for %s %s, error %d, synchronized=%d; will retry",
+                     broker_symbol, timeframe, GetLastError(),
+                     (int)SeriesInfoInteger(broker_symbol, period, SERIES_SYNCHRONIZED));
+         continue;
+      }
+      int digits = (int)SymbolInfoInteger(broker_symbol, SYMBOL_DIGITS);
+      if(digits < 0 || digits > 12) digits = 8;
+      string bars_json = "";
+      datetime newest_time = 0;
+      for(int r = 0; r < copied; r++)
+      {
+         if(r > 0) bars_json += ",";
+         bars_json +=
+            "{\"time\":\"" + EASync_ToIso8601(rates[r].time) + "\","
+            "\"open\":" + DoubleToString(rates[r].open, digits) + ","
+            "\"high\":" + DoubleToString(rates[r].high, digits) + ","
+            "\"low\":" + DoubleToString(rates[r].low, digits) + ","
+            "\"close\":" + DoubleToString(rates[r].close, digits) + ","
+            "\"volume\":" + IntegerToString((long)rates[r].tick_volume) + ","
+            "\"spread\":" + IntegerToString((long)rates[r].spread) + ","
+            "\"real_volume\":" + IntegerToString((long)rates[r].real_volume) + "}";
+         if(rates[r].time > newest_time) newest_time = rates[r].time;
+      }
+      if(bootstrap_series > 0) bootstrap_json += ",";
+      bootstrap_json +=
+         "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
+         "\"timeframe\":\"" + timeframe + "\","
+         "\"source_digits\":" + IntegerToString(digits) + ","
+         "\"bootstrap_generation\":" + IntegerToString(generations[i]) + ","
+         "\"snapshot_complete\":true,"
+         "\"bars\":[" + bars_json + "]}";
+      bootstrap_series++;
+      bootstrap_bars += copied;
+      int pending = ArraySize(bootstrap_keys);
+      ArrayResize(bootstrap_keys, pending + 1);
+      ArrayResize(bootstrap_times, pending + 1);
+      ArrayResize(bootstrap_generations, pending + 1);
+      ArrayResize(bootstrap_counts, pending + 1);
+      bootstrap_keys[pending] = broker_symbol + "|" + timeframe;
+      bootstrap_times[pending] = newest_time;
+      bootstrap_generations[pending] = generations[i];
+      bootstrap_counts[pending] = copied;
+   }
+
+   if(bootstrap_series > 0 && PriceReporter_SendPayload(
+      bootstrap_json, bootstrap_series, bootstrap_bars, "bootstrap"))
+   {
+      for(int i = 0; i < ArraySize(bootstrap_keys); i++)
+      {
+         PriceReporter_MarkSent(bootstrap_keys[i], bootstrap_times[i]);
+         if(bootstrap_counts[i] >= PR_MIN_BOOTSTRAP_BARS)
+            PriceReporter_MarkBootstrapComplete(bootstrap_keys[i], bootstrap_generations[i]);
+      }
+      // Refresh the manifest immediately so successfully verified series leave
+      // the bootstrap queue without waiting for the normal durable poll.
+      EASync_ForceSync();
+   }
+
+   if(freshness_series == 0 && bootstrap_series == 0)
+      Print("PriceReporter: all enabled candle series are current");
 }
 
 //+------------------------------------------------------------------+
@@ -3224,6 +3364,10 @@ void PriceReporter_Init(const string base_url, const string api_key, const int r
    g_pr_api_key = api_key;
    g_pr_report_interval_seconds = (report_interval_seconds > 0) ? report_interval_seconds : 60;
    g_pr_last_report = 0; // force an immediate first report after ea-sync has a response
+   ArrayResize(g_pr_series_keys, 0);
+   ArrayResize(g_pr_series_last_sent, 0);
+   ArrayResize(g_pr_bootstrap_keys, 0);
+   ArrayResize(g_pr_bootstrap_generations, 0);
    g_pr_priority_cursor = 0;
    g_pr_background_cursor = 0;
    PrintFormat("PriceReporter: initialized, report_interval_seconds=%d", g_pr_report_interval_seconds);
