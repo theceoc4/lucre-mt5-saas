@@ -5,7 +5,11 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
-const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, apikey, content-type" };
+const cors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 type Bar = { bar_time: string; open: number; high: number; low: number; close: number; volume: number; spread: number | null };
 type Side = "buy" | "sell";
