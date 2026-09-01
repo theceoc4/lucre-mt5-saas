@@ -7,6 +7,20 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.40 — Dashboard workspace and activity center (2026-09-01)
+
+- Adds a fixed-height, scrollable Signals workspace with pair and date-range
+  filters, while retaining blocked and downweighted outcomes in the feed.
+- Rebuilds Strategies as full-width management cards with win rate, best
+  session, edit/toggle controls, repairable stale-pair chips, and aligned
+  directional-news controls.
+- Moves trade-duration analytics into Overview, removes redundant Blocked and
+  Duration tabs, and makes both Positions surfaces fully actionable.
+- Adds a live notification center for signal decisions and acceptance, closed
+  positions, strategy/feed health, and failed or expired MT5 commands.
+- Simplifies navigation labels, greeting, strategy rows, and position-action
+  buttons for a more consistent desktop and mobile layout.
+
 ## v1.0.39 — Stable pair-card interaction (2026-09-01)
 
 - Keeps the front and back face rotations intact when desktop or mobile Safari

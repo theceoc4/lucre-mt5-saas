@@ -26,7 +26,6 @@ const state = {
   pendingCommandId: null,
   agentPolicies: [],
   positions: [],
-  pendingSignals: [],
   symbolSettings: [],
   symbolMappings: [],
   trendStates: [],
@@ -34,7 +33,10 @@ const state = {
   calendarEvents: [],
   scenarioStats: [],
   portfolioRisk: null,
+  recentCommands: [],
+  notifications: [],
   activeTab: 'overview',
+  signalFilter: { pair: 'all', period: '30d' },
   // v1.0.14 — item 3: P/L Over Time card filters (timeframe + manual/auto/all).
   plFilter: { timeframe: '30d', source: 'all' },
 };
@@ -124,6 +126,13 @@ const symbolMappingBody = document.getElementById('symbol-mapping-body');
 const plTimeframeSelect = document.getElementById('pl-timeframe-select');
 const plSourceSelect = document.getElementById('pl-source-select');
 const plSummaryValue = document.getElementById('pl-summary-value');
+const signalsPairFilter = document.getElementById('signals-pair-filter');
+const signalsPeriodFilter = document.getElementById('signals-period-filter');
+const buttonNotifications = document.getElementById('button-notifications');
+const notificationPanel = document.getElementById('notification-panel');
+const notificationList = document.getElementById('notification-list');
+const notificationDot = document.getElementById('notification-dot');
+const notificationCount = document.getElementById('notification-count');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -768,7 +777,7 @@ function resetStrategyModalToAddMode() {
   strategyHasLegacyDefinition = false;
 }
 
-document.getElementById('button-add-strategy')?.addEventListener('click', () => {
+function openAddStrategyModal() {
   if (!state.activeTerminalId) {
     alert('Connect an MT5 account first — strategies belong to a terminal.');
     return;
@@ -785,7 +794,10 @@ document.getElementById('button-add-strategy')?.addEventListener('click', () => 
   renderStrategySymbolChips();
   populateStrategySymbolSelect();
   window.LucreUI.openModal('modal-add-strategy');
-});
+}
+
+document.getElementById('button-add-strategy')?.addEventListener('click', openAddStrategyModal);
+document.getElementById('button-add-strategy-tab')?.addEventListener('click', openAddStrategyModal);
 
 // v1.0.17 -- edit strategy parameters after creation. Reuses the add-strategy
 // modal/form in "edit" mode (edit_id set) rather than a second near-duplicate
@@ -1367,7 +1379,7 @@ function startPositionPolling() {
   positionPollIntervalId = setInterval(() => {
     if (!state.activeTerminalId) return;
     loadPositions();
-    loadPendingSignals();
+    loadSignals();
     refreshActiveTerminalBalance();
     // v1.0.17 -- belt-and-suspenders fallback for the trade_history Realtime
     // subscription added in startRealtime(): if a channel drop/reconnect ever
@@ -1537,7 +1549,12 @@ function startRealtime(terminalId) {
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'signal_deliveries', filter: `terminal_id=eq.${terminalId}` },
-      () => loadPendingSignals()
+      (payload) => applySignalDeliveryChange(payload)
+    )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'signals', filter: `terminal_id=eq.${terminalId}` },
+      (payload) => applySignalChange(payload)
     )
     // v1.0.11 -- balance/equity/margin_level widget and the AutoTrading
     // banner now update live instead of only on load/terminal-switch.
@@ -1563,6 +1580,7 @@ function startRealtime(terminalId) {
       (payload) => {
         checkAutotradingBanner();
         handleCommandStatus(payload.new);
+        applyRecentCommand(payload.new);
       }
     )
     .on(
@@ -1579,7 +1597,9 @@ function startRealtime(terminalId) {
         else rows.push(row);
         strategy.evaluation_states = rows;
         renderStrategies();
+        renderStrategyWinRates();
         renderStrategyStatusTab();
+        renderNotifications();
       }
     )
     // v1.0.17 -- trade_history was never in the supabase_realtime publication
@@ -1712,6 +1732,186 @@ function handleCommandStatus(command) {
   }
 }
 
+function notificationReadKey() {
+  return `lucre:notifications-read:${state.session?.user?.id || 'guest'}:${state.activeTerminalId || 'none'}`;
+}
+
+function applySignalDeliveryChange(payload) {
+  const row = payload.new?.id ? payload.new : payload.old;
+  if (!row?.id) return;
+  const index = state.signalDeliveries.findIndex((delivery) => delivery.id === row.id);
+  if (payload.eventType === 'DELETE') {
+    if (index >= 0) state.signalDeliveries.splice(index, 1);
+  } else if (index >= 0) state.signalDeliveries[index] = { ...state.signalDeliveries[index], ...row };
+  else state.signalDeliveries.push(row);
+  renderSignalSummary();
+  renderSignalsTab();
+  renderNotifications();
+}
+
+function applySignalChange(payload) {
+  const row = payload.new?.id ? payload.new : payload.old;
+  if (!row?.id) return;
+  const index = state.signals.findIndex((signal) => signal.id === row.id);
+  if (payload.eventType === 'DELETE') {
+    if (index >= 0) state.signals.splice(index, 1);
+  } else if (index >= 0) state.signals[index] = { ...state.signals[index], ...row };
+  else state.signals.push(row);
+  renderSignalSummary();
+  renderVolumeChart();
+  renderRiskEngine();
+  renderSignalsTab();
+  renderNotifications();
+}
+
+function applyRecentCommand(command) {
+  if (!command?.id) return;
+  const index = state.recentCommands.findIndex((item) => item.id === command.id);
+  if (index >= 0) state.recentCommands[index] = { ...state.recentCommands[index], ...command };
+  else state.recentCommands.push(command);
+  state.recentCommands.sort((a, b) => new Date(b.requested_at || 0) - new Date(a.requested_at || 0));
+  state.recentCommands = state.recentCommands.slice(0, 40);
+  renderNotifications();
+}
+
+function notificationRelativeTime(value) {
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+function buildNotifications() {
+  const items = [];
+  const signalById = new Map(state.signals.map((signal) => [signal.id, signal]));
+
+  state.signals.forEach((signal) => {
+    const blocked = signal.policy_decision === 'block';
+    const adjusted = signal.policy_decision === 'downweight';
+    items.push({
+      id: `signal:${signal.id}`,
+      tone: blocked ? 'error' : adjusted ? 'warn' : 'signal',
+      title: blocked ? 'Signal blocked' : adjusted ? 'Signal downweighted' : 'Signal generated',
+      detail: `${signal.symbol} ${signal.timeframe || ''} · ${(signal.side || '').toUpperCase()}`,
+      at: signal.generated_at,
+    });
+  });
+
+  state.signalDeliveries
+    .filter((delivery) => ['tapped', 'auto_executed', 'failed', 'expired'].includes(delivery.status))
+    .forEach((delivery) => {
+      const signal = signalById.get(delivery.signal_id);
+      const failed = ['failed', 'expired'].includes(delivery.status);
+      items.push({
+        id: `delivery:${delivery.id}:${delivery.status}`,
+        tone: failed ? 'error' : 'success',
+        title: failed ? `Signal ${delivery.status}` : 'Signal accepted',
+        detail: signal ? `${signal.symbol} ${signal.timeframe || ''} · ${(signal.side || '').toUpperCase()}` : 'Signal delivery updated',
+        at: delivery.acted_at || delivery.delivered_at || delivery.created_at,
+      });
+    });
+
+  state.tradeHistory.forEach((trade) => {
+    const pl = Number(trade.net_profit ?? trade.profit ?? 0);
+    items.push({
+      id: `close:${trade.id}`,
+      tone: pl < 0 ? 'warn' : 'success',
+      title: 'Position closed',
+      detail: `${trade.symbol} · ${pl >= 0 ? '+' : ''}${pl.toFixed(2)} net P/L`,
+      at: trade.close_time,
+    });
+  });
+
+  state.recentCommands
+    .filter((command) => ['failed', 'expired'].includes(command.status))
+    .forEach((command) => items.push({
+      id: `command:${command.id}:${command.status}`,
+      tone: 'error',
+      title: command.status === 'expired' ? 'Command expired' : 'Trading error',
+      detail: `${command.symbol || command.command_type || 'MT5'} · ${humanizeCommandFailure(command.error_message)}`,
+      at: command.executed_at || command.requested_at,
+    }));
+
+  state.strategies.forEach((strategy) => {
+    (strategy.evaluation_states || [])
+      .filter((row) => ['command_failed', 'ea_version_blocked', 'broker_mapping_failed', 'stale_candles', 'missing_bars'].includes(row.status))
+      .forEach((row) => items.push({
+        id: `strategy-health:${strategy.id}:${row.symbol}:${row.status}`,
+        tone: 'error',
+        title: STRATEGY_HEALTH_LABELS[row.status] || 'Strategy error',
+        detail: `${strategy.name} · ${row.symbol} ${row.timeframe || strategy.timeframe || ''}`,
+        at: row.last_checked_at,
+      }));
+  });
+
+  return items
+    .filter((item) => item.at)
+    .sort((a, b) => new Date(b.at) - new Date(a.at))
+    .slice(0, 50);
+}
+
+function renderNotifications() {
+  state.notifications = buildNotifications();
+  if (!notificationList || !notificationDot || !notificationCount || !buttonNotifications) return;
+  const readAt = Number(localStorage.getItem(notificationReadKey()) || 0);
+  const unread = state.notifications.filter((item) => new Date(item.at).getTime() > readAt).length;
+  notificationDot.hidden = unread === 0;
+  notificationCount.textContent = `${state.notifications.length} update${state.notifications.length === 1 ? '' : 's'}${unread ? ` · ${unread} new` : ''}`;
+  buttonNotifications.setAttribute('aria-label', unread ? `Notifications, ${unread} unread` : 'Notifications');
+  notificationList.innerHTML = state.notifications.length
+    ? state.notifications.map((item) => `
+        <div class="notification-item notification-${item.tone}">
+          <span class="notification-item-dot" aria-hidden="true"></span>
+          <div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.detail)}</p><time datetime="${escapeHtml(item.at)}">${notificationRelativeTime(item.at)}</time></div>
+        </div>`).join('')
+    : '<p class="empty-state-text">No activity yet.</p>';
+}
+
+async function loadRecentCommands() {
+  if (!state.activeTerminalId) {
+    state.recentCommands = [];
+    renderNotifications();
+    return;
+  }
+  const { data, error } = await supabase
+    .from('ea_commands')
+    .select('id, command_type, symbol, status, error_message, requested_at, executed_at')
+    .eq('terminal_id', state.activeTerminalId)
+    .order('requested_at', { ascending: false })
+    .limit(40);
+  if (error) {
+    console.error('loadRecentCommands error', error);
+    return;
+  }
+  state.recentCommands = data || [];
+  renderNotifications();
+}
+
+buttonNotifications?.addEventListener('click', () => {
+  const willOpen = notificationPanel.hidden;
+  notificationPanel.hidden = !willOpen;
+  buttonNotifications.setAttribute('aria-expanded', String(willOpen));
+});
+
+document.getElementById('button-notifications-read')?.addEventListener('click', () => {
+  localStorage.setItem(notificationReadKey(), String(Date.now()));
+  renderNotifications();
+});
+
+document.addEventListener('click', (event) => {
+  if (!notificationPanel || notificationPanel.hidden || event.target.closest('.notification-wrap')) return;
+  notificationPanel.hidden = true;
+  buttonNotifications?.setAttribute('aria-expanded', 'false');
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !notificationPanel || notificationPanel.hidden) return;
+  notificationPanel.hidden = true;
+  buttonNotifications?.setAttribute('aria-expanded', 'false');
+  buttonNotifications?.focus();
+});
+
 function stopRealtime() {
   stopPositionStreamRequests();
   if (realtimeReconnectTimer) {
@@ -1741,7 +1941,7 @@ async function loadProfile() {
   state.profile = data;
 
   const displayName = data?.display_name || state.session.user.email?.split('@')[0] || 'there';
-  textGreeting.textContent = `Hey, ${displayName} 👋`;
+  textGreeting.textContent = `Hey, ${displayName}`;
   accountMenuEmail.textContent = state.session.user.email || '';
   document.getElementById('account-menu-button').textContent = initials(displayName);
   const profileForm = document.getElementById('form-account-profile');
@@ -1786,12 +1986,12 @@ async function loadTerminals() {
     loadAccountHistory(),
     loadAgentPolicies(),
     loadPositions(),
-    loadPendingSignals(),
     loadSymbolSettings(),
     loadTrendStates(),
     loadPriceFeedStates(),
     loadScenarioStats(),
   ]);
+  await loadRecentCommands();
 }
 
 function renderTerminalPicker() {
@@ -1846,12 +2046,12 @@ terminalSelect?.addEventListener('change', async (e) => {
     loadAccountHistory(),
     loadAgentPolicies(),
     loadPositions(),
-    loadPendingSignals(),
     loadSymbolSettings(),
     loadTrendStates(),
     loadPriceFeedStates(),
     loadScenarioStats(),
   ]);
+  await loadRecentCommands();
 });
 
 async function loadStrategies() {
@@ -1859,6 +2059,7 @@ async function loadStrategies() {
     state.strategies = [];
     renderStrategies();
     renderStrategyStatusTab();
+    renderNotifications();
     return;
   }
   const { data, error } = await supabase
@@ -1890,7 +2091,9 @@ async function loadStrategies() {
     strategy.evaluation_states = (evaluationRows || []).filter((row) => row.strategy_id === strategy.id);
   });
   renderStrategies();
+  renderStrategyWinRates();
   renderStrategyStatusTab();
+  renderNotifications();
 }
 
 const STRATEGY_HEALTH_LABELS = {
@@ -1934,6 +2137,34 @@ function strategyHealthAge(checked) {
   return `${Math.floor(seconds / 3600)}h ago`;
 }
 
+function strategyPerformanceSummary(strategyId) {
+  const trades = getVerifiedTradeHistory().filter((trade) => trade.strategy_id === strategyId);
+  if (trades.length === 0) return { winRate: null, count: 0, bestSession: null };
+  const wins = trades.filter((trade) => (trade.profit ?? 0) > 0).length;
+  const sessions = new Map();
+  trades.forEach((trade) => {
+    const key = trade.session || 'unknown';
+    const current = sessions.get(key) || { count: 0, wins: 0 };
+    current.count += 1;
+    if ((trade.profit ?? 0) > 0) current.wins += 1;
+    sessions.set(key, current);
+  });
+  const bestSession = [...sessions.entries()]
+    .filter(([session]) => session !== 'unknown')
+    .sort((a, b) => (b[1].wins / b[1].count) - (a[1].wins / a[1].count) || b[1].count - a[1].count)[0]?.[0];
+  return { winRate: Math.round((wins / trades.length) * 100), count: trades.length, bestSession };
+}
+
+function strategyBrief(strategy) {
+  const execution = strategy.run_mode === 'shadow'
+    ? 'Shadow'
+    : strategy.delivery_mode === 'auto' ? 'Auto' : 'Manual';
+  const pairs = (strategy.symbols || []).join(' · ') || 'No pairs';
+  return `${execution} · ${pairs} · ${strategy.timeframe || 'M5'} · ${strategy.risk_percent ?? '—'}% risk`;
+}
+
+const GEAR_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.64 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.64a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.36 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15z"/></svg>';
+
 function renderStrategies() {
   if (state.strategies.length === 0) {
     strategyList.innerHTML =
@@ -1943,29 +2174,19 @@ function renderStrategies() {
 
   strategyList.innerHTML = state.strategies
     .map((s) => {
-      const symbolLabel = `${(s.symbols || []).slice(0, 2).join(' · ') || 'No pairs'} · ${s.timeframe || 'M5'}`;
-      const executionLabel = s.run_mode === 'shadow' ? 'Shadow' : s.delivery_mode === 'auto' ? 'Auto' : 'Manual';
-      const modeTag = s.run_mode === 'shadow'
-        ? '<span class="tag-badge tag-warn">Shadow</span>'
-        : `<span class="tag-badge tag-ok">${executionLabel}</span>`;
       const health = strategyHealthSummary(s);
       return `
-      <div class="mini-table-row" data-strategy-id="${s.id}">
-        <span class="avatar-badge" aria-hidden="true">${initials(s.name)}</span>
+      <div class="mini-table-row strategy-overview-row" data-strategy-id="${s.id}">
         <div class="mini-table-meta">
-          <div class="strategy-name">${s.name}${modeTag}</div>
-          <div class="strategy-sub">${symbolLabel}${s.run_mode === 'shadow' ? ` · ${s.shadow_summary?.resolved || 0}/${s.min_shadow_signals || 20} resolved shadow signals` : ''}</div>
+          <div class="strategy-name">${escapeHtml(s.name)}</div>
+          <div class="strategy-sub">${escapeHtml(strategyBrief(s))}${s.run_mode === 'shadow' ? ` · ${s.shadow_summary?.resolved || 0}/${s.min_shadow_signals || 20} shadow signals resolved` : ''}</div>
           <div class="strategy-health strategy-health-${health.tone}"><span class="strategy-health-dot"></span>${health.label}${health.checked ? ` · checked ${strategyHealthAge(health.checked)}` : ''}</div>
         </div>
-        <div class="mini-table-stats">
-          <label class="strategy-toggle">
-            <input type="checkbox" class="strategy-toggle-input" data-strategy-toggle="${s.id}" ${s.enabled ? 'checked' : ''} />
-            <span>${s.enabled ? 'Enabled' : 'Disabled'}</span>
-          </label>
-        </div>
-        <div class="inline-actions">
-          <button class="btn-secondary btn-xs" type="button" data-edit-strategy="${s.id}">Edit</button>
-        </div>
+        <div class="mini-table-stats"></div>
+        <label class="strategy-toggle strategy-toggle-icon-only" title="${s.enabled ? 'Disable' : 'Enable'} ${escapeHtml(s.name)}">
+          <input type="checkbox" class="strategy-toggle-input" data-strategy-toggle="${s.id}" aria-label="${s.enabled ? 'Disable' : 'Enable'} ${escapeHtml(s.name)}" ${s.enabled ? 'checked' : ''} />
+        </label>
+        <button class="strategy-gear-button" type="button" data-edit-strategy="${s.id}" aria-label="Edit ${escapeHtml(s.name)}">${GEAR_ICON}</button>
       </div>`;
     })
     .join('');
@@ -2002,7 +2223,7 @@ async function loadSignals() {
     renderVolumeChart();
     renderRiskEngine();
     renderSignalsTab();
-    renderBlockedTab();
+    renderNotifications();
     return;
   }
 
@@ -2010,13 +2231,13 @@ async function loadSignals() {
     supabase
       .from('signals')
       .select(
-        'id, symbol, side, policy_decision, generated_at, suggested_volume, near_news_event, htf_regime, ' +
+        'id, symbol, side, timeframe, policy_decision, generated_at, expires_at, suggested_volume, near_news_event, htf_regime, ' +
           'news_event_id, calendar_events(title, currency, impact)'
       )
       .eq('terminal_id', state.activeTerminalId),
     supabase
       .from('signal_deliveries')
-      .select('id, status, delivered_at')
+      .select('id, signal_id, status, delivered_at, acted_at, created_at')
       .eq('terminal_id', state.activeTerminalId),
   ]);
 
@@ -2029,7 +2250,7 @@ async function loadSignals() {
   renderVolumeChart();
   renderRiskEngine();
   renderSignalsTab();
-  renderBlockedTab();
+  renderNotifications();
 }
 
 function renderSignalSummary() {
@@ -2074,16 +2295,11 @@ async function loadPositions() {
   renderPositionsTab();
 }
 
-function renderPositions() {
-  const list = document.getElementById('positions-list');
+function renderPositionRows(list, emptyMessage) {
   if (!list) return;
 
   if (state.positions.length === 0) {
-    list.innerHTML = `<p class="empty-state-text" id="positions-empty-state">${
-      state.activeTerminalId
-        ? 'No open positions. Place an order to see it here.'
-        : 'No open positions. Connect an account and place an order to see it here.'
-    }</p>`;
+    list.innerHTML = `<p class="empty-state-text">${emptyMessage}</p>`;
     return;
   }
 
@@ -2101,8 +2317,8 @@ function renderPositions() {
       const actionsHtml = isClosing
         ? `<div class="inline-actions"><span class="pending-badge" title="Reconciling with your MT5 terminal — this clears automatically.">Reconciling…</span></div>`
         : `<div class="inline-actions">
-            <button class="btn-secondary btn-xs" type="button" data-modify-position="${p.id}">Modify</button>
-            <button class="btn-danger btn-xs" type="button" data-close-position="${p.id}">Close</button>
+            <button class="position-action-button is-modify" type="button" data-modify-position="${p.id}">Modify</button>
+            <button class="position-action-button is-close" type="button" data-close-position="${p.id}">Close</button>
           </div>`;
       return `
         <div class="mini-table-row${isClosing ? ' is-reconciling' : ''}">
@@ -2127,76 +2343,13 @@ function renderPositions() {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Signal queue
-// ---------------------------------------------------------------------------
-async function loadPendingSignals() {
-  if (!state.activeTerminalId) {
-    state.pendingSignals = [];
-    renderSignalQueue();
-    return;
-  }
-
-  const { data, error } = await supabase
-    .from('signal_deliveries')
-    .select('id, status, delivered_at, signals(symbol, side, suggested_volume, suggested_sl, suggested_tp, expires_at)')
-    .eq('terminal_id', state.activeTerminalId)
-    .in('status', ['pending', 'delivered'])
-    .order('delivered_at', { ascending: false });
-
-  if (error) {
-    console.error('loadPendingSignals error', error);
-    return;
-  }
-  state.pendingSignals = data || [];
-  renderSignalQueue();
-}
-
-function renderSignalQueue() {
-  const list = document.getElementById('signal-queue-list');
-  if (!list) return;
-
-  if (state.pendingSignals.length === 0) {
-    list.innerHTML = '<p class="empty-state-text" id="signal-queue-empty-state">No pending signals right now.</p>';
-    return;
-  }
-
-  const now = Date.now();
-  list.innerHTML = state.pendingSignals
-    .map((d) => {
-      const sig = d.signals || {};
-      const expired = sig.expires_at ? new Date(sig.expires_at).getTime() < now : false;
-      const sideClass = sig.side === 'sell' ? 'side-sell' : 'side-buy';
-      return `
-        <div class="mini-table-row">
-          <div class="mini-table-meta">
-            <div class="strategy-name">${sig.symbol || 'Unknown'}<span class="side-badge ${sideClass}">${sig.side || '—'}</span></div>
-            <div class="strategy-sub">${sig.suggested_volume ?? '—'} lots · delivered ${
-              d.delivered_at ? new Date(d.delivered_at).toLocaleString() : '—'
-            }</div>
-          </div>
-          <div class="mini-table-stats">
-            <div class="count">${expired ? 'Expired' : d.status}</div>
-          </div>
-          <div class="inline-actions">
-            <button class="btn-secondary btn-xs" type="button" data-tap-signal="${d.id}" ${expired ? 'disabled' : ''}>Tap to execute</button>
-          </div>
-        </div>`;
-    })
-    .join('');
-
-  list.querySelectorAll('[data-tap-signal]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      btn.disabled = true;
-      try {
-        await tapSignal(btn.dataset.tapSignal);
-        await Promise.all([loadPendingSignals(), loadPositions()]);
-      } catch (err) {
-        alert(err.message);
-        btn.disabled = false;
-      }
-    });
-  });
+function renderPositions() {
+  renderPositionRows(
+    document.getElementById('positions-list'),
+    state.activeTerminalId
+      ? 'No open positions. Place an order to see it here.'
+      : 'No open positions. Connect an account and place an order to see it here.'
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2478,10 +2631,20 @@ async function handlePriceFeedRepair(symbol, timeframe, button) {
     await loadPriceFeedStates();
     pairRepairsInFlight.delete(key);
     renderPairsView();
+    if (button?.isConnected) {
+      button.disabled = false;
+      button.classList.remove('is-loading');
+      button.setAttribute('aria-label', `Refresh requested for ${symbol} ${timeframe}`);
+      button.title = `Refresh requested for ${symbol} ${timeframe}; the EA will upload the clean snapshot.`;
+    }
   } catch (error) {
     pairRepairsInFlight.delete(key);
     alert(error.message || `Could not refresh ${symbol} ${timeframe}.`);
     renderPairsView();
+    if (button?.isConnected) {
+      button.disabled = false;
+      button.classList.remove('is-loading');
+    }
   }
 }
 
@@ -3006,6 +3169,7 @@ async function loadTradeHistory() {
     renderSessionsTab();
     renderWinRateTab();
     renderDurationTab();
+    renderNotifications();
     return;
   }
   const { data, error } = await supabase
@@ -3027,6 +3191,8 @@ async function loadTradeHistory() {
   renderSessionsTab();
   renderWinRateTab();
   renderDurationTab();
+  renderStrategyStatusTab();
+  renderNotifications();
   if (!viewPairs.hidden) renderPairsView();
 }
 
@@ -3175,8 +3341,9 @@ function renderRiskEngine() {
 }
 
 // ---------------------------------------------------------------------------
-// Analytics tab strip — Signals / Overview / Positions / Sessions / Blocked /
-// Risk Score / Win Rate / Duration / News Events / Strategy Status
+// Analytics tab strip — Overview / Signals / Positions / Sessions / Risk Score /
+// Win Rate / News / Strategies. Blocked outcomes remain inside Signals; trade
+// duration now lives on Overview.
 // ---------------------------------------------------------------------------
 const SESSION_LABELS = { asia: 'Asia', london: 'London', ny: 'New York', overlap: 'Overlap' };
 const IMPACT_LABELS = { high: 'High', medium: 'Medium', low: 'Low' };
@@ -3235,17 +3402,46 @@ function signalNewsDetail(s) {
 function renderSignalsTab() {
   const list = document.getElementById('tab-signals-list');
   if (!list) return;
-  if (state.signals.length === 0) {
+  const symbols = [...new Set(state.signals.map((signal) => signal.symbol).filter(Boolean))].sort();
+  if (signalsPairFilter) {
+    const selected = state.signalFilter.pair;
+    signalsPairFilter.innerHTML = '<option value="all">All pairs</option>' + symbols
+      .map((symbol) => `<option value="${escapeHtml(symbol)}">${escapeHtml(symbol)}</option>`)
+      .join('');
+    signalsPairFilter.value = symbols.includes(selected) ? selected : 'all';
+    state.signalFilter.pair = signalsPairFilter.value;
+  }
+
+  const now = Date.now();
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const cutoffs = {
+    today: startOfToday.getTime(),
+    '7d': now - 7 * 86400000,
+    '30d': now - 30 * 86400000,
+    all: 0,
+  };
+  const filtered = state.signals.filter((signal) => {
+    const pairMatches = state.signalFilter.pair === 'all' || signal.symbol === state.signalFilter.pair;
+    const generatedAt = new Date(signal.generated_at || 0).getTime();
+    return pairMatches && generatedAt >= (cutoffs[state.signalFilter.period] ?? cutoffs['30d']);
+  });
+
+  if (filtered.length === 0) {
     list.innerHTML =
-      '<p class="empty-state-text">No signals yet. Once your EA is connected and generating signals, they\'ll show up here.</p>';
+      `<p class="empty-state-text">${state.signals.length ? 'No signals match these filters.' : 'No signals yet. Once your EA is connected and generating signals, they\'ll show up here.'}</p>`;
     return;
   }
-  const sorted = [...state.signals].sort(
+  const sorted = [...filtered].sort(
     (a, b) => new Date(b.generated_at || 0) - new Date(a.generated_at || 0)
   );
   list.innerHTML = sorted
     .map((s) => {
       const sideClass = s.side === 'sell' ? 'side-sell' : 'side-buy';
+      const actionableDelivery = state.signalDeliveries.find(
+        (delivery) => delivery.signal_id === s.id && ['pending', 'delivered'].includes(delivery.status)
+      );
+      const expired = s.expires_at ? new Date(s.expires_at).getTime() < now : false;
       const decisionTag =
         s.policy_decision === 'block'
           ? '<span class="tag-badge tag-danger">Blocked</span>'
@@ -3256,78 +3452,48 @@ function renderSignalsTab() {
         <div class="mini-table-row">
           <div class="mini-table-meta">
             <div class="strategy-name">${s.symbol || 'Unknown'}<span class="side-badge ${sideClass}">${s.side || '—'}</span></div>
-            <div class="strategy-sub">${s.generated_at ? new Date(s.generated_at).toLocaleString() : '—'}</div>
+            <div class="strategy-sub">${s.timeframe || '—'} · ${s.generated_at ? new Date(s.generated_at).toLocaleString() : '—'}</div>
             ${signalNewsDetail(s)}
           </div>
-          <div class="mini-table-stats">${decisionTag}</div>
+          <div class="mini-table-stats signal-row-actions">
+            ${decisionTag}
+            ${actionableDelivery ? `<button class="btn-secondary btn-xs" type="button" data-tab-tap-signal="${actionableDelivery.id}" ${expired ? 'disabled' : ''}>${expired ? 'Expired' : 'Execute'}</button>` : ''}
+          </div>
         </div>`;
     })
     .join('');
+
+  list.querySelectorAll('[data-tab-tap-signal]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await tapSignal(button.dataset.tabTapSignal);
+        await Promise.all([loadSignals(), loadPositions()]);
+      } catch (error) {
+        alert(error.message);
+        button.disabled = false;
+      }
+    });
+  });
 }
 
-function renderBlockedTab() {
-  const list = document.getElementById('tab-blocked-list');
-  if (!list) return;
-  const blocked = state.signals.filter(
-    (s) => s.policy_decision === 'block' || s.policy_decision === 'downweight'
-  );
-  if (blocked.length === 0) {
-    list.innerHTML =
-      '<p class="empty-state-text">No blocked signals. The risk engine hasn\'t intervened on anything yet.</p>';
-    return;
-  }
-  const sorted = [...blocked].sort(
-    (a, b) => new Date(b.generated_at || 0) - new Date(a.generated_at || 0)
-  );
-  list.innerHTML = sorted
-    .map((s) => {
-      const sideClass = s.side === 'sell' ? 'side-sell' : 'side-buy';
-      const decisionTag =
-        s.policy_decision === 'block'
-          ? '<span class="tag-badge tag-danger">Blocked</span>'
-          : '<span class="tag-badge tag-warn">Downweighted</span>';
-      return `
-        <div class="mini-table-row">
-          <div class="mini-table-meta">
-            <div class="strategy-name">${s.symbol || 'Unknown'}<span class="side-badge ${sideClass}">${s.side || '—'}</span></div>
-            <div class="strategy-sub">${s.generated_at ? new Date(s.generated_at).toLocaleString() : '—'}</div>
-            ${signalNewsDetail(s)}
-          </div>
-          <div class="mini-table-stats">${decisionTag}</div>
-        </div>`;
-    })
-    .join('');
-}
+signalsPairFilter?.addEventListener('change', (event) => {
+  state.signalFilter.pair = event.target.value;
+  renderSignalsTab();
+});
+
+signalsPeriodFilter?.addEventListener('change', (event) => {
+  state.signalFilter.period = event.target.value;
+  renderSignalsTab();
+});
 
 function renderPositionsTab() {
-  const list = document.getElementById('tab-positions-list');
-  if (!list) return;
-  if (state.positions.length === 0) {
-    list.innerHTML =
-      '<p class="empty-state-text">No open positions. Connect an account and place an order to see it here.</p>';
-    return;
-  }
-  list.innerHTML = state.positions
-    .map((p) => {
-      const plValue = Number(p.unrealized_pl) || 0;
-      const plColor =
-        plValue > 0 ? 'var(--color-positive)' : plValue < 0 ? 'var(--color-negative)' : 'var(--color-text-muted)';
-      const sideClass = p.side === 'sell' ? 'side-sell' : 'side-buy';
-      return `
-        <div class="mini-table-row">
-          <div class="mini-table-meta">
-            <div class="strategy-name">${p.symbol}<span class="side-badge ${sideClass}">${p.side}</span></div>
-            <div class="strategy-sub">${p.volume} lots · SL ${p.sl ?? '—'} · TP ${p.tp ?? '—'} · opened ${new Date(
-        p.open_time
-      ).toLocaleString()}</div>
-          </div>
-          <div class="mini-table-stats">
-            <div class="pct" style="color:${plColor}">${plValue >= 0 ? '+' : ''}${plValue.toFixed(2)}</div>
-            <div class="count">${p.open_price} → ${p.current_price ?? '—'}</div>
-          </div>
-        </div>`;
-    })
-    .join('');
+  renderPositionRows(
+    document.getElementById('tab-positions-list'),
+    state.activeTerminalId
+      ? 'No open positions. Place an order to see it here.'
+      : 'No open positions. Connect an account and place an order to see it here.'
+  );
 }
 
 function renderSessionsTab() {
@@ -3745,20 +3911,40 @@ function renderStrategyStatusTab() {
       const postureTagClass = NEWS_POSTURE_TAG_CLASS[posture] || 'tag-neutral';
       const postureLabel = NEWS_POSTURE_LABEL[posture] || posture;
       const health = strategyHealthSummary(s);
+      const performance = strategyPerformanceSummary(s.id);
       const pairHealth = (s.evaluation_states || [])
-        .map((row) => `<span class="strategy-pair-health"><strong>${row.symbol}</strong> · ${STRATEGY_HEALTH_LABELS[row.status] || row.status}</span>`)
+        .map((row) => {
+          const actionable = ['stale_candles', 'missing_bars'].includes(row.status);
+          const label = `${row.symbol} · ${STRATEGY_HEALTH_LABELS[row.status] || row.status}`;
+          return actionable
+            ? `<button type="button" class="strategy-pair-health is-actionable" data-strategy-feed-repair="${row.symbol}" data-strategy-feed-timeframe="${row.timeframe || s.timeframe || 'M5'}" title="Refresh ${row.symbol} ${row.timeframe || s.timeframe || 'M5'} history"><strong>${row.symbol}</strong> · ${STRATEGY_HEALTH_LABELS[row.status] || row.status}</button>`
+            : `<span class="strategy-pair-health"><strong>${row.symbol}</strong> · ${STRATEGY_HEALTH_LABELS[row.status] || row.status}</span>`;
+        })
         .join('');
       return `
-        <div class="mini-table-row">
-          <div class="mini-table-meta">
-            <div class="strategy-name">${s.name}${statusTag}</div>
-            <div class="strategy-sub">${symbolLabel} · ${
+        <article class="strategy-management-card" data-strategy-card="${s.id}">
+          <div class="strategy-management-head">
+            <div class="mini-table-meta">
+              <div class="strategy-name">${escapeHtml(s.name)}${statusTag}</div>
+              <div class="strategy-sub">${escapeHtml(symbolLabel)} · ${
         deliveryLabels[s.delivery_mode] || s.delivery_mode || '—'
       } · ${s.risk_percent ?? '—'}% risk · max ${s.max_lot_size ?? '—'} lots · TTL ${s.signal_ttl_seconds ?? '—'}s</div>
+            </div>
+            <div class="strategy-management-metrics">
+              <div><span>Win rate</span><strong>${performance.winRate == null ? '—' : `${performance.winRate}%`}</strong><small>${performance.count} trades</small></div>
+              <div><span>Best session</span><strong>${performance.bestSession ? SESSION_LABELS[performance.bestSession] || performance.bestSession : '—'}</strong><small>verified history</small></div>
+            </div>
+            <div class="strategy-management-actions">
+              <label class="strategy-toggle strategy-toggle-icon-only" title="${s.enabled ? 'Disable' : 'Enable'} ${escapeHtml(s.name)}">
+                <input type="checkbox" class="strategy-toggle-input" data-strategy-card-toggle="${s.id}" aria-label="${s.enabled ? 'Disable' : 'Enable'} ${escapeHtml(s.name)}" ${s.enabled ? 'checked' : ''} />
+              </label>
+              <button class="strategy-gear-button" type="button" data-strategy-card-edit="${s.id}" aria-label="Edit ${escapeHtml(s.name)}">${GEAR_ICON}</button>
+            </div>
+          </div>
+          <div class="strategy-management-health">
             <div class="strategy-health strategy-health-${health.tone}"><span class="strategy-health-dot"></span>${health.label}${health.checked ? ` · checked ${strategyHealthAge(health.checked)}` : ''}</div>
             ${pairHealth ? `<div class="strategy-pair-health-list">${pairHealth}</div>` : ''}
           </div>
-        </div>
         <div class="news-policy-panel" data-strategy-id="${s.id}">
           <div class="news-policy-head">
             <span class="news-policy-title">Directional news policy</span>
@@ -3766,7 +3952,7 @@ function renderStrategyStatusTab() {
           </div>
           <div class="news-policy-fields">
             <label class="news-policy-field">
-              <span>Posture</span>
+              <span>Policy</span>
               <select data-news-field="news_posture" data-strategy-id="${s.id}">
                 <option value="avoid" ${posture === 'avoid' ? 'selected' : ''}>Avoid</option>
                 <option value="neutral" ${posture === 'neutral' ? 'selected' : ''}>Neutral</option>
@@ -3794,9 +3980,35 @@ function renderStrategyStatusTab() {
             </label>
           </div>
           <p class="news-policy-hint">${NEWS_POSTURE_HINTS[posture] || ''}</p>
-        </div>`;
+        </div>
+        </article>`;
     })
     .join('');
+
+  list.querySelectorAll('[data-strategy-card-toggle]').forEach((input) => {
+    input.addEventListener('change', async (event) => {
+      const enabled = event.target.checked;
+      const { error } = await supabase.from('strategies').update({ enabled }).eq('id', event.target.dataset.strategyCardToggle);
+      if (error) {
+        event.target.checked = !enabled;
+        alert(`Couldn't update that strategy: ${error.message}`);
+        return;
+      }
+      await loadStrategies();
+    });
+  });
+
+  list.querySelectorAll('[data-strategy-card-edit]').forEach((button) => {
+    button.addEventListener('click', () => openEditStrategyModal(button.dataset.strategyCardEdit));
+  });
+
+  list.querySelectorAll('[data-strategy-feed-repair]').forEach((button) => {
+    button.addEventListener('click', () => handlePriceFeedRepair(
+      button.dataset.strategyFeedRepair,
+      button.dataset.strategyFeedTimeframe,
+      button
+    ));
+  });
 
   list.querySelectorAll('[data-news-field]').forEach((el) => {
     el.addEventListener('change', async (e) => {
@@ -4065,14 +4277,19 @@ function resetDashboardState() {
   state.signals = [];
   state.signalDeliveries = [];
   state.tradeHistory = [];
+  state.recentCommands = [];
+  state.notifications = [];
   state.agentPolicies = [];
   state.positions = [];
-  state.pendingSignals = [];
   state.symbolSettings = [];
   state.symbolMappings = [];
   state.trendStates = [];
   state.calendarEvents = [];
   state.scenarioStats = [];
+  state.signalFilter = { pair: 'all', period: '30d' };
+  if (signalsPeriodFilter) signalsPeriodFilter.value = '30d';
+  if (notificationPanel) notificationPanel.hidden = true;
+  renderNotifications();
   setActiveTab('overview');
   stopPositionPolling();
   stopRealtime();

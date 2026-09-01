@@ -403,10 +403,21 @@
         <button class="icon-btn" id="button-settings" aria-label="Settings" data-testid="button-settings">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.64 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.64a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.36 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
         </button>
-        <button class="icon-btn" aria-label="Notifications, 1 unread" data-testid="button-notifications">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 8a6 6 0 0 1 12 0c0 3.5 1 5 2 6H4c1-1 2-2.5 2-6z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
-          <span class="dot" aria-hidden="true"></span>
-        </button>
+        <div class="notification-wrap">
+          <button class="icon-btn" id="button-notifications" aria-label="Notifications" aria-expanded="false" aria-controls="notification-panel" data-testid="button-notifications">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 8a6 6 0 0 1 12 0c0 3.5 1 5 2 6H4c1-1 2-2.5 2-6z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
+            <span class="dot" id="notification-dot" aria-hidden="true" hidden></span>
+          </button>
+          <section class="notification-panel" id="notification-panel" aria-label="Activity notifications" hidden>
+            <div class="notification-panel-head">
+              <div><strong>Activity</strong><span id="notification-count">0 updates</span></div>
+              <button type="button" class="notification-mark-read" id="button-notifications-read">Mark read</button>
+            </div>
+            <div class="notification-list" id="notification-list">
+              <p class="empty-state-text">No activity yet.</p>
+            </div>
+          </section>
+        </div>
         <div class="account-menu-wrap">
           <button class="avatar-badge" id="account-menu-button" aria-label="Account menu" data-testid="text-avatar-initials">?</button>
           <div class="account-menu" id="account-menu" aria-hidden="true">
@@ -435,7 +446,7 @@
 
       <div class="greeting-row">
         <div class="greeting">
-          <h1 data-testid="text-greeting" id="text-greeting">Hey there 👋</h1>
+          <h1 data-testid="text-greeting" id="text-greeting">Hey there</h1>
           <p id="text-greeting-sub">Connect an MT5 account to start seeing live data.</p>
         </div>
       </div>
@@ -511,12 +522,10 @@
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="signals" data-testid="tab-signals">Signals</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="positions" data-testid="tab-positions">Positions</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="sessions" data-testid="tab-sessions">Sessions</a>
-        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="blocked" data-testid="tab-blocked">Blocked</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="risk-score" data-testid="tab-risk-score">Risk Score</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="win-rate" data-testid="tab-win-rate">Win Rate</a>
-        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="duration" data-testid="tab-duration">Duration</a>
-        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="news-events" data-testid="tab-news-events">News Events</a>
-        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="strategy-status" data-testid="tab-strategy-status">Strategy Status</a>
+        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="news-events" data-testid="tab-news-events">News</a>
+        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="strategy-status" data-testid="tab-strategy-status">Strategies</a>
       </nav>
     </div>
 
@@ -525,9 +534,9 @@
     <!-- Bottom grid -->
     <div class="bottom-grid">
 
-      <section class="card card-pad" aria-label="Strategy performance">
+      <section class="card card-pad" aria-label="Strategies">
         <div class="card-title-row">
-          <h3>Strategy performance</h3>
+          <h3>Strategies</h3>
           <button class="expand-btn" aria-label="Add strategy" data-testid="button-expand-strategy" id="button-add-strategy">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
           </button>
@@ -619,12 +628,13 @@
         </div>
       </section>
 
-      <section class="card card-pad card-span-2" aria-label="Signal queue">
+      <section class="card card-pad card-span-2" aria-label="Trade duration breakdown">
         <div class="card-title-row">
-          <h3>Signal Queue</h3>
+          <h3>Durations</h3>
         </div>
-        <div class="mini-table" id="signal-queue-list">
-          <p class="empty-state-text" id="signal-queue-empty-state">No pending signals right now.</p>
+        <p class="desc">How long closed trades stay open, from fill to close.</p>
+        <div class="mini-table" id="tab-duration-list">
+          <p class="empty-state-text">No closed trades yet.</p>
         </div>
       </section>
 
@@ -632,11 +642,15 @@
     </div>
 
     <div class="tab-panel" data-tab-panel="signals" role="tabpanel" hidden>
-      <section class="card card-pad" aria-label="All signals">
+      <section class="card card-pad signals-panel-card" aria-label="All signals">
         <div class="card-title-row">
           <h3>All Signals</h3>
+          <div class="signal-filters" aria-label="Signal filters">
+            <label><span>Pair</span><select id="signals-pair-filter" aria-label="Filter signals by pair"><option value="all">All pairs</option></select></label>
+            <label><span>Period</span><select id="signals-period-filter" aria-label="Filter signals by period"><option value="today">Today</option><option value="7d">Past 7 days</option><option value="30d" selected>Past 30 days</option><option value="all">All time</option></select></label>
+          </div>
         </div>
-        <div class="mini-table" id="tab-signals-list">
+        <div class="mini-table signals-scroll-list" id="tab-signals-list">
           <p class="empty-state-text">No signals yet. Once your EA is connected and generating signals, they'll show up here.</p>
         </div>
       </section>
@@ -665,18 +679,6 @@
       </section>
     </div>
 
-    <div class="tab-panel" data-tab-panel="blocked" role="tabpanel" hidden>
-      <section class="card card-pad" aria-label="Blocked and downweighted signals">
-        <div class="card-title-row">
-          <h3>Blocked Signals</h3>
-        </div>
-        <p class="desc">Signals the adaptive risk engine blocked or downweighted before delivery.</p>
-        <div class="mini-table" id="tab-blocked-list">
-          <p class="empty-state-text">No blocked signals. The risk engine hasn't intervened on anything yet.</p>
-        </div>
-      </section>
-    </div>
-
     <div class="tab-panel" data-tab-panel="risk-score" role="tabpanel" hidden>
       <section class="card card-pad" aria-label="Scenario risk scores">
         <div class="card-title-row">
@@ -700,22 +702,10 @@
       </section>
     </div>
 
-    <div class="tab-panel" data-tab-panel="duration" role="tabpanel" hidden>
-      <section class="card card-pad" aria-label="Trade duration breakdown">
-        <div class="card-title-row">
-          <h3>Trade Duration</h3>
-        </div>
-        <p class="desc">How long closed trades stay open, from fill to close.</p>
-        <div class="mini-table" id="tab-duration-list">
-          <p class="empty-state-text">No closed trades yet.</p>
-        </div>
-      </section>
-    </div>
-
     <div class="tab-panel" data-tab-panel="news-events" role="tabpanel" hidden>
       <section class="card card-pad" aria-label="Economic calendar">
         <div class="card-title-row">
-          <h3>News Events</h3>
+          <h3>News</h3>
         </div>
         <p class="desc">Most recent high/medium/low-impact economic events the risk engine watches for news proximity. Scroll for older events.</p>
         <div class="mini-table mini-table-scroll" id="tab-news-events-list">
@@ -725,11 +715,14 @@
     </div>
 
     <div class="tab-panel" data-tab-panel="strategy-status" role="tabpanel" hidden>
-      <section class="card card-pad" aria-label="Strategy status">
+      <section aria-label="Strategies">
         <div class="card-title-row">
-          <h3>Strategy Status</h3>
+          <h3>Strategies</h3>
+          <button class="expand-btn" aria-label="Add strategy" id="button-add-strategy-tab">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
         </div>
-        <div class="mini-table" id="tab-strategy-status-list">
+        <div class="strategy-management-list" id="tab-strategy-status-list">
           <p class="empty-state-text">No strategies yet. Add your first one to get started.</p>
         </div>
       </section>
