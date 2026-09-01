@@ -2,8 +2,9 @@
 
 Live deployment: [https://mt5dashboardui.vercel.app](https://mt5dashboardui.vercel.app)
 
-Vercel team `lucre1`, project `mt5_dashboard_ui`. Confirmed version at time of
-snapshot: **v1.0.25**.
+Vercel team `lucre1`, project `mt5_dashboard_ui`. The GitHub `main` branch is
+connected to production, and the repository-level `vercel.json` publishes this
+directory as the static output.
 
 Static frontend (no build step) that talks directly to the Supabase project
 described in `../backend/README.md` using the public anon key embedded in
@@ -21,7 +22,6 @@ described in `../backend/README.md` using the public anon key embedded in
 
 ## Deploying changes
 
-This is currently deployed directly to Vercel from local files (no CI/CD
-pipeline connected to this repo yet). Pushing here does not automatically
-redeploy — treat this as the version-controlled source of truth to pull from
-before making changes, and push back here after deploying.
+Pushes to `main` deploy to production through Vercel's Git integration. Verify
+the deployment reaches `READY` and check at least one changed live asset before
+calling a release complete.
