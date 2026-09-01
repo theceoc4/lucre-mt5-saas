@@ -10,8 +10,8 @@ was synchronized from production on **2026-08-21**.
 
 | Component | Location in repo | Live location | Version |
 |---|---|---|---|
-| Backend (Supabase) | [`supabase/`](./supabase) | [qxlfnscmrhwfcpattqxa.supabase.co](https://qxlfnscmrhwfcpattqxa.supabase.co) | targeted feed repair + signal activity Realtime v1.0.39 |
-| Dashboard (frontend) | [`dashboard/`](./dashboard) | [mt5dashboardui.vercel.app](https://mt5dashboardui.vercel.app) | v1.0.41 |
+| Backend (Supabase) | [`supabase/`](./supabase) | [qxlfnscmrhwfcpattqxa.supabase.co](https://qxlfnscmrhwfcpattqxa.supabase.co) | reliable strategy state mutation v1.0.40 |
+| Dashboard (frontend) | [`dashboard/`](./dashboard) | [mt5dashboardui.vercel.app](https://mt5dashboardui.vercel.app) | v1.0.42 |
 | EA (MetaTrader 5) | [`ea/`](./ea) | Runs on MT5 terminal / VPS | v1.0.35 (single-file) |
 
 ## Important caveats

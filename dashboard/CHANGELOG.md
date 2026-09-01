@@ -7,6 +7,14 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.42 — Reliable strategy toggles (2026-09-01)
+
+- Routes both Overview and Strategies-tab toggles through one authenticated,
+  ownership-checked, idempotent database operation that returns the committed
+  enabled state.
+- Retries transient Safari transport failures safely and keeps both rendered
+  toggle surfaces synchronized without a full strategy reload.
+
 ## v1.0.41 — Bounded analytics cards (2026-09-01)
 
 - Restores the four Overview summary cards to a consistent fixed height while

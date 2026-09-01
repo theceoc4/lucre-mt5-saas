@@ -2165,6 +2165,55 @@ function strategyBrief(strategy) {
 
 const GEAR_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.64 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.64a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.36 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15z"/></svg>';
 
+function isTransientStrategyToggleError(error) {
+  const message = String(error?.message || error || '');
+  return /load failed|failed to fetch|networkerror|network request|fetch/i.test(message);
+}
+
+async function persistStrategyEnabled(strategyId, enabled) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const { data, error } = await supabase
+        .rpc('set_strategy_enabled', { p_strategy_id: strategyId, p_enabled: enabled })
+        .single();
+      if (!error) return data;
+      lastError = error;
+    } catch (error) {
+      lastError = error;
+    }
+    if (!isTransientStrategyToggleError(lastError) || attempt === 2) break;
+    await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+  }
+  throw lastError || new Error('The strategy update could not be confirmed.');
+}
+
+async function handleStrategyToggle(input, strategyId) {
+  const enabled = input.checked;
+  const strategy = state.strategies.find((item) => item.id === strategyId);
+  const previous = strategy?.enabled ?? !enabled;
+  document.querySelectorAll(`[data-strategy-toggle="${strategyId}"], [data-strategy-card-toggle="${strategyId}"]`)
+    .forEach((control) => { control.disabled = true; });
+  try {
+    const saved = await persistStrategyEnabled(strategyId, enabled);
+    if (strategy) strategy.enabled = saved.enabled;
+    renderStrategies();
+    renderStrategyWinRates();
+    renderStrategyStatusTab();
+    renderNotifications();
+  } catch (error) {
+    if (strategy) strategy.enabled = previous;
+    renderStrategies();
+    renderStrategyWinRates();
+    renderStrategyStatusTab();
+    console.error('toggle strategy error', error);
+    const message = isTransientStrategyToggleError(error)
+      ? 'The browser could not reach Supabase after three attempts. Check the connection and try again.'
+      : error?.message || 'The strategy update was rejected.';
+    alert(`Couldn't update that strategy: ${message}`);
+  }
+}
+
 function renderStrategies() {
   if (state.strategies.length === 0) {
     strategyList.innerHTML =
@@ -2192,17 +2241,7 @@ function renderStrategies() {
     .join('');
 
   strategyList.querySelectorAll('[data-strategy-toggle]').forEach((input) => {
-    input.addEventListener('change', async (e) => {
-      const id = e.target.dataset.strategyToggle;
-      const enabled = e.target.checked;
-      const { error } = await supabase.from('strategies').update({ enabled }).eq('id', id);
-      if (error) {
-        console.error('toggle strategy error', error);
-        e.target.checked = !enabled;
-        return;
-      }
-      await loadStrategies();
-    });
+    input.addEventListener('change', (event) => handleStrategyToggle(event.target, event.target.dataset.strategyToggle));
   });
 
   // v1.0.17 -- edit/delete strategy parameters after creation.
@@ -3986,16 +4025,7 @@ function renderStrategyStatusTab() {
     .join('');
 
   list.querySelectorAll('[data-strategy-card-toggle]').forEach((input) => {
-    input.addEventListener('change', async (event) => {
-      const enabled = event.target.checked;
-      const { error } = await supabase.from('strategies').update({ enabled }).eq('id', event.target.dataset.strategyCardToggle);
-      if (error) {
-        event.target.checked = !enabled;
-        alert(`Couldn't update that strategy: ${error.message}`);
-        return;
-      }
-      await loadStrategies();
-    });
+    input.addEventListener('change', (event) => handleStrategyToggle(event.target, event.target.dataset.strategyCardToggle));
   });
 
   list.querySelectorAll('[data-strategy-card-edit]').forEach((button) => {
