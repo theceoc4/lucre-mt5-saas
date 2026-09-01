@@ -7,6 +7,18 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.37 — Active EA ownership and live trading capabilities (2026-09-01)
+
+- Atomically leases each terminal API key to one live EA session, preventing a
+  VPS copy and another attached chart/terminal from mixing commands and candles.
+- Dashboard AutoTrading warnings now use fresh MT5 capability telemetry and
+  identify whether the terminal toggle, EA Properties, broker account, or
+  account Expert Advisor permission is blocking trades.
+- Historical command failures expire as banner evidence and successful command
+  reports clear any prior error message.
+- Treats 240+ broker-provided candles as indicator-ready while retaining up to
+  1,000; this stops finite histories such as XRPUSD W1 from retrying forever.
+
 ## v1.0.35 — Verified candle bootstrap lifecycle (2026-09-01)
 
 - Tracks desired, pending, bootstrapping, live, incomplete, error, and disabled
@@ -14,7 +26,8 @@ independently but share the same numbering scheme for easy cross-reference.
 - New and re-enabled pairs receive a new clean-bootstrap generation across all
   eight timeframes; normal EA restarts reuse a verified server baseline.
 - Strategies remain safely in `Waiting for candle history` until every candle
-  series they consume has at least 500 verified retained bars.
+  series they consume has at least 240 verified retained bars (enough for
+  EMA-200 plus warm-up margin).
 - Current-candle collection and historical bootstrap now run as independent
   lanes, preventing large snapshots or one unavailable broker series from
   starving the rest of the enabled universe.

@@ -1452,7 +1452,7 @@ async function refreshActiveTerminalBalance() {
   if (!state.activeTerminalId) return;
   const { data, error } = await supabase
     .from('mt5_terminals')
-    .select('id, equity, balance, margin_level, status')
+    .select('id, equity, balance, margin_level, status, terminal_trade_allowed, mql_trade_allowed, account_trade_allowed, account_expert_trade_allowed, trade_capability_reported_at')
     .eq('id', state.activeTerminalId)
     .maybeSingle();
   if (error || !data) return;
@@ -1460,6 +1460,7 @@ async function refreshActiveTerminalBalance() {
   if (idx !== -1) {
     state.terminals[idx] = { ...state.terminals[idx], ...data };
     renderBalanceWidget();
+    checkAutotradingBanner();
   }
 }
 
@@ -1519,6 +1520,7 @@ function startRealtime(terminalId) {
         if (idx !== -1) {
           state.terminals[idx] = { ...state.terminals[idx], ...payload.new };
           renderBalanceWidget();
+          checkAutotradingBanner();
         }
       }
     )
@@ -1597,6 +1599,24 @@ async function checkAutotradingBanner() {
     bannerAutotrading.hidden = true;
     return;
   }
+  const terminal = state.terminals.find((item) => item.id === state.activeTerminalId);
+  const capabilityAgeMs = terminal?.trade_capability_reported_at
+    ? Date.now() - new Date(terminal.trade_capability_reported_at).getTime() : Infinity;
+  if (capabilityAgeMs <= 90_000) {
+    const capabilityFailures = [
+      [terminal.terminal_trade_allowed === false, 'MT5/VPS Algo Trading is disabled at the terminal level.'],
+      [terminal.mql_trade_allowed === false, '“Allow Algo Trading” is disabled in this EA’s Properties.'],
+      [terminal.account_trade_allowed === false, 'The broker account is currently not permitted to trade.'],
+      [terminal.account_expert_trade_allowed === false, 'The broker/account currently blocks Expert Advisor trading.'],
+    ];
+    const failure = capabilityFailures.find(([blocked]) => blocked)?.[1];
+    bannerAutotrading.hidden = !failure;
+    if (failure) bannerAutotrading.textContent = `${failure} New orders are blocked until this live MT5 capability becomes available.`;
+    return;
+  }
+
+  // Compatibility fallback for pre-v1.0.34 EAs. Historical failures expire
+  // quickly instead of leaving a permanent warning after MT5 recovers.
   const { data, error } = await supabase
     .from('ea_commands')
     .select('id, status, error_message, requested_at')
@@ -1609,16 +1629,23 @@ async function checkAutotradingBanner() {
     return;
   }
   const latest = data?.[0];
+  const latestAgeMs = latest?.requested_at ? Date.now() - new Date(latest.requested_at).getTime() : Infinity;
   bannerAutotrading.hidden = !(
     latest &&
     latest.status === 'failed' &&
-    latest.error_message === 'autotrading_disabled'
+    ['autotrading_disabled', 'terminal_autotrading_disabled', 'ea_live_trading_disabled',
+      'account_trading_disabled', 'account_expert_trading_disabled'].includes(latest.error_message) &&
+    latestAgeMs <= 120_000
   );
 }
 
 function humanizeCommandFailure(error) {
   const labels = {
     autotrading_disabled: 'MT5 AutoTrading is disabled.',
+    terminal_autotrading_disabled: 'MT5/VPS Algo Trading is disabled at the terminal level.',
+    ea_live_trading_disabled: 'Allow Algo Trading is disabled in this EA’s Properties.',
+    account_trading_disabled: 'The broker account is not currently permitted to trade.',
+    account_expert_trading_disabled: 'The broker/account currently blocks Expert Advisor trading.',
     hard_stop_loss_required: 'A protective stop-loss is required.',
     hard_max_volume_per_order_exceeded: 'The volume exceeds the EA hard limit.',
     broker_volume_step_mismatch: 'The volume does not match this broker’s lot step.',
@@ -1699,6 +1726,7 @@ async function loadTerminals() {
     .from('mt5_terminals')
     .select(
       'id, label, broker, account_login, server, is_live, status, equity, balance, margin_level, ea_version, api_key_last_four, api_key_last_rotated_at, max_manual_lot_size, max_daily_loss_usd, max_open_positions, force_symbol_rescan, last_symbol_scan_at, realtime_topic_id'
+      + ', terminal_trade_allowed, mql_trade_allowed, account_trade_allowed, account_expert_trade_allowed, trade_capability_reported_at'
     )
     .order('created_at', { ascending: true });
 

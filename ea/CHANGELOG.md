@@ -1,5 +1,15 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.34 — Active-session lease and capability truth (2026-09-01)
+
+- Adds an opaque per-session ID so Supabase can lease each terminal key to one
+  active EA and keep duplicate local/VPS copies in standby.
+- Reports terminal, per-EA, broker-account, and account expert-trading flags on
+  every durable heartbeat, replacing the ambiguous AutoTrading diagnosis.
+- Uses a 240-candle readiness floor while still requesting/retaining up to
+  1,000 bars, allowing broker-complete histories such as XRPUSD W1 (485 bars)
+  to finish instead of uploading forever.
+
 ## v1.0.33 — Verified bootstrap plus non-starvable freshness (2026-09-01)
 
 - Checks the newest three closed candles for every enabled symbol/timeframe on

@@ -205,18 +205,33 @@ Deno.serve(async (req: Request) => {
   const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-  const auth = await authenticateTerminal(req, admin, "id");
+  const auth = await authenticateTerminal(
+    req,
+    admin,
+    "id,active_ea_instance_id,active_ea_instance_seen_at",
+  );
   if (auth.error) {
     const status = auth.error === "missing_api_key" || auth.error === "invalid_api_key" ? 401 : 500;
     return jsonResponse({ error: auth.error, detail: auth.detail }, status);
   }
   const terminal = auth.terminal!;
 
-  let body: { symbols?: IncomingSymbolBars[] };
+  let body: { instance_id?: string; symbols?: IncomingSymbolBars[] };
   try {
     body = await req.json();
   } catch {
     return jsonResponse({ error: "invalid_json_body" }, 400);
+  }
+
+  const activeInstanceId = typeof terminal.active_ea_instance_id === "string"
+    ? terminal.active_ea_instance_id : "";
+  const activeSeenMs = terminal.active_ea_instance_seen_at
+    ? new Date(String(terminal.active_ea_instance_seen_at)).getTime() : 0;
+  const activeLeaseFresh = Boolean(activeInstanceId) && Number.isFinite(activeSeenMs) &&
+    Date.now() - activeSeenMs < 60_000;
+  const reportingInstanceId = typeof body.instance_id === "string" ? body.instance_id.trim() : "";
+  if (activeLeaseFresh && reportingInstanceId !== activeInstanceId) {
+    return jsonResponse({ error: "ea_instance_standby" }, 409);
   }
 
   if (!Array.isArray(body.symbols)) return jsonResponse({ error: "missing_symbols_array" }, 400);

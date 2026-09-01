@@ -168,7 +168,7 @@ Deno.serve(async (req: Request) => {
   const keyHash = await sha256Hex(apiKey);
   const { data: terminal, error: terminalError } = await admin
     .from("mt5_terminals")
-    .select("id, max_open_positions, force_symbol_rescan")
+    .select("id, max_open_positions, force_symbol_rescan, active_ea_instance_id, active_ea_instance_seen_at, active_ea_is_vps")
     .eq("api_key_hash", keyHash)
     .maybeSingle();
 
@@ -176,6 +176,8 @@ Deno.serve(async (req: Request) => {
   if (!terminal) return jsonResponse({ error: "invalid_api_key" }, 401);
 
   let body: {
+    instance_id?: string;
+    is_vps?: boolean;
     account?: {
       equity?: number;
       balance?: number;
@@ -184,6 +186,10 @@ Deno.serve(async (req: Request) => {
       server?: string;
       is_live?: boolean;
       ea_version?: string;
+      terminal_trade_allowed?: boolean;
+      mql_trade_allowed?: boolean;
+      account_trade_allowed?: boolean;
+      account_expert_trade_allowed?: boolean;
     };
     positions?: PositionReport[];
     command_results?: CommandResult[];
@@ -194,6 +200,26 @@ Deno.serve(async (req: Request) => {
     body = await req.json();
   } catch {
     return jsonResponse({ error: "invalid_json_body" }, 400);
+  }
+
+  const instanceId = typeof body.instance_id === "string" ? body.instance_id.trim() : "";
+  const activeSeenMs = terminal.active_ea_instance_seen_at
+    ? new Date(String(terminal.active_ea_instance_seen_at)).getTime() : 0;
+  const activeLeaseFresh = Boolean(terminal.active_ea_instance_id) &&
+    Number.isFinite(activeSeenMs) && Date.now() - activeSeenMs < 45_000;
+  if (instanceId) {
+    const { data: claimed, error: claimError } = await admin.rpc("claim_terminal_ea_instance", {
+      p_terminal_id: terminal.id,
+      p_instance_id: instanceId,
+      p_is_vps: body.is_vps === true,
+      p_lease_seconds: 45,
+    });
+    if (claimError) return jsonResponse({ error: "ea_instance_claim_failed", detail: claimError.message }, 500);
+    if (!claimed) return jsonResponse({ error: "ea_instance_standby", retry_after_seconds: 45 }, 409);
+  } else if (activeLeaseFresh) {
+    // Once a leased EA is online, older builds using the same terminal key are
+    // prevented from executing commands or overwriting the active snapshot.
+    return jsonResponse({ error: "ea_upgrade_required_for_active_lease" }, 409);
   }
 
   const nowIso = new Date().toISOString();
@@ -211,6 +237,22 @@ Deno.serve(async (req: Request) => {
     if (body.account.server !== undefined) accountUpdate.server = body.account.server;
     if (body.account.is_live !== undefined) accountUpdate.is_live = body.account.is_live;
     if (body.account.ea_version !== undefined) accountUpdate.ea_version = body.account.ea_version;
+    if (body.account.terminal_trade_allowed !== undefined) {
+      accountUpdate.terminal_trade_allowed = body.account.terminal_trade_allowed;
+    }
+    if (body.account.mql_trade_allowed !== undefined) accountUpdate.mql_trade_allowed = body.account.mql_trade_allowed;
+    if (body.account.account_trade_allowed !== undefined) {
+      accountUpdate.account_trade_allowed = body.account.account_trade_allowed;
+    }
+    if (body.account.account_expert_trade_allowed !== undefined) {
+      accountUpdate.account_expert_trade_allowed = body.account.account_expert_trade_allowed;
+    }
+    if ([
+      body.account.terminal_trade_allowed,
+      body.account.mql_trade_allowed,
+      body.account.account_trade_allowed,
+      body.account.account_expert_trade_allowed,
+    ].some((value) => value !== undefined)) accountUpdate.trade_capability_reported_at = nowIso;
   }
   const { error: heartbeatError } = await admin
     .from("mt5_terminals")
@@ -237,9 +279,19 @@ Deno.serve(async (req: Request) => {
       continue;
     }
 
+    if (["executed", "failed", "expired"].includes(command.status) && command.status !== result.status) {
+      processedResults.push({
+        ea_command_id: result.ea_command_id,
+        ok: false,
+        detail: `stale_terminal_result_ignored:${command.status}->${result.status}`,
+      });
+      continue;
+    }
+
     const commandUpdate: Record<string, unknown> = { status: result.status };
     if (result.mt5_ticket !== undefined) commandUpdate.mt5_ticket = result.mt5_ticket;
-    if (result.error_message !== undefined) commandUpdate.error_message = result.error_message;
+    if (result.status === "executed") commandUpdate.error_message = null;
+    else if (result.error_message !== undefined) commandUpdate.error_message = result.error_message;
     if (result.status === "executed" || result.status === "failed") {
       commandUpdate.executed_at = nowIso;
     }

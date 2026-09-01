@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.33 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.34 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.33"
+#property version   "1.34"
 #property strict
 
 
@@ -162,6 +162,7 @@ int      g_es_strategy_map_count = 0;
 // EASync.mqh taking a dependency on SymbolMap.mqh (wrong direction of
 // coupling — this module should stay ignorant of who else reads its output).
 string   g_es_last_response = "";
+string   g_es_instance_id = "";
 
 //+------------------------------------------------------------------+
 //| Public: call once from OnInit()                                  |
@@ -178,7 +179,14 @@ void EASync_Init(const string base_url, const string api_key, const int poll_sec
    ArrayResize(g_es_strategy_ids, 0);
    g_es_strategy_map_count = 0;
 
-   PrintFormat("EASync: initialized, base_url=%s, poll_seconds=%d", g_es_base_url, g_es_poll_seconds);
+   // One opaque ID per attached EA session. The backend leases a terminal key
+   // to exactly one live session so a forgotten local chart and its VPS copy
+   // cannot both execute commands or publish conflicting candle caches.
+   g_es_instance_id = StringFormat("ea-%I64d-%I64d-%I64d-%I64d",
+      AccountInfoInteger(ACCOUNT_LOGIN), ChartID(), (long)TimeLocal(), (long)GetTickCount64());
+
+   PrintFormat("EASync: initialized, instance=%s, base_url=%s, poll_seconds=%d",
+               g_es_instance_id, g_es_base_url, g_es_poll_seconds);
 }
 
 // Realtime changes the reconciliation cadence, never the command source of
@@ -267,6 +275,11 @@ void EASync_UntrackTicket(const long ticket)
 string EASync_GetLastResponse()
 {
    return g_es_last_response;
+}
+
+string EASync_GetInstanceId()
+{
+   return g_es_instance_id;
 }
 
 //+------------------------------------------------------------------+
@@ -429,9 +442,18 @@ double EASync_ApplyStopsLevel(const string symbol, const double stop_price,
 //| show a clear banner for. Checked before every trade attempt so the |
 //| failure reason is unambiguous and no wasted round trip is spent.   |
 //+------------------------------------------------------------------+
+string EASync_TradingBlockedReason()
+{
+   if(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) == 0) return "terminal_autotrading_disabled";
+   if(MQLInfoInteger(MQL_TRADE_ALLOWED) == 0) return "ea_live_trading_disabled";
+   if(AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) == 0) return "account_trading_disabled";
+   if(AccountInfoInteger(ACCOUNT_TRADE_EXPERT) == 0) return "account_expert_trading_disabled";
+   return "";
+}
+
 bool EASync_TradingAllowed()
 {
-   return TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0 && MQLInfoInteger(MQL_TRADE_ALLOWED) != 0;
+   return EASync_TradingBlockedReason() == "";
 }
 
 //+------------------------------------------------------------------+
@@ -785,10 +807,11 @@ void EASync_ExecuteOpen(const string ea_command_id, const string symbol, const s
       return;
    }
 
-   if(!EASync_TradingAllowed())
+   string trading_block = EASync_TradingBlockedReason();
+   if(trading_block != "")
    {
-      EASync_QueueFailed(ea_command_id, "autotrading_disabled");
-      PrintFormat("EASync: AutoTrading is OFF (terminal toolbar or this EA's Allow-live-trading checkbox) -- rejected open command=%s", ea_command_id);
+      EASync_QueueFailed(ea_command_id, trading_block);
+      PrintFormat("EASync: trading blocked (%s) -- rejected open command=%s", trading_block, ea_command_id);
       return;
    }
 
@@ -871,10 +894,11 @@ void EASync_ExecuteModify(const string ea_command_id, const long ticket,
                            const double sl, const double tp,
                            const double sl_pips, const double tp_pips)
 {
-   if(!EASync_TradingAllowed())
+   string trading_block = EASync_TradingBlockedReason();
+   if(trading_block != "")
    {
-      EASync_QueueFailed(ea_command_id, "autotrading_disabled");
-      PrintFormat("EASync: AutoTrading is OFF -- rejected modify command=%s", ea_command_id);
+      EASync_QueueFailed(ea_command_id, trading_block);
+      PrintFormat("EASync: trading blocked (%s) -- rejected modify command=%s", trading_block, ea_command_id);
       return;
    }
 
@@ -926,10 +950,11 @@ void EASync_ExecuteModify(const string ea_command_id, const long ticket,
 //+------------------------------------------------------------------+
 void EASync_ExecuteClose(const string ea_command_id, const long ticket)
 {
-   if(!EASync_TradingAllowed())
+   string trading_block = EASync_TradingBlockedReason();
+   if(trading_block != "")
    {
-      EASync_QueueFailed(ea_command_id, "autotrading_disabled");
-      PrintFormat("EASync: AutoTrading is OFF -- rejected close command=%s", ea_command_id);
+      EASync_QueueFailed(ea_command_id, trading_block);
+      PrintFormat("EASync: trading blocked (%s) -- rejected close command=%s", trading_block, ea_command_id);
       return;
    }
 
@@ -1015,10 +1040,11 @@ void EASync_ExecuteClose(const string ea_command_id, const long ticket)
 //+------------------------------------------------------------------+
 void EASync_ExecuteFlattenBasket(const string ea_command_id)
 {
-   if(!EASync_TradingAllowed())
+   string trading_block = EASync_TradingBlockedReason();
+   if(trading_block != "")
    {
-      EASync_QueueFailed(ea_command_id, "autotrading_disabled");
-      PrintFormat("EASync: AutoTrading is OFF -- rejected flatten_basket command=%s", ea_command_id);
+      EASync_QueueFailed(ea_command_id, trading_block);
+      PrintFormat("EASync: trading blocked (%s) -- rejected flatten_basket command=%s", trading_block, ea_command_id);
       return;
    }
 
@@ -1233,7 +1259,11 @@ string EASync_BuildRequestBody()
       "\"account_login\":\"" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) + "\","
       "\"server\":\"" + EASync_JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\","
       "\"is_live\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL ? "true" : "false") + ","
-      "\"ea_version\":\"1.0.33\""
+      "\"ea_version\":\"1.0.34\","
+      "\"terminal_trade_allowed\":" + (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
+      "\"mql_trade_allowed\":" + (MQLInfoInteger(MQL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
+      "\"account_trade_allowed\":" + (AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
+      "\"account_expert_trade_allowed\":" + (AccountInfoInteger(ACCOUNT_TRADE_EXPERT) != 0 ? "true" : "false")
       + "}";
 
    string positions_json = "\"positions\":[";
@@ -1277,7 +1307,9 @@ string EASync_BuildRequestBody()
    string closed_deals_json = EASync_BuildClosedDealsJson();
    string account_history_json = EASync_BuildAccountHistoryJson();
 
-   return "{" + account_json + "," + positions_json + "," + results_json + "," + closed_deals_json + "," + account_history_json + "}";
+   return "{\"instance_id\":\"" + EASync_JsonEscape(g_es_instance_id) + "\"," +
+          "\"is_vps\":" + (TerminalInfoInteger(TERMINAL_VPS) != 0 ? "true" : "false") + "," +
+          account_json + "," + positions_json + "," + results_json + "," + closed_deals_json + "," + account_history_json + "}";
 }
 
 //+------------------------------------------------------------------+
@@ -2859,7 +2891,7 @@ datetime g_pr_last_report = 0;
 // symbol/timeframe selection cannot create an unbounded Edge Function body.
 #define PR_BACKFILL_BARS 1000
 #define PR_FRESHNESS_BARS 3
-#define PR_MIN_BOOTSTRAP_BARS 500
+#define PR_MIN_BOOTSTRAP_BARS 240
 #define PR_MAX_BOOTSTRAP_SERIES_PER_RUN 2
 string   g_pr_series_keys[];
 datetime g_pr_series_last_sent[];
@@ -3062,7 +3094,8 @@ bool PriceReporter_SendPayload(const string symbols_json,
                                const string lane)
 {
    if(sent_series <= 0) return true;
-   string body = "{\"symbols\":[" + symbols_json + "]}";
+   string body = "{\"instance_id\":\"" + EASync_JsonEscape(EASync_GetInstanceId()) +
+                 "\",\"symbols\":[" + symbols_json + "]}";
    string url = g_pr_base_url + "/functions/v1/report-bars";
    string headers = "Content-Type: application/json\r\nx-api-key: " + g_pr_api_key + "\r\n";
 

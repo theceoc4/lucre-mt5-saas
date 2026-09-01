@@ -1,4 +1,4 @@
-// v1.0.33 — stale-candle safety and compact per-pair evaluation health.
+// v1.0.37 — active-feed readiness and compact per-pair evaluation health.
 // v1.0.31 — progressive indicator stacks with bounded AND/OR evaluation.
 // v1.0.30 — strategy-signal-engine
 //
@@ -1173,22 +1173,23 @@ Deno.serve(async (req: Request) => {
         const barsByTimeframe = new Map<string, PriceBar[]>();
         let missingBars = false;
         for (const requiredTimeframe of requiredTimeframes) {
+          const requiredHistoryBars = requiredTimeframe === timeframe && strategy.rule_definition?.version === 2
+            ? Math.max(240, indicatorWarmupBars(strategy.rule_definition))
+            : 240;
           const feedState = feedStateBySeries.get(
             `${strategy.terminal_id}:${symbol}:${requiredTimeframe}`,
           );
-          if (!feedState || feedState.bootstrap_required || feedState.history_bar_count < 500) {
+          if (!feedState || feedState.bootstrap_required || feedState.history_bar_count < requiredHistoryBars) {
             recordEvaluation(strategy, symbol, "missing_bars", feedState?.latest_bar_time ?? null, null, {
               required_timeframe: requiredTimeframe,
               feed_status: feedState?.status ?? "missing",
               bootstrap_required: feedState?.bootstrap_required ?? true,
               available_bars: feedState?.history_bar_count ?? 0,
-              required_history_bars: 500,
+              required_history_bars: requiredHistoryBars,
             });
             missingBars = true; break;
           }
-          const barLimit = requiredTimeframe === timeframe && strategy.rule_definition?.version === 2
-            ? indicatorWarmupBars(strategy.rule_definition)
-            : 240;
+          const barLimit = requiredHistoryBars;
           const { data: descendingBars, error: barsError } = await admin.from("price_bars")
             .select("bar_time, open, high, low, close, volume, spread")
             .eq("terminal_id", strategy.terminal_id).eq("symbol", symbol).eq("timeframe", requiredTimeframe)
