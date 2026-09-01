@@ -905,6 +905,24 @@ a {
   gap: var(--space-4);
 }
 
+.overview-summary-card {
+  height: 360px;
+  min-height: 0;
+}
+
+.overview-strategies-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.overview-strategies-card #strategy-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: var(--space-2);
+  scrollbar-width: thin;
+}
+
 .card-span-2 {
   grid-column: span 2;
 }
@@ -2940,6 +2958,22 @@ body {
   scrollbar-width: thin;
 }
 
+.risk-score-panel-card {
+  height: 560px;
+  max-height: min(560px, calc(100vh - 220px));
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+}
+
+.risk-score-scroll-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: var(--space-2);
+  scrollbar-width: thin;
+}
+
 .signal-row-actions {
   display: grid;
   justify-items: end;
@@ -3094,6 +3128,7 @@ body {
 
 @media (max-width: 760px) {
   .signals-panel-card { height: 520px; max-height: none; }
+  .risk-score-panel-card { height: 520px; max-height: none; }
   .signals-panel-card .card-title-row { align-items: stretch; flex-direction: column; }
   .signal-filters { width: 100%; }
   .signal-filters label { flex: 1; }

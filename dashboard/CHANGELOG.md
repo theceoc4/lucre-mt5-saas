@@ -7,6 +7,15 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.41 — Bounded analytics cards (2026-09-01)
+
+- Restores the four Overview summary cards to a consistent fixed height while
+  keeping Win Rate, P/L Over Time, and Risk Engine fully visible.
+- Makes the Overview Strategies list independently scrollable so any number of
+  strategies no longer stretches the full grid row.
+- Bounds the Risk Score workspace and moves scenario rows into an internal
+  vertical scroll region.
+
 ## v1.0.40 — Dashboard workspace and activity center (2026-09-01)
 
 - Adds a fixed-height, scrollable Signals workspace with pair and date-range

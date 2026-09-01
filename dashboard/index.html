@@ -534,7 +534,7 @@
     <!-- Bottom grid -->
     <div class="bottom-grid">
 
-      <section class="card card-pad" aria-label="Strategies">
+      <section class="card card-pad overview-summary-card overview-strategies-card" aria-label="Strategies">
         <div class="card-title-row">
           <h3>Strategies</h3>
           <button class="expand-btn" aria-label="Add strategy" data-testid="button-expand-strategy" id="button-add-strategy">
@@ -546,7 +546,7 @@
         </div>
       </section>
 
-      <section class="card card-pad gauge-card" aria-label="Win rate">
+      <section class="card card-pad gauge-card overview-summary-card" aria-label="Win rate">
         <div class="card-title-row" style="width:100%;">
           <h3>Win Rate</h3>
         </div>
@@ -561,7 +561,7 @@
         <div class="footer-link" style="width:100%;"><span>Avg R:R</span><span id="text-avg-rr">—</span></div>
       </section>
 
-      <section class="card card-pad" aria-label="Profit and loss over time">
+      <section class="card card-pad overview-summary-card" aria-label="Profit and loss over time">
         <div class="card-title-row">
           <h3>P/L Over Time</h3>
           <div class="pl-filters">
@@ -593,7 +593,7 @@
         <div class="footer-link footer-link-action" id="link-open-account-history" role="button" tabindex="0"><span>Positions Closed</span><span>→</span></div>
       </section>
 
-      <section class="card card-pad" aria-label="Risk engine">
+      <section class="card card-pad overview-summary-card" aria-label="Risk engine">
         <div class="card-title-row" style="width:100%;">
           <h3>Risk Engine</h3>
         </div>
@@ -680,12 +680,12 @@
     </div>
 
     <div class="tab-panel" data-tab-panel="risk-score" role="tabpanel" hidden>
-      <section class="card card-pad" aria-label="Scenario risk scores">
+      <section class="card card-pad risk-score-panel-card" aria-label="Scenario risk scores">
         <div class="card-title-row">
           <h3>Scenario Risk Scores</h3>
         </div>
         <p class="desc">Nightly-computed, Bayesian-shrunk win rate per strategy/symbol/session/regime scenario — the numbers the agent policy engine acts on.</p>
-        <div class="mini-table" id="tab-risk-score-list">
+        <div class="mini-table risk-score-scroll-list" id="tab-risk-score-list">
           <p class="empty-state-text">No scenario data yet. Scores appear after enough closed trades accumulate per scenario.</p>
         </div>
       </section>
