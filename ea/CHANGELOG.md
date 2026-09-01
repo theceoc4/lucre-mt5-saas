@@ -1,5 +1,18 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.32 — Durable server candle checkpoints (2026-09-01)
+
+- Reads Supabase's latest accepted candle checkpoint for every broker symbol
+  and timeframe from the normal `ea-sync` response.
+- Restores local reporting cursors from those checkpoints after an EA,
+  terminal, or VPS restart instead of replaying 1,000 candles for every
+  selected series.
+- Keeps active-strategy series ahead of global background history collection;
+  the backend now includes primary, bias, and rule-condition timeframes in
+  that priority lane.
+- Preserves the existing closed-candle-only model and all eight supported
+  timeframes. No live/forming candle is used for signals or backtests.
+
 ## v1.0.31 — Active-strategy feed priority and fair rotation (2026-09-01)
 
 - Reports EA v1.0.31 and reads active-strategy timeframe priority supplied by

@@ -7,6 +7,18 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.34 — Durable broker candle-feed checkpoints (2026-09-01)
+
+- Added a per-terminal, per-symbol, per-timeframe feed-state table initialized
+  from the existing 1,000-candle operational cache.
+- `report-bars` advances each accepted checkpoint monotonically and returns a
+  per-series acknowledgement after the price-bar write succeeds.
+- `ea-sync` returns those server checkpoints to EA v1.0.32, eliminating blind
+  global backfills after terminal/VPS restarts.
+- Active strategies now prioritize every candle series they consume, including
+  bias and legacy custom-rule timeframes, while global selected-symbol history
+  continues filling in a bounded background lane.
+
 ## v1.0.33 — Strategy feed health and evaluation visibility (2026-09-01)
 
 - Strategy cards now show the latest evaluation outcome instead of leaving a

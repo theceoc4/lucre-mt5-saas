@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.31 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.32 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.31"
+#property version   "1.32"
 #property strict
 
 
@@ -1233,7 +1233,7 @@ string EASync_BuildRequestBody()
       "\"account_login\":\"" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) + "\","
       "\"server\":\"" + EASync_JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\","
       "\"is_live\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL ? "true" : "false") + ","
-      "\"ea_version\":\"1.0.31\""
+      "\"ea_version\":\"1.0.32\""
       + "}";
 
    string positions_json = "\"positions\":[";
@@ -2906,7 +2906,28 @@ struct PriceReporterBoundSymbol
    string broker_symbol;
    string report_timeframes;
    string priority_timeframes;
+   string feed_checkpoints;
 };
+
+//+------------------------------------------------------------------+
+//| Converts the UTC ISO timestamps returned by ea-sync to MT5 time.  |
+//| Only whole seconds are needed because broker candles are aligned. |
+//+------------------------------------------------------------------+
+datetime PriceReporter_IsoToTime(string iso_time)
+{
+   if(StringLen(iso_time) < 19) return 0;
+   string value = StringSubstr(iso_time, 0, 19);
+   StringReplace(value, "-", ".");
+   StringReplace(value, "T", " ");
+   return StringToTime(value);
+}
+
+datetime PriceReporter_ServerCheckpoint(const string checkpoints_json, const string timeframe)
+{
+   if(checkpoints_json == "") return 0;
+   string raw = EASync_JsonGetRaw(checkpoints_json, 0, StringLen(checkpoints_json), timeframe);
+   return PriceReporter_IsoToTime(raw);
+}
 
 ENUM_TIMEFRAMES PriceReporter_TimeframeEnum(const string timeframe)
 {
@@ -2960,6 +2981,7 @@ int PriceReporter_ParseBoundSymbols(const string json, PriceReporterBoundSymbol 
             string broker    = EASync_JsonGetRaw(json, obj_start, obj_end, "broker_symbol");
             string timeframes = EASync_JsonGetRaw(json, obj_start, obj_end, "report_timeframes");
             string priority_timeframes = EASync_JsonGetRaw(json, obj_start, obj_end, "priority_timeframes");
+            string feed_checkpoints = EASync_JsonGetRaw(json, obj_start, obj_end, "feed_checkpoints");
             if(canonical != "" && broker != "")
             {
                ArrayResize(out_symbols, count + 1);
@@ -2968,6 +2990,7 @@ int PriceReporter_ParseBoundSymbols(const string json, PriceReporterBoundSymbol 
                // Older ea-sync deployments omit this field; preserve M5.
                out_symbols[count].report_timeframes = (timeframes == "") ? "[\"M5\"]" : timeframes;
                out_symbols[count].priority_timeframes = (priority_timeframes == "") ? "[]" : priority_timeframes;
+               out_symbols[count].feed_checkpoints = (feed_checkpoints == "") ? "{}" : feed_checkpoints;
                count++;
             }
             obj_start = -1;
@@ -3018,6 +3041,7 @@ void PriceReporter_Run()
    // starve series later in the broker's symbol list.
    string candidate_brokers[];
    string candidate_timeframes[];
+   string candidate_checkpoints[];
    int priority_count = 0;
    for(int pass = 0; pass < 2; pass++)
    {
@@ -3034,8 +3058,10 @@ void PriceReporter_Run()
             int candidate_index = ArraySize(candidate_brokers);
             ArrayResize(candidate_brokers, candidate_index + 1);
             ArrayResize(candidate_timeframes, candidate_index + 1);
+            ArrayResize(candidate_checkpoints, candidate_index + 1);
             candidate_brokers[candidate_index] = bound[i].broker_symbol;
             candidate_timeframes[candidate_index] = timeframe;
+            candidate_checkpoints[candidate_index] = bound[i].feed_checkpoints;
             if(pass == 0) priority_count++;
          }
       }
@@ -3067,6 +3093,17 @@ void PriceReporter_Run()
 
       string series_key = broker_symbol + "|" + timeframe;
       datetime last_sent = PriceReporter_LastSent(series_key);
+      datetime server_checkpoint = PriceReporter_ServerCheckpoint(
+         candidate_checkpoints[candidate_index], timeframe
+      );
+      // Supabase remembers accepted progress across terminal/VPS restarts.
+      // The checkpoint only ever moves forward, so a delayed ea-sync response
+      // cannot roll back a newer in-process cursor.
+      if(server_checkpoint > last_sent)
+      {
+         PriceReporter_MarkSent(series_key, server_checkpoint);
+         last_sent = server_checkpoint;
+      }
       bool is_backfill = (last_sent == 0);
       if(is_backfill && backfill_series >= PR_MAX_BACKFILL_SERIES_PER_RUN)
          continue;

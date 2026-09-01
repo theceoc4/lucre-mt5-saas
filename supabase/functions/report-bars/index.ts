@@ -1,4 +1,4 @@
-// v1.0.30 — report-bars
+// v1.0.34 — report-bars
 //
 // The MT5 EA posts newly closed bars for selected symbol/timeframe series.
 // This function reverse-resolves each broker-native spelling to the terminal's
@@ -10,7 +10,7 @@
 // setting lives outside this source file.
 //
 // Request:  { symbols: [{ broker_symbol, timeframe, source_digits, bars: [...] }] }
-// Response: { upserted, warnings }
+// Response: { accepted, series: [{ broker_symbol, timeframe, accepted_through }], warnings }
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { authenticateTerminal } from "./_shared/auth.ts";
@@ -337,6 +337,51 @@ Deno.serve(async (req: Request) => {
 
   if (upsertError) return jsonResponse({ error: "upsert_failed", detail: upsertError.message }, 500);
 
+  const brokerByCanonical = new Map<string, string>();
+  for (const [brokerSymbol, canonicalSymbol] of canonicalByBroker.entries()) {
+    if (!brokerByCanonical.has(canonicalSymbol)) brokerByCanonical.set(canonicalSymbol, brokerSymbol);
+  }
+  const acceptedByKey = new Map<string, {
+    symbol: string;
+    broker_symbol: string;
+    timeframe: string;
+    accepted_through: string;
+    bar_count: number;
+  }>();
+  for (const row of rows) {
+    const key = `${row.symbol}:${row.timeframe}`;
+    const accepted = acceptedByKey.get(key);
+    if (accepted) {
+      accepted.bar_count++;
+      if (row.bar_time > accepted.accepted_through) accepted.accepted_through = row.bar_time;
+    } else {
+      acceptedByKey.set(key, {
+        symbol: row.symbol,
+        broker_symbol: brokerByCanonical.get(row.symbol) ?? row.symbol,
+        timeframe: row.timeframe,
+        accepted_through: row.bar_time,
+        bar_count: 1,
+      });
+    }
+  }
+  const acceptedSeries = [...acceptedByKey.values()];
+
+  // Supabase's accepted checkpoint is the durable source of truth. The next
+  // ea-sync response gives it back to the EA, so a terminal/VPS restart does
+  // not turn every warm series into a blind 1,000-candle replay.
+  const { error: checkpointError } = await admin.rpc("record_price_feed_batches", {
+    p_terminal_id: terminal.id,
+    p_batches: acceptedSeries.map((series) => ({
+      symbol: series.symbol,
+      timeframe: series.timeframe,
+      latest_bar_time: series.accepted_through,
+      bar_count: series.bar_count,
+    })),
+  });
+  if (checkpointError) {
+    return jsonResponse({ error: "checkpoint_update_failed", detail: checkpointError.message }, 500);
+  }
+
   // Reuse this authenticated minute-level ingestion request instead of adding
   // a cron sweep or browser poll. Only affected series are recalculated, then
   // one compact current-state row is upserted per affected symbol.
@@ -345,5 +390,15 @@ Deno.serve(async (req: Request) => {
       if (result.warnings.length) console.warn("Trend update warnings", result.warnings);
     }).catch((error) => console.error("Trend update failed", error)),
   );
-  return jsonResponse({ upserted: rows.length, trend_update_scheduled: true, warnings });
+  return jsonResponse({
+    accepted: rows.length,
+    // Keep the old field during the EA rollout; it historically meant rows
+    // accepted for insertion, not necessarily newly-created database rows.
+    upserted: rows.length,
+    series: acceptedSeries.map(({ broker_symbol, timeframe, accepted_through, bar_count }) => ({
+      broker_symbol, timeframe, accepted_through, bar_count,
+    })),
+    trend_update_scheduled: true,
+    warnings,
+  });
 });

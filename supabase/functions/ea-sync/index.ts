@@ -1,4 +1,4 @@
-// v1.0.33 — active-strategy candle-feed priority metadata.
+// v1.0.34 — durable candle-feed checkpoints and strategy freshness lanes.
 // v1.0.2 — ea-sync
 //
 // The MQL5 EA polls this every 1-2s. It is the ONLY function EAs talk to and the
@@ -797,6 +797,19 @@ Deno.serve(async (req: Request) => {
     (symbolSettings ?? []).map((setting) => [setting.symbol, setting]),
   );
 
+  const { data: feedStates, error: feedStatesError } = await admin
+    .from("price_feed_series_state")
+    .select("symbol,timeframe,latest_bar_time")
+    .eq("terminal_id", terminal.id);
+  if (feedStatesError) {
+    return jsonResponse({ error: "price_feed_state_fetch_failed", detail: feedStatesError.message }, 500);
+  }
+  const feedStatesBySymbol = new Map<string, Record<string, string>>();
+  for (const state of feedStates ?? []) {
+    if (!feedStatesBySymbol.has(state.symbol)) feedStatesBySymbol.set(state.symbol, {});
+    feedStatesBySymbol.get(state.symbol)![state.timeframe] = state.latest_bar_time;
+  }
+
   // Active strategy inputs must win over general dashboard/trend collection.
   // The mapping array is sorted for older EAs, while priority_timeframes lets
   // v1.0.30+ explicitly run those series before its round-robin background
@@ -804,7 +817,7 @@ Deno.serve(async (req: Request) => {
   // strategy's exact symbol/timeframe feed.
   const { data: enabledStrategies, error: enabledStrategiesError } = await admin
     .from("strategies")
-    .select("symbols,timeframe,run_mode,delivery_mode")
+    .select("symbols,timeframe,bias_timeframe,rule_definition,kind,run_mode,delivery_mode")
     .eq("terminal_id", terminal.id)
     .eq("enabled", true);
   if (enabledStrategiesError) {
@@ -814,12 +827,23 @@ Deno.serve(async (req: Request) => {
   const priorityRankBySymbol = new Map<string, number>();
   for (const strategy of enabledStrategies ?? []) {
     if (!supportedTimeframes.includes(strategy.timeframe) || !Array.isArray(strategy.symbols)) continue;
+    const requiredTimeframes = new Set<string>([strategy.timeframe]);
+    if (supportedTimeframes.includes(strategy.bias_timeframe)) requiredTimeframes.add(strategy.bias_timeframe);
+    if (strategy.kind === "multi_timeframe_trend_pullback" && !strategy.bias_timeframe) requiredTimeframes.add("H4");
+    if (strategy.rule_definition?.version === 1) {
+      for (const condition of [
+        ...(strategy.rule_definition.long ?? []),
+        ...(strategy.rule_definition.short ?? []),
+      ]) {
+        if (supportedTimeframes.includes(condition?.timeframe)) requiredTimeframes.add(condition.timeframe);
+      }
+    }
     const rank = strategy.run_mode === "live" && strategy.delivery_mode === "auto" ? 0
       : strategy.run_mode === "live" ? 1 : 2;
     for (const symbol of strategy.symbols) {
       if (typeof symbol !== "string" || symbol.length === 0) continue;
       if (!priorityTimeframesBySymbol.has(symbol)) priorityTimeframesBySymbol.set(symbol, new Set());
-      priorityTimeframesBySymbol.get(symbol)!.add(strategy.timeframe);
+      for (const timeframe of requiredTimeframes) priorityTimeframesBySymbol.get(symbol)!.add(timeframe);
       priorityRankBySymbol.set(symbol, Math.min(rank, priorityRankBySymbol.get(symbol) ?? 99));
     }
   }
@@ -853,6 +877,13 @@ Deno.serve(async (req: Request) => {
         return supportedTimeframes;
       })(),
       priority_timeframes: [...(priorityTimeframesBySymbol.get(m.canonical_symbol) ?? [])],
+      // The server is authoritative for accepted candle progress. New EAs
+      // initialize their volatile local cursor from this object after every
+      // restart instead of blindly replaying 1,000 bars for every series.
+      feed_checkpoints: Object.fromEntries(
+        Object.entries(feedStatesBySymbol.get(m.canonical_symbol) ?? {})
+          .map(([timeframe, latestBarTime]) => [timeframe, latestBarTime]),
+      ),
     })),
     force_symbol_rescan: terminal.force_symbol_rescan ?? false,
   });
