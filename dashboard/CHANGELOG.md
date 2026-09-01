@@ -7,6 +7,18 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.33 — Strategy feed health and evaluation visibility (2026-09-01)
+
+- Strategy cards now show the latest evaluation outcome instead of leaving a
+  quiet auto strategy ambiguous. The status distinguishes no setup, session,
+  direction, spread, cooldown, risk/policy, stale-candle, EA-version, broker
+  mapping, and order-queue outcomes.
+- The Strategy Status tab adds the same summary plus the latest reason for
+  each configured pair, updated through the existing terminal-scoped Realtime
+  channel.
+- Health is a compact rolling state per strategy/pair, not an unbounded event
+  log. Unchanged states write at most once per five minutes.
+
 ## v1.0.31 — Progressive indicator strategy builder (2026-08-31)
 
 - Replaced the template-heavy strategy form with a progressive builder that

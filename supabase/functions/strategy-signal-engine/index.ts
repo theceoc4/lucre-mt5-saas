@@ -1,3 +1,4 @@
+// v1.0.33 — stale-candle safety and compact per-pair evaluation health.
 // v1.0.31 — progressive indicator stacks with bounded AND/OR evaluation.
 // v1.0.30 — strategy-signal-engine
 //
@@ -22,6 +23,14 @@ type Side = "buy" | "sell";
 type Session = "asia" | "london" | "ny" | "overlap";
 type Regime = "trending" | "ranging";
 type PolicyDecision = "ok" | "downweight" | "block";
+type EvaluationStatus = "session_blocked" | "symbol_disabled" | "missing_bars" | "stale_candles" |
+  "no_setup" | "direction_blocked" | "spread_blocked" | "cooldown_blocked" | "duplicate_bar" |
+  "shadow_signal" | "manual_signal" | "ea_version_blocked" | "policy_blocked" | "risk_blocked" |
+  "broker_mapping_failed" | "command_failed" | "command_queued";
+
+const TIMEFRAME_SECONDS: Record<string, number> = {
+  M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400, D1: 86400, W1: 604800,
+};
 
 type PriceBar = {
   bar_time: string;
@@ -1097,20 +1106,48 @@ Deno.serve(async (req: Request) => {
     let processed = 0;
     let signalsGenerated = 0;
     let commandsQueued = 0;
+    const evaluationStates = new Map<string, Record<string, unknown>>();
+    const recordEvaluation = (
+      strategy: StrategyRow,
+      symbol: string,
+      status: EvaluationStatus,
+      sourceBarTime: string | null = null,
+      candleAgeSeconds: number | null = null,
+      detail: Record<string, unknown> = {},
+    ) => evaluationStates.set(`${strategy.id}:${symbol}`, {
+      strategy_id: strategy.id,
+      terminal_id: strategy.terminal_id,
+      symbol,
+      timeframe: strategy.timeframe,
+      status,
+      source_bar_time: sourceBarTime,
+      candle_age_seconds: candleAgeSeconds == null ? null : Math.max(0, Math.round(candleAgeSeconds)),
+      detail,
+    });
 
     for (const rawStrategy of activeStrategies) {
       const strategy = rawStrategy as StrategyRow;
       if (!Array.isArray(strategy.symbols)) continue;
       if (!supportedTimeframes.has(strategy.timeframe)) continue;
       if (strategy.kind === "news_continuation" && !calendarFresh) continue;
-      if (Array.isArray(strategy.allowed_sessions) && !strategy.allowed_sessions.includes(session)) continue;
+      if (Array.isArray(strategy.allowed_sessions) && !strategy.allowed_sessions.includes(session)) {
+        for (const symbol of strategy.symbols) {
+          if (typeof symbol === "string" && symbol.length > 0) {
+            recordEvaluation(strategy, symbol, "session_blocked", null, null, { current_session: session });
+          }
+        }
+        continue;
+      }
       const timeframe = strategy.timeframe;
 
       for (const symbol of strategy.symbols) {
         if (typeof symbol !== "string" || symbol.length === 0) continue;
 
         const symbolSetting = settingsByTerminalSymbol.get(`${strategy.terminal_id}:${symbol}`);
-        if (symbolSetting && !symbolSetting.enabled) continue;
+        if (symbolSetting && !symbolSetting.enabled) {
+          recordEvaluation(strategy, symbol, "symbol_disabled");
+          continue;
+        }
 
         const requiredTimeframes = new Set<string>([timeframe]);
         if (strategy.bias_timeframe) requiredTimeframes.add(strategy.bias_timeframe);
@@ -1132,6 +1169,11 @@ Deno.serve(async (req: Request) => {
             .order("bar_time", { ascending: false }).limit(barLimit);
           if (barsError || !descendingBars || descendingBars.length < 60) {
             if (barsError) console.error(`strategy-signal-engine: price_bars fetch failed for ${strategy.id}/${symbol}/${requiredTimeframe}: ${barsError.message}`);
+            recordEvaluation(strategy, symbol, "missing_bars", null, null, {
+              required_timeframe: requiredTimeframe,
+              available_bars: descendingBars?.length ?? 0,
+              error: barsError?.message ?? null,
+            });
             missingBars = true; break;
           }
           barsByTimeframe.set(requiredTimeframe, [...descendingBars].reverse().map((bar) => ({
@@ -1143,6 +1185,16 @@ Deno.serve(async (req: Request) => {
         const bars = barsByTimeframe.get(timeframe) ?? [];
         if (bars.length < 60) continue;
 
+        const sourceBarTime = bars[bars.length - 1].bar_time;
+        const candleAgeSeconds = Math.max(0, (now.getTime() - new Date(sourceBarTime).getTime()) / 1000);
+        const staleAfterSeconds = Math.max(180, (TIMEFRAME_SECONDS[timeframe] ?? 60) * 2.5);
+        if (candleAgeSeconds > staleAfterSeconds) {
+          recordEvaluation(strategy, symbol, "stale_candles", sourceBarTime, candleAgeSeconds, {
+            stale_after_seconds: staleAfterSeconds,
+          });
+          continue;
+        }
+
         const adx = computeADX(bars, 14);
         const latestAdx = adx[adx.length - 1];
         if (!finite(latestAdx)) continue;
@@ -1153,23 +1205,40 @@ Deno.serve(async (req: Request) => {
 
         const news = await newsContextForStrategy(admin, strategy, symbol, now);
         const candidate = evaluateStrategy(strategy, barsByTimeframe, news);
-        if (!candidate) continue;
-        if (news.has_direction && news.minutes_to_event != null && news.minutes_to_event <= 0 && news.implied_side !== candidate.side) continue;
-        if (strategy.direction_mode === "long_only" && candidate.side === "sell") continue;
-        if (strategy.direction_mode === "short_only" && candidate.side === "buy") continue;
+        if (!candidate) {
+          recordEvaluation(strategy, symbol, "no_setup", sourceBarTime, candleAgeSeconds);
+          continue;
+        }
+        if (news.has_direction && news.minutes_to_event != null && news.minutes_to_event <= 0 && news.implied_side !== candidate.side) {
+          recordEvaluation(strategy, symbol, "policy_blocked", sourceBarTime, candleAgeSeconds, { reason: "opposes_released_news" });
+          continue;
+        }
+        if (strategy.direction_mode === "long_only" && candidate.side === "sell") {
+          recordEvaluation(strategy, symbol, "direction_blocked", sourceBarTime, candleAgeSeconds, { candidate_side: candidate.side });
+          continue;
+        }
+        if (strategy.direction_mode === "short_only" && candidate.side === "buy") {
+          recordEvaluation(strategy, symbol, "direction_blocked", sourceBarTime, candleAgeSeconds, { candidate_side: candidate.side });
+          continue;
+        }
         const latestSpread = Number(bars[bars.length - 1].spread);
-        if (strategy.max_spread_points != null && Number.isFinite(latestSpread) && latestSpread > numberValue(strategy.max_spread_points, Number.POSITIVE_INFINITY)) continue;
+        if (strategy.max_spread_points != null && Number.isFinite(latestSpread) && latestSpread > numberValue(strategy.max_spread_points, Number.POSITIVE_INFINITY)) {
+          recordEvaluation(strategy, symbol, "spread_blocked", sourceBarTime, candleAgeSeconds, { spread_points: latestSpread, maximum: strategy.max_spread_points });
+          continue;
+        }
 
         const cooldownMinutes = Math.max(0, Math.floor(numberValue(strategy.cooldown_minutes, 0)));
         if (cooldownMinutes > 0) {
           const { count: cooldownSignals } = await admin.from("signals").select("id", { count: "exact", head: true })
             .eq("strategy_id", strategy.id).eq("symbol", symbol)
             .gte("generated_at", new Date(now.getTime() - cooldownMinutes * 60_000).toISOString());
-          if ((cooldownSignals ?? 0) > 0) continue;
+          if ((cooldownSignals ?? 0) > 0) {
+            recordEvaluation(strategy, symbol, "cooldown_blocked", sourceBarTime, candleAgeSeconds, { cooldown_minutes: cooldownMinutes });
+            continue;
+          }
         }
 
         const ttlSeconds = Math.max(1, Math.floor(numberValue(strategy.signal_ttl_seconds, 60)));
-        const sourceBarTime = bars[bars.length - 1].bar_time;
         const { data: recentSignal, error: recentSignalError } = await admin
           .from("signals")
           .select("id")
@@ -1184,7 +1253,10 @@ Deno.serve(async (req: Request) => {
           console.error(`strategy-signal-engine: idempotency lookup failed for ${strategy.id}/${symbol}: ${recentSignalError.message}`);
           continue;
         }
-        if (recentSignal) continue;
+        if (recentSignal) {
+          recordEvaluation(strategy, symbol, "duplicate_bar", sourceBarTime, candleAgeSeconds);
+          continue;
+        }
 
         if (strategy.run_mode === "shadow") {
           const shadowBars = Math.max(5, Math.min(500, Math.floor(positiveConfig(strategy.config, "shadow_horizon_bars", 50))));
@@ -1204,6 +1276,9 @@ Deno.serve(async (req: Request) => {
           });
           if (shadowError && shadowError.code !== "23505") {
             console.error(`strategy-signal-engine: shadow insert failed for ${strategy.id}/${symbol}: ${shadowError.message}`);
+            recordEvaluation(strategy, symbol, "command_failed", sourceBarTime, candleAgeSeconds, { stage: "shadow_insert", error: shadowError.message });
+          } else {
+            recordEvaluation(strategy, symbol, "shadow_signal", sourceBarTime, candleAgeSeconds, { candidate_side: candidate.side });
           }
           continue;
         }
@@ -1212,6 +1287,7 @@ Deno.serve(async (req: Request) => {
         const baseRiskPercent = Math.min(5, Math.max(0.01, numberValue(strategy.risk_percent, 0.5)));
         if (baseVolume <= 0) {
           console.error(`strategy-signal-engine: strategy ${strategy.id} has non-positive max_lot_size; signal skipped`);
+          recordEvaluation(strategy, symbol, "risk_blocked", sourceBarTime, candleAgeSeconds, { reason: "non_positive_max_lot_size" });
           continue;
         }
 
@@ -1246,6 +1322,7 @@ Deno.serve(async (req: Request) => {
           .single();
         if (signalError || !signal) {
           console.error(`strategy-signal-engine: signal insert failed for ${strategy.id}/${symbol}: ${signalError?.message ?? "no row returned"}`);
+          recordEvaluation(strategy, symbol, "command_failed", sourceBarTime, candleAgeSeconds, { stage: "signal_insert", error: signalError?.message ?? "no row returned" });
           continue;
         }
         signalsGenerated++;
@@ -1262,14 +1339,19 @@ Deno.serve(async (req: Request) => {
           .single();
         if (deliveryError || !delivery) {
           console.error(`strategy-signal-engine: delivery insert failed for signal ${signal.id}: ${deliveryError?.message ?? "no row returned"}`);
+          recordEvaluation(strategy, symbol, "command_failed", sourceBarTime, candleAgeSeconds, { stage: "delivery_insert", error: deliveryError?.message ?? "no row returned" });
           continue;
         }
 
-        if (strategy.delivery_mode === "manual_confirm") continue;
+        if (strategy.delivery_mode === "manual_confirm") {
+          recordEvaluation(strategy, symbol, "manual_signal", sourceBarTime, candleAgeSeconds, { signal_id: signal.id, candidate_side: candidate.side });
+          continue;
+        }
 
         if (!versionAtLeast(eaVersionByTerminal.get(strategy.terminal_id), "1.0.29")) {
           await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
           console.warn(`strategy-signal-engine: terminal ${strategy.terminal_id} requires EA v1.0.29 for risk-sized auto execution`);
+          recordEvaluation(strategy, symbol, "ea_version_blocked", sourceBarTime, candleAgeSeconds, { required_version: "1.0.29", installed_version: eaVersionByTerminal.get(strategy.terminal_id) ?? null });
           continue;
         }
 
@@ -1278,6 +1360,7 @@ Deno.serve(async (req: Request) => {
           await admin.from("signals").update({ policy_decision: "block" }).eq("id", signal.id);
           await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
           console.error(`strategy-signal-engine: policy lookup failed for ${strategy.id}/${symbol}: ${policy.error}`);
+          recordEvaluation(strategy, symbol, "policy_blocked", sourceBarTime, candleAgeSeconds, { reason: "policy_lookup_failed", error: policy.error });
           continue;
         }
 
@@ -1290,6 +1373,7 @@ Deno.serve(async (req: Request) => {
 
         if (finalDecision === "block") {
           await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
+          recordEvaluation(strategy, symbol, "policy_blocked", sourceBarTime, candleAgeSeconds, { reason: "adaptive_or_news_policy" });
           continue;
         }
 
@@ -1304,6 +1388,7 @@ Deno.serve(async (req: Request) => {
         if (!Number.isFinite(effectiveRiskPercent) || effectiveRiskPercent <= 0) {
           await admin.from("signals").update({ policy_decision: "block" }).eq("id", signal.id);
           await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
+          recordEvaluation(strategy, symbol, "risk_blocked", sourceBarTime, candleAgeSeconds, { reason: "non_positive_effective_risk" });
           continue;
         }
 
@@ -1317,6 +1402,7 @@ Deno.serve(async (req: Request) => {
           await admin.from("signals").update({ policy_decision: "block" }).eq("id", signal.id);
           await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
           if (riskGateError) console.error(`strategy-signal-engine: portfolio risk gate failed: ${riskGateError.message}`);
+          recordEvaluation(strategy, symbol, "risk_blocked", sourceBarTime, candleAgeSeconds, { reason: "portfolio_risk_gate", error: riskGateError?.message ?? null });
           continue;
         }
 
@@ -1328,6 +1414,7 @@ Deno.serve(async (req: Request) => {
         if (resolution.error || !resolution.brokerSymbol) {
           await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
           console.error(`strategy-signal-engine: broker symbol resolution failed for ${strategy.id}/${symbol}: ${resolution.error ?? "empty broker symbol"}`);
+          recordEvaluation(strategy, symbol, "broker_mapping_failed", sourceBarTime, candleAgeSeconds, { error: resolution.error ?? "empty broker symbol" });
           continue;
         }
 
@@ -1402,8 +1489,10 @@ Deno.serve(async (req: Request) => {
             .from("signal_deliveries")
             .update({ status: "auto_executed", acted_at: nowIso, ea_command_id: firstCommandId })
             .eq("id", delivery.id);
+          recordEvaluation(strategy, symbol, "command_queued", sourceBarTime, candleAgeSeconds, { signal_id: signal.id, candidate_side: candidate.side, command_count: insertedLegs });
         } else {
           await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
+          recordEvaluation(strategy, symbol, "command_failed", sourceBarTime, candleAgeSeconds, { stage: "command_insert", error: insertFailure ?? "no_position_capacity" });
         }
         if (insertFailure) {
           console.error(`strategy-signal-engine: command insert failed for signal ${signal.id} after ${insertedLegs} legs: ${insertFailure}`);
@@ -1417,7 +1506,20 @@ Deno.serve(async (req: Request) => {
       eaVersionByTerminal,
       nowIso,
     );
-    return jsonResponse({ processed, signals_generated: signalsGenerated, commands_queued: commandsQueued });
+    let evaluationStatesWritten = 0;
+    if (evaluationStates.size > 0) {
+      const { data, error } = await admin.rpc("record_strategy_evaluation_states", {
+        p_rows: [...evaluationStates.values()],
+      });
+      if (error) console.error("strategy-signal-engine: evaluation health write failed", error.message);
+      else evaluationStatesWritten = Number(data) || 0;
+    }
+    return jsonResponse({
+      processed,
+      signals_generated: signalsGenerated,
+      commands_queued: commandsQueued,
+      evaluation_states_written: evaluationStatesWritten,
+    });
   } catch (error) {
     console.error("strategy-signal-engine: unhandled error", error);
     return jsonResponse({ error: "internal_error", detail: error instanceof Error ? error.message : String(error) }, 500);

@@ -1530,6 +1530,23 @@ function startRealtime(terminalId) {
         handleCommandStatus(payload.new);
       }
     )
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'strategy_evaluation_state', filter: `terminal_id=eq.${terminalId}` },
+      (payload) => {
+        const row = payload.new;
+        if (!row?.strategy_id || state.activeTerminalId !== terminalId) return;
+        const strategy = state.strategies.find((item) => item.id === row.strategy_id);
+        if (!strategy) return;
+        const rows = strategy.evaluation_states || [];
+        const index = rows.findIndex((item) => item.symbol === row.symbol);
+        if (index >= 0) rows[index] = row;
+        else rows.push(row);
+        strategy.evaluation_states = rows;
+        renderStrategies();
+        renderStrategyStatusTab();
+      }
+    )
     // v1.0.17 -- trade_history was never in the supabase_realtime publication
     // (fixed in migration 037), so R:R/Win Ratio/P&L on the Performance,
     // Strategy, and Sessions tabs only ever reflected the snapshot fetched at
@@ -1797,17 +1814,61 @@ async function loadStrategies() {
     return;
   }
   state.strategies = data || [];
-  const [{ data: shadowRows }, { data: backtestRows }] = await Promise.all([
+  const [{ data: shadowRows }, { data: backtestRows }, { data: evaluationRows, error: evaluationError }] = await Promise.all([
     supabase.from('strategy_shadow_signals').select('strategy_id,status,result_r').eq('terminal_id', state.activeTerminalId).limit(5000),
     supabase.from('strategy_backtest_runs').select('strategy_id,status,trade_count,expectancy_r,validation_expectancy_r,completed_at').eq('terminal_id', state.activeTerminalId).eq('status', 'completed').order('completed_at', { ascending: false }).limit(500),
+    supabase.from('strategy_evaluation_state').select('strategy_id,symbol,timeframe,status,source_bar_time,candle_age_seconds,detail,last_checked_at').eq('terminal_id', state.activeTerminalId),
   ]);
+  if (evaluationError) console.error('strategy evaluation health load failed', evaluationError);
   state.strategies.forEach((strategy) => {
     const resolved = (shadowRows || []).filter((row) => row.strategy_id === strategy.id && row.status !== 'pending');
     strategy.shadow_summary = { resolved: resolved.length, expectancy_r: resolved.length ? resolved.reduce((sum, row) => sum + Number(row.result_r || 0), 0) / resolved.length : null };
     strategy.latest_backtest = (backtestRows || []).find((row) => row.strategy_id === strategy.id) || null;
+    strategy.evaluation_states = (evaluationRows || []).filter((row) => row.strategy_id === strategy.id);
   });
   renderStrategies();
   renderStrategyStatusTab();
+}
+
+const STRATEGY_HEALTH_LABELS = {
+  session_blocked: 'Outside selected session',
+  symbol_disabled: 'Pair hidden in Settings',
+  missing_bars: 'Waiting for candle history',
+  stale_candles: 'Candle feed is stale',
+  no_setup: 'No setup on latest candle',
+  direction_blocked: 'Direction filter blocked setup',
+  spread_blocked: 'Spread above limit',
+  cooldown_blocked: 'Cooldown active',
+  duplicate_bar: 'Latest candle already handled',
+  shadow_signal: 'Shadow signal recorded',
+  manual_signal: 'Signal waiting for confirmation',
+  ea_version_blocked: 'EA update required',
+  policy_blocked: 'Policy blocked setup',
+  risk_blocked: 'Risk guardrail blocked setup',
+  broker_mapping_failed: 'Broker mapping unavailable',
+  command_failed: 'Order queue failed',
+  command_queued: 'Automatic order queued',
+};
+
+function strategyHealthSummary(strategy) {
+  if (!strategy.enabled) return { label: 'Disabled', tone: 'neutral', checked: null };
+  const rows = strategy.evaluation_states || [];
+  if (rows.length === 0) return { label: 'Waiting for first engine evaluation', tone: 'warn', checked: null };
+  const priority = ['command_failed', 'ea_version_blocked', 'broker_mapping_failed', 'stale_candles', 'missing_bars', 'risk_blocked', 'policy_blocked', 'spread_blocked', 'session_blocked', 'cooldown_blocked', 'direction_blocked', 'no_setup', 'duplicate_bar', 'manual_signal', 'shadow_signal', 'command_queued'];
+  const status = priority.find((candidate) => rows.some((row) => row.status === candidate)) || rows[0].status;
+  const count = rows.filter((row) => row.status === status).length;
+  const checked = rows.reduce((latest, row) => !latest || new Date(row.last_checked_at) > new Date(latest) ? row.last_checked_at : latest, null);
+  const tone = ['command_failed', 'ea_version_blocked', 'broker_mapping_failed', 'stale_candles', 'missing_bars'].includes(status)
+    ? 'danger' : ['command_queued', 'manual_signal', 'shadow_signal'].includes(status) ? 'ok' : 'neutral';
+  return { label: `${STRATEGY_HEALTH_LABELS[status] || status}${count > 1 ? ` · ${count} pairs` : ''}`, tone, checked };
+}
+
+function strategyHealthAge(checked) {
+  if (!checked) return '';
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(checked).getTime()) / 1000));
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  return `${Math.floor(seconds / 3600)}h ago`;
 }
 
 function renderStrategies() {
@@ -1824,12 +1885,14 @@ function renderStrategies() {
       const modeTag = s.run_mode === 'shadow'
         ? '<span class="tag-badge tag-warn">Shadow</span>'
         : `<span class="tag-badge tag-ok">${executionLabel}</span>`;
+      const health = strategyHealthSummary(s);
       return `
       <div class="mini-table-row" data-strategy-id="${s.id}">
         <span class="avatar-badge" aria-hidden="true">${initials(s.name)}</span>
         <div class="mini-table-meta">
           <div class="strategy-name">${s.name}${modeTag}</div>
           <div class="strategy-sub">${symbolLabel}${s.run_mode === 'shadow' ? ` · ${s.shadow_summary?.resolved || 0}/${s.min_shadow_signals || 20} resolved shadow signals` : ''}</div>
+          <div class="strategy-health strategy-health-${health.tone}"><span class="strategy-health-dot"></span>${health.label}${health.checked ? ` · checked ${strategyHealthAge(health.checked)}` : ''}</div>
         </div>
         <div class="mini-table-stats">
           <label class="strategy-toggle">
@@ -3446,6 +3509,10 @@ function renderStrategyStatusTab() {
       const isExploit = posture === 'exploit';
       const postureTagClass = NEWS_POSTURE_TAG_CLASS[posture] || 'tag-neutral';
       const postureLabel = NEWS_POSTURE_LABEL[posture] || posture;
+      const health = strategyHealthSummary(s);
+      const pairHealth = (s.evaluation_states || [])
+        .map((row) => `<span class="strategy-pair-health"><strong>${row.symbol}</strong> · ${STRATEGY_HEALTH_LABELS[row.status] || row.status}</span>`)
+        .join('');
       return `
         <div class="mini-table-row">
           <div class="mini-table-meta">
@@ -3453,6 +3520,8 @@ function renderStrategyStatusTab() {
             <div class="strategy-sub">${symbolLabel} · ${
         deliveryLabels[s.delivery_mode] || s.delivery_mode || '—'
       } · ${s.risk_percent ?? '—'}% risk · max ${s.max_lot_size ?? '—'} lots · TTL ${s.signal_ttl_seconds ?? '—'}s</div>
+            <div class="strategy-health strategy-health-${health.tone}"><span class="strategy-health-dot"></span>${health.label}${health.checked ? ` · checked ${strategyHealthAge(health.checked)}` : ''}</div>
+            ${pairHealth ? `<div class="strategy-pair-health-list">${pairHealth}</div>` : ''}
           </div>
         </div>
         <div class="news-policy-panel" data-strategy-id="${s.id}">

@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.30 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.31 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.30"
+#property version   "1.31"
 #property strict
 
 
@@ -1233,7 +1233,7 @@ string EASync_BuildRequestBody()
       "\"account_login\":\"" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) + "\","
       "\"server\":\"" + EASync_JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\","
       "\"is_live\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL ? "true" : "false") + ","
-      "\"ea_version\":\"1.0.29\""
+      "\"ea_version\":\"1.0.31\""
       + "}";
 
    string positions_json = "\"positions\":[";
@@ -2863,6 +2863,8 @@ datetime g_pr_last_report = 0;
 #define PR_MAX_BARS_PER_REQUEST 2200
 string   g_pr_series_keys[];
 datetime g_pr_series_last_sent[];
+int      g_pr_priority_cursor = 0;
+int      g_pr_background_cursor = 0;
 
 //+------------------------------------------------------------------+
 //| Finds the session checkpoint for one broker-symbol/timeframe.      |
@@ -2903,6 +2905,7 @@ struct PriceReporterBoundSymbol
    string canonical_symbol;
    string broker_symbol;
    string report_timeframes;
+   string priority_timeframes;
 };
 
 ENUM_TIMEFRAMES PriceReporter_TimeframeEnum(const string timeframe)
@@ -2956,6 +2959,7 @@ int PriceReporter_ParseBoundSymbols(const string json, PriceReporterBoundSymbol 
             string canonical = EASync_JsonGetRaw(json, obj_start, obj_end, "canonical_symbol");
             string broker    = EASync_JsonGetRaw(json, obj_start, obj_end, "broker_symbol");
             string timeframes = EASync_JsonGetRaw(json, obj_start, obj_end, "report_timeframes");
+            string priority_timeframes = EASync_JsonGetRaw(json, obj_start, obj_end, "priority_timeframes");
             if(canonical != "" && broker != "")
             {
                ArrayResize(out_symbols, count + 1);
@@ -2963,6 +2967,7 @@ int PriceReporter_ParseBoundSymbols(const string json, PriceReporterBoundSymbol 
                out_symbols[count].broker_symbol = broker;
                // Older ea-sync deployments omit this field; preserve M5.
                out_symbols[count].report_timeframes = (timeframes == "") ? "[\"M5\"]" : timeframes;
+               out_symbols[count].priority_timeframes = (priority_timeframes == "") ? "[]" : priority_timeframes;
                count++;
             }
             obj_start = -1;
@@ -3007,9 +3012,47 @@ void PriceReporter_Run()
    datetime pending_times[];
    string timeframe_names[] = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"};
 
-   for(int i = 0; i < bound_count; i++)
+   // Build one ordered work queue: active-strategy series first, then every
+   // other visible symbol/timeframe. Independent cursors rotate both groups so
+   // a slow history download or bounded recovery batch cannot permanently
+   // starve series later in the broker's symbol list.
+   string candidate_brokers[];
+   string candidate_timeframes[];
+   int priority_count = 0;
+   for(int pass = 0; pass < 2; pass++)
    {
-      string broker_symbol = bound[i].broker_symbol;
+      for(int i = 0; i < bound_count; i++)
+      {
+         for(int tf_index = 0; tf_index < ArraySize(timeframe_names); tf_index++)
+         {
+            string timeframe = timeframe_names[tf_index];
+            if(StringFind(bound[i].report_timeframes, "\"" + timeframe + "\"") < 0)
+               continue;
+            bool is_priority = StringFind(bound[i].priority_timeframes, "\"" + timeframe + "\"") >= 0;
+            if((pass == 0 && !is_priority) || (pass == 1 && is_priority))
+               continue;
+            int candidate_index = ArraySize(candidate_brokers);
+            ArrayResize(candidate_brokers, candidate_index + 1);
+            ArrayResize(candidate_timeframes, candidate_index + 1);
+            candidate_brokers[candidate_index] = bound[i].broker_symbol;
+            candidate_timeframes[candidate_index] = timeframe;
+            if(pass == 0) priority_count++;
+         }
+      }
+   }
+
+   int candidate_count = ArraySize(candidate_brokers);
+   int background_count = candidate_count - priority_count;
+   for(int work_index = 0; work_index < candidate_count; work_index++)
+   {
+      int candidate_index;
+      if(work_index < priority_count)
+         candidate_index = (g_pr_priority_cursor + work_index) % priority_count;
+      else
+         candidate_index = priority_count + ((g_pr_background_cursor + work_index - priority_count) % background_count);
+
+      string broker_symbol = candidate_brokers[candidate_index];
+      string timeframe = candidate_timeframes[candidate_index];
       if(!SymbolInfoInteger(broker_symbol, SYMBOL_SELECT))
       {
          if(!SymbolSelect(broker_symbol, true))
@@ -3022,87 +3065,77 @@ void PriceReporter_Run()
       int digits = (int)SymbolInfoInteger(broker_symbol, SYMBOL_DIGITS);
       if(digits < 0 || digits > 12) digits = 8;
 
-      for(int tf_index = 0; tf_index < ArraySize(timeframe_names); tf_index++)
+      string series_key = broker_symbol + "|" + timeframe;
+      datetime last_sent = PriceReporter_LastSent(series_key);
+      bool is_backfill = (last_sent == 0);
+      if(is_backfill && backfill_series >= PR_MAX_BACKFILL_SERIES_PER_RUN)
+         continue;
+      ENUM_TIMEFRAMES period = PriceReporter_TimeframeEnum(timeframe);
+      int period_seconds = PeriodSeconds(period);
+      int missing_estimate = (period_seconds > 0 && last_sent > 0)
+         ? (int)((TimeCurrent() - last_sent) / period_seconds) + 2
+         : 1;
+      int bars_requested = is_backfill
+         ? PR_BACKFILL_BARS
+         : MathMin(PR_BACKFILL_BARS, MathMax(1, missing_estimate));
+      bool is_recovery = (!is_backfill && bars_requested > 3);
+      if(is_recovery && recovery_series >= PR_MAX_RECOVERY_SERIES_PER_RUN)
+         continue;
+      int remaining_capacity = PR_MAX_BARS_PER_REQUEST - sent_bars;
+      if(remaining_capacity <= 0)
+         break;
+      bars_requested = MathMin(bars_requested, remaining_capacity);
+      MqlRates rates[];
+      ResetLastError();
+      int copied = CopyRates(broker_symbol, period, 1, bars_requested, rates);
+      if(copied <= 0)
       {
-         string timeframe = timeframe_names[tf_index];
-         if(StringFind(bound[i].report_timeframes, "\"" + timeframe + "\"") < 0)
-            continue;
-
-         string series_key = broker_symbol + "|" + timeframe;
-         datetime last_sent = PriceReporter_LastSent(series_key);
-         bool is_backfill = (last_sent == 0);
-         if(is_backfill && backfill_series >= PR_MAX_BACKFILL_SERIES_PER_RUN)
-            continue; // stagger startup so one request never contains every 1,000-bar series
-         ENUM_TIMEFRAMES period = PriceReporter_TimeframeEnum(timeframe);
-         int period_seconds = PeriodSeconds(period);
-         int missing_estimate = (period_seconds > 0 && last_sent > 0)
-            ? (int)((TimeCurrent() - last_sent) / period_seconds) + 2
-            : 1;
-         int bars_requested = is_backfill
-            ? PR_BACKFILL_BARS
-            : MathMin(PR_BACKFILL_BARS, MathMax(1, missing_estimate));
-         bool is_recovery = (!is_backfill && bars_requested > 3);
-         if(is_recovery && recovery_series >= PR_MAX_RECOVERY_SERIES_PER_RUN)
-            continue;
-         int remaining_capacity = PR_MAX_BARS_PER_REQUEST - sent_bars;
-         if(remaining_capacity <= 0)
-            break;
-         bars_requested = MathMin(bars_requested, remaining_capacity);
-         MqlRates rates[];
-         ResetLastError();
-         int copied = CopyRates(
-            broker_symbol,
-            period,
-            1,
-            bars_requested,
-            rates
-         );
-         if(copied <= 0)
-         {
-            if(copied < 0)
-               PrintFormat("PriceReporter: CopyRates failed for %s %s, error %d", broker_symbol, timeframe, GetLastError());
-            continue;
-         }
-
-         string bars_json = "";
-         int included = 0;
-         datetime newest_time = last_sent;
-         for(int r = 0; r < copied; r++)
-         {
-            if(rates[r].time <= last_sent) continue;
-            if(included > 0) bars_json += ",";
-            bars_json +=
-               "{\"time\":\"" + EASync_ToIso8601(rates[r].time) + "\","
-               "\"open\":" + DoubleToString(rates[r].open, digits) + ","
-               "\"high\":" + DoubleToString(rates[r].high, digits) + ","
-               "\"low\":" + DoubleToString(rates[r].low, digits) + ","
-               "\"close\":" + DoubleToString(rates[r].close, digits) + ","
-               "\"volume\":" + IntegerToString((long)rates[r].tick_volume) + ","
-               "\"spread\":" + IntegerToString((long)rates[r].spread) + ","
-               "\"real_volume\":" + IntegerToString((long)rates[r].real_volume) + "}";
-            included++;
-            sent_bars++;
-            if(rates[r].time > newest_time) newest_time = rates[r].time;
-         }
-         if(included == 0) continue;
-         if(is_backfill) backfill_series++;
-         if(is_recovery) recovery_series++;
-
-         if(sent_series > 0) symbols_json += ",";
-         symbols_json +=
-            "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
-            "\"timeframe\":\"" + timeframe + "\","
-            "\"source_digits\":" + IntegerToString(digits) + ","
-            "\"bars\":[" + bars_json + "]}";
-         sent_series++;
-
-         int pending_index = ArraySize(pending_keys);
-         ArrayResize(pending_keys, pending_index + 1);
-         ArrayResize(pending_times, pending_index + 1);
-         pending_keys[pending_index] = series_key;
-         pending_times[pending_index] = newest_time;
+         if(copied < 0)
+            PrintFormat("PriceReporter: CopyRates failed for %s %s, error %d", broker_symbol, timeframe, GetLastError());
+         continue;
       }
+
+      string bars_json = "";
+      int included = 0;
+      datetime newest_time = last_sent;
+      for(int r = 0; r < copied; r++)
+      {
+         if(rates[r].time <= last_sent) continue;
+         if(included > 0) bars_json += ",";
+         bars_json +=
+            "{\"time\":\"" + EASync_ToIso8601(rates[r].time) + "\","
+            "\"open\":" + DoubleToString(rates[r].open, digits) + ","
+            "\"high\":" + DoubleToString(rates[r].high, digits) + ","
+            "\"low\":" + DoubleToString(rates[r].low, digits) + ","
+            "\"close\":" + DoubleToString(rates[r].close, digits) + ","
+            "\"volume\":" + IntegerToString((long)rates[r].tick_volume) + ","
+            "\"spread\":" + IntegerToString((long)rates[r].spread) + ","
+            "\"real_volume\":" + IntegerToString((long)rates[r].real_volume) + "}";
+         included++;
+         sent_bars++;
+         if(rates[r].time > newest_time) newest_time = rates[r].time;
+      }
+      if(included == 0) continue;
+      if(is_backfill) backfill_series++;
+      if(is_recovery) recovery_series++;
+
+      if(sent_series > 0) symbols_json += ",";
+      symbols_json +=
+         "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
+         "\"timeframe\":\"" + timeframe + "\","
+         "\"source_digits\":" + IntegerToString(digits) + ","
+         "\"bars\":[" + bars_json + "]}";
+      sent_series++;
+
+      int pending_index = ArraySize(pending_keys);
+      ArrayResize(pending_keys, pending_index + 1);
+      ArrayResize(pending_times, pending_index + 1);
+      pending_keys[pending_index] = series_key;
+      pending_times[pending_index] = newest_time;
    }
+
+   if(priority_count > 0) g_pr_priority_cursor = (g_pr_priority_cursor + 1) % priority_count;
+   if(background_count > 0) g_pr_background_cursor = (g_pr_background_cursor + 1) % background_count;
 
    if(sent_series == 0)
    {
@@ -3154,6 +3187,8 @@ void PriceReporter_Init(const string base_url, const string api_key, const int r
    g_pr_api_key = api_key;
    g_pr_report_interval_seconds = (report_interval_seconds > 0) ? report_interval_seconds : 60;
    g_pr_last_report = 0; // force an immediate first report after ea-sync has a response
+   g_pr_priority_cursor = 0;
+   g_pr_background_cursor = 0;
    PrintFormat("PriceReporter: initialized, report_interval_seconds=%d", g_pr_report_interval_seconds);
 }
 

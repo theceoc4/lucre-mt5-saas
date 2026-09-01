@@ -1,3 +1,4 @@
+// v1.0.33 — active-strategy candle-feed priority metadata.
 // v1.0.2 — ea-sync
 //
 // The MQL5 EA polls this every 1-2s. It is the ONLY function EAs talk to and the
@@ -796,6 +797,38 @@ Deno.serve(async (req: Request) => {
     (symbolSettings ?? []).map((setting) => [setting.symbol, setting]),
   );
 
+  // Active strategy inputs must win over general dashboard/trend collection.
+  // The mapping array is sorted for older EAs, while priority_timeframes lets
+  // v1.0.30+ explicitly run those series before its round-robin background
+  // queue. This keeps one large visible-symbol universe from starving an auto
+  // strategy's exact symbol/timeframe feed.
+  const { data: enabledStrategies, error: enabledStrategiesError } = await admin
+    .from("strategies")
+    .select("symbols,timeframe,run_mode,delivery_mode")
+    .eq("terminal_id", terminal.id)
+    .eq("enabled", true);
+  if (enabledStrategiesError) {
+    return jsonResponse({ error: "strategy_feed_priority_fetch_failed", detail: enabledStrategiesError.message }, 500);
+  }
+  const priorityTimeframesBySymbol = new Map<string, Set<string>>();
+  const priorityRankBySymbol = new Map<string, number>();
+  for (const strategy of enabledStrategies ?? []) {
+    if (!supportedTimeframes.includes(strategy.timeframe) || !Array.isArray(strategy.symbols)) continue;
+    const rank = strategy.run_mode === "live" && strategy.delivery_mode === "auto" ? 0
+      : strategy.run_mode === "live" ? 1 : 2;
+    for (const symbol of strategy.symbols) {
+      if (typeof symbol !== "string" || symbol.length === 0) continue;
+      if (!priorityTimeframesBySymbol.has(symbol)) priorityTimeframesBySymbol.set(symbol, new Set());
+      priorityTimeframesBySymbol.get(symbol)!.add(strategy.timeframe);
+      priorityRankBySymbol.set(symbol, Math.min(rank, priorityRankBySymbol.get(symbol) ?? 99));
+    }
+  }
+  const orderedMappings = [...(mappings ?? [])].sort((left, right) => {
+    const rankDelta = (priorityRankBySymbol.get(left.canonical_symbol) ?? 99) -
+      (priorityRankBySymbol.get(right.canonical_symbol) ?? 99);
+    return rankDelta || left.canonical_symbol.localeCompare(right.canonical_symbol);
+  });
+
   if (queuedCommands && queuedCommands.length > 0) {
     await admin
       .from("ea_commands")
@@ -808,7 +841,7 @@ Deno.serve(async (req: Request) => {
     server_time: nowIso,
     command_results_processed: processedResults,
     pending_commands: queuedCommands ?? [],
-    bound_symbols: (mappings ?? []).map((m) => ({
+    bound_symbols: orderedMappings.map((m) => ({
       canonical_symbol: m.canonical_symbol,
       broker_symbol: m.broker_symbol,
       // Visibility now controls collection system-wide. Every visible symbol
@@ -819,6 +852,7 @@ Deno.serve(async (req: Request) => {
         if (setting && !setting.enabled) return [];
         return supportedTimeframes;
       })(),
+      priority_timeframes: [...(priorityTimeframesBySymbol.get(m.canonical_symbol) ?? [])],
     })),
     force_symbol_rescan: terminal.force_symbol_rescan ?? false,
   });

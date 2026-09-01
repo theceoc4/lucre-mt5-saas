@@ -1114,6 +1114,49 @@ a {
   text-overflow: ellipsis;
 }
 
+.strategy-health {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.2rem;
+  min-width: 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.strategy-health-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  flex: 0 0 0.45rem;
+  border-radius: var(--radius-full);
+  background: var(--color-neutral-dot);
+}
+
+.strategy-health-danger { color: var(--color-negative); }
+.strategy-health-danger .strategy-health-dot { background: var(--color-negative); }
+.strategy-health-ok { color: var(--color-positive); }
+.strategy-health-ok .strategy-health-dot { background: var(--color-positive); }
+.strategy-health-warn .strategy-health-dot { background: var(--color-accent-strong); }
+
+.strategy-pair-health-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.strategy-pair-health {
+  padding: 0.15rem 0.4rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
 /* v1.0.18 -- keep the toggle label + Edit button from ever colliding with
    strategy-name/strategy-sub text: both are fixed-width flex children that
    never shrink, so mini-table-meta (flex:1, min-width:0) always absorbs the

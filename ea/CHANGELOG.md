@@ -1,5 +1,17 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.31 — Active-strategy feed priority and fair rotation (2026-09-01)
+
+- Reports EA v1.0.31 and reads active-strategy timeframe priority supplied by
+  `ea-sync`.
+- Sends active auto-strategy symbol/timeframe candles before general dashboard
+  history so a large visible-symbol list cannot starve trading inputs.
+- Rotates priority and background series independently on every pass. Bounded
+  backfill and outage recovery remain in place, but skipped series now move to
+  the front on following passes instead of getting stuck behind the same work.
+- Keeps the same closed-candle payload and database write model; this changes
+  scheduling order, not report frequency or per-candle storage volume.
+
 ## v1.0.29 — Broker-native adaptive risk and exit telemetry (2026-08-28)
 
 - Reports its EA version so the backend can safely gate newer execution capabilities.
