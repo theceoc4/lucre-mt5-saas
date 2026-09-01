@@ -1,3 +1,4 @@
+// v1.0.31 — progressive indicator stacks with bounded AND/OR evaluation.
 // v1.0.30 — strategy-signal-engine
 //
 // Internal once-per-minute sweep invoked by pg_cron -> pg_net. It evaluates all
@@ -67,7 +68,16 @@ type RuleCondition = {
   value: number;
 };
 
-type RuleDefinition = { version: 1; long?: RuleCondition[]; short?: RuleCondition[] };
+type LegacyRuleDefinition = { version: 1; long?: RuleCondition[]; short?: RuleCondition[] };
+type IndicatorKind = "ema_crossover" | "rsi" | "adx" | "price_vs_ema" | "breakout" |
+  "atr_volatility" | "volume_confirmation" | "trend_strength" | "linearity";
+type IndicatorClause = {
+  indicator: IndicatorKind;
+  join?: "and" | "or";
+  params?: Record<string, number | string>;
+};
+type IndicatorRuleDefinition = { version: 2; indicators: IndicatorClause[] };
+type RuleDefinition = LegacyRuleDefinition | IndicatorRuleDefinition;
 type NewsContext = {
   near: boolean;
   news_event_id: string | null;
@@ -387,6 +397,154 @@ function customRuleSide(
   return { matched: true, metrics };
 }
 
+function indicatorNumber(
+  params: Record<string, number | string> | undefined,
+  key: string,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  return Math.min(maximum, Math.max(minimum, numberValue(params?.[key], fallback)));
+}
+
+function evaluateIndicatorClause(
+  clause: IndicatorClause,
+  bars: PriceBar[],
+): { buy: boolean; sell: boolean; metrics: Record<string, number | string> } {
+  const empty = { buy: false, sell: false, metrics: {} };
+  if (bars.length < 10) return empty;
+  const params = clause.params ?? {};
+  const index = bars.length - 1;
+  const closes = bars.map((bar) => bar.close);
+  const current = bars[index];
+
+  if (clause.indicator === "ema_crossover") {
+    const fastPeriod = Math.floor(indicatorNumber(params, "fast_period", 20, 2, 200));
+    const slowPeriod = Math.floor(indicatorNumber(params, "slow_period", 50, 3, 400));
+    if (fastPeriod >= slowPeriod || bars.length <= slowPeriod) return empty;
+    const fast = computeEMA(closes, fastPeriod), slow = computeEMA(closes, slowPeriod);
+    const trigger = params.trigger === "fresh_cross" ? "fresh_cross" : "alignment";
+    const buy = trigger === "fresh_cross"
+      ? fast[index] > slow[index] && fast[index - 1] <= slow[index - 1]
+      : fast[index] > slow[index];
+    const sell = trigger === "fresh_cross"
+      ? fast[index] < slow[index] && fast[index - 1] >= slow[index - 1]
+      : fast[index] < slow[index];
+    return { buy, sell, metrics: { fast_ema: fast[index], slow_ema: slow[index], trigger } };
+  }
+
+  if (clause.indicator === "rsi") {
+    const period = Math.floor(indicatorNumber(params, "period", 14, 2, 100));
+    const value = computeRSI(closes, period)[index];
+    const buyAbove = indicatorNumber(params, "buy_above", 55, 1, 99);
+    const sellBelow = indicatorNumber(params, "sell_below", 45, 1, 99);
+    return { buy: finite(value) && value >= buyAbove, sell: finite(value) && value <= sellBelow, metrics: { rsi: value } };
+  }
+
+  if (clause.indicator === "adx") {
+    const period = Math.floor(indicatorNumber(params, "period", 14, 2, 100));
+    const value = computeADX(bars, period)[index];
+    const minimum = indicatorNumber(params, "minimum", 25, 1, 100);
+    const matched = finite(value) && value >= minimum;
+    return { buy: matched, sell: matched, metrics: { adx: value } };
+  }
+
+  const atrValues = computeATR(bars, 14);
+  const atr = atrValues[index];
+  if (!finite(atr) || atr <= EPSILON) return empty;
+
+  if (clause.indicator === "price_vs_ema") {
+    const period = Math.floor(indicatorNumber(params, "ema_period", 20, 2, 400));
+    const ema = computeEMA(closes, period)[index];
+    const distance = (current.close - ema) / atr;
+    const minimum = indicatorNumber(params, "minimum_atr", 0, 0, 10);
+    return { buy: distance >= minimum, sell: distance <= -minimum, metrics: { price_ema_atr: distance } };
+  }
+
+  if (clause.indicator === "breakout") {
+    const lookback = Math.floor(indicatorNumber(params, "lookback", 20, 3, 200));
+    const prior = bars.slice(-(lookback + 1), -1);
+    if (prior.length < lookback) return empty;
+    const high = Math.max(...prior.map((bar) => bar.high));
+    const low = Math.min(...prior.map((bar) => bar.low));
+    const minimum = indicatorNumber(params, "minimum_atr", 0, 0, 10);
+    const highDistance = (current.close - high) / atr;
+    const lowDistance = (current.close - low) / atr;
+    return { buy: highDistance >= minimum, sell: lowDistance <= -minimum, metrics: { breakout_high_atr: highDistance, breakout_low_atr: lowDistance } };
+  }
+
+  if (clause.indicator === "atr_volatility") {
+    const period = Math.floor(indicatorNumber(params, "period", 14, 2, 100));
+    const baselineBars = Math.floor(indicatorNumber(params, "baseline", 50, 10, 200));
+    const values = computeATR(bars, period);
+    const value = values[index];
+    const baseline = median(values.filter(Number.isFinite).slice(-(baselineBars + 1), -1));
+    const ratio = baseline > EPSILON ? value / baseline : Number.NaN;
+    const minimum = indicatorNumber(params, "minimum_ratio", 1, 0.1, 10);
+    const matched = finite(ratio) && ratio >= minimum;
+    return { buy: matched, sell: matched, metrics: { atr_ratio: ratio } };
+  }
+
+  if (clause.indicator === "volume_confirmation") {
+    const lookback = Math.floor(indicatorNumber(params, "lookback", 30, 5, 200));
+    const baseline = median(bars.slice(-(lookback + 1), -1).map((bar) => bar.volume));
+    const ratio = baseline > EPSILON ? current.volume / baseline : Number.NaN;
+    const minimum = indicatorNumber(params, "minimum_ratio", 1, 0.1, 10);
+    const matched = finite(ratio) && ratio >= minimum;
+    return { buy: matched, sell: matched, metrics: { volume_ratio: ratio } };
+  }
+
+  if (clause.indicator === "trend_strength") {
+    const score = metricValue("trend_score", bars);
+    const buyAbove = indicatorNumber(params, "buy_above", 35, -100, 100);
+    const sellBelow = indicatorNumber(params, "sell_below", -35, -100, 100);
+    return { buy: finite(score) && score >= buyAbove, sell: finite(score) && score <= sellBelow, metrics: { trend_score: score } };
+  }
+
+  if (clause.indicator === "linearity") {
+    const lookback = Math.floor(indicatorNumber(params, "lookback", 30, 5, 200));
+    const correlation = correlationWithTime(closes.slice(-lookback));
+    const minimum = indicatorNumber(params, "minimum", 0.6, 0, 1);
+    return { buy: correlation >= minimum, sell: correlation <= -minimum, metrics: { correlation } };
+  }
+  return empty;
+}
+
+function indicatorRuleSides(
+  definition: IndicatorRuleDefinition,
+  bars: PriceBar[],
+): { buy: boolean; sell: boolean; metrics: Record<string, unknown> } {
+  const clauses = definition.indicators.slice(0, 4);
+  if (clauses.length === 0) return { buy: false, sell: false, metrics: {} };
+  let buy = false, sell = false;
+  const metrics: Record<string, unknown> = {};
+  clauses.forEach((clause, index) => {
+    const result = evaluateIndicatorClause(clause, bars);
+    metrics[`${index + 1}.${clause.indicator}`] = result.metrics;
+    if (index === 0) { buy = result.buy; sell = result.sell; return; }
+    if (clause.join === "or") { buy = buy || result.buy; sell = sell || result.sell; }
+    else { buy = buy && result.buy; sell = sell && result.sell; }
+  });
+  return { buy, sell, metrics };
+}
+
+function indicatorWarmupBars(definition: IndicatorRuleDefinition | null | undefined): number {
+  if (!definition || definition.version !== 2) return 240;
+  let required = 80;
+  for (const clause of definition.indicators.slice(0, 4)) {
+    const params = clause.params ?? {};
+    if (clause.indicator === "ema_crossover") required = Math.max(required, indicatorNumber(params, "slow_period", 50, 3, 400) + 3);
+    else if (clause.indicator === "adx") required = Math.max(required, indicatorNumber(params, "period", 14, 2, 100) * 2 + 3);
+    else if (clause.indicator === "atr_volatility") required = Math.max(required,
+      indicatorNumber(params, "period", 14, 2, 100) + indicatorNumber(params, "baseline", 50, 10, 200) + 3);
+    else if (clause.indicator === "breakout" || clause.indicator === "volume_confirmation" || clause.indicator === "linearity") {
+      required = Math.max(required, indicatorNumber(params, "lookback", 30, 3, 200) + 3);
+    } else if (clause.indicator === "rsi") required = Math.max(required, indicatorNumber(params, "period", 14, 2, 100) + 3);
+    else if (clause.indicator === "price_vs_ema") required = Math.max(required, indicatorNumber(params, "ema_period", 20, 2, 400) + 3);
+  }
+  return Math.min(500, Math.ceil(required));
+}
+
 function candidateFromSide(
   strategy: StrategyRow,
   bars: PriceBar[],
@@ -451,11 +609,19 @@ function evaluateStrategy(
 
   if (strategy.kind === "custom_rules") {
     const definition = strategy.rule_definition;
-    if (!definition || definition.version !== 1) return null;
-    const long = customRuleSide(definition.long, barsByTimeframe);
-    const short = customRuleSide(definition.short, barsByTimeframe);
-    if (long.matched === short.matched) return null; // ambiguous or no match
-    return candidateFromSide(strategy, bars, long.matched ? "buy" : "sell", 0.72, news);
+    if (!definition) return null;
+    if (definition.version === 2) {
+      const result = indicatorRuleSides(definition, bars);
+      if (result.buy === result.sell) return null; // ambiguous or no match
+      return candidateFromSide(strategy, bars, result.buy ? "buy" : "sell", 0.72, news);
+    }
+    if (definition.version === 1) {
+      const long = customRuleSide(definition.long, barsByTimeframe);
+      const short = customRuleSide(definition.short, barsByTimeframe);
+      if (long.matched === short.matched) return null;
+      return candidateFromSide(strategy, bars, long.matched ? "buy" : "sell", 0.72, news);
+    }
+    return null;
   }
 
   if (strategy.kind === "multi_timeframe_trend_pullback") {
@@ -949,16 +1115,21 @@ Deno.serve(async (req: Request) => {
         const requiredTimeframes = new Set<string>([timeframe]);
         if (strategy.bias_timeframe) requiredTimeframes.add(strategy.bias_timeframe);
         if (strategy.kind === "multi_timeframe_trend_pullback" && !strategy.bias_timeframe) requiredTimeframes.add("H4");
-        for (const condition of [...(strategy.rule_definition?.long ?? []), ...(strategy.rule_definition?.short ?? [])]) {
-          if (supportedTimeframes.has(condition.timeframe)) requiredTimeframes.add(condition.timeframe);
+        if (strategy.rule_definition?.version === 1) {
+          for (const condition of [...(strategy.rule_definition.long ?? []), ...(strategy.rule_definition.short ?? [])]) {
+            if (supportedTimeframes.has(condition.timeframe)) requiredTimeframes.add(condition.timeframe);
+          }
         }
         const barsByTimeframe = new Map<string, PriceBar[]>();
         let missingBars = false;
         for (const requiredTimeframe of requiredTimeframes) {
+          const barLimit = requiredTimeframe === timeframe && strategy.rule_definition?.version === 2
+            ? indicatorWarmupBars(strategy.rule_definition)
+            : 240;
           const { data: descendingBars, error: barsError } = await admin.from("price_bars")
             .select("bar_time, open, high, low, close, volume, spread")
             .eq("terminal_id", strategy.terminal_id).eq("symbol", symbol).eq("timeframe", requiredTimeframe)
-            .order("bar_time", { ascending: false }).limit(240);
+            .order("bar_time", { ascending: false }).limit(barLimit);
           if (barsError || !descendingBars || descendingBars.length < 60) {
             if (barsError) console.error(`strategy-signal-engine: price_bars fetch failed for ${strategy.id}/${symbol}/${requiredTimeframe}: ${barsError.message}`);
             missingBars = true; break;

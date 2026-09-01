@@ -1,3 +1,4 @@
+// v1.0.31 -- Progressive indicator stacks shared with the live engine.
 // v1.0.30 -- Bounded diagnostic backtest over the 1,000-bar operational cache.
 // This intentionally uses closed candles, conservative same-bar SL/TP ordering,
 // one open simulation at a time, and a chronological 70/30 validation split.
@@ -55,11 +56,33 @@ function metrics(bars: Bar[], index: number) {
 }
 function compare(actual: number, op: string, expected: number) { return op === 'gt' ? actual > expected : op === 'gte' ? actual >= expected : op === 'lt' ? actual < expected : op === 'lte' ? actual <= expected : Math.abs(actual - expected) < 1e-6; }
 
+function indicatorParam(params:any,key:string,fallback:number,min:number,max:number){return Math.min(max,Math.max(min,n(params?.[key],fallback)));}
+function indicatorClause(clause:any,bars:Bar[],index:number){
+  const empty={buy:false,sell:false}; if(index<10)return empty; const params=clause?.params||{},slice=bars.slice(0,index+1),closes=slice.map(b=>b.close),current=bars[index];
+  if(clause.indicator==='ema_crossover'){
+    const fastPeriod=Math.floor(indicatorParam(params,'fast_period',20,2,200)),slowPeriod=Math.floor(indicatorParam(params,'slow_period',50,3,400));if(fastPeriod>=slowPeriod||index<slowPeriod)return empty;
+    const fast=ema(closes,fastPeriod),slow=ema(closes,slowPeriod),fresh=params.trigger==='fresh_cross';
+    return{buy:fresh?fast[index]>slow[index]&&fast[index-1]<=slow[index-1]:fast[index]>slow[index],sell:fresh?fast[index]<slow[index]&&fast[index-1]>=slow[index-1]:fast[index]<slow[index]};
+  }
+  if(clause.indicator==='rsi'){const value=rsi(closes,Math.floor(indicatorParam(params,'period',14,2,100)))[index];return{buy:Number.isFinite(value)&&value>=indicatorParam(params,'buy_above',55,1,99),sell:Number.isFinite(value)&&value<=indicatorParam(params,'sell_below',45,1,99)};}
+  if(clause.indicator==='adx'){const value=adx(slice,Math.floor(indicatorParam(params,'period',14,2,100)))[index],matched=Number.isFinite(value)&&value>=indicatorParam(params,'minimum',25,1,100);return{buy:matched,sell:matched};}
+  const av=atr(slice),a=av[index];if(!(a>0))return empty;
+  if(clause.indicator==='price_vs_ema'){const value=ema(closes,Math.floor(indicatorParam(params,'ema_period',20,2,400)))[index],distance=(current.close-value)/a,minimum=indicatorParam(params,'minimum_atr',0,0,10);return{buy:distance>=minimum,sell:distance<=-minimum};}
+  if(clause.indicator==='breakout'){const lookback=Math.floor(indicatorParam(params,'lookback',20,3,200)),prior=bars.slice(index-lookback,index);if(prior.length<lookback)return empty;const high=Math.max(...prior.map(b=>b.high)),low=Math.min(...prior.map(b=>b.low)),minimum=indicatorParam(params,'minimum_atr',0,0,10);return{buy:(current.close-high)/a>=minimum,sell:(current.close-low)/a<=-minimum};}
+  if(clause.indicator==='atr_volatility'){const period=Math.floor(indicatorParam(params,'period',14,2,100)),baselineBars=Math.floor(indicatorParam(params,'baseline',50,10,200)),values=atr(slice,period),value=values[index],base=median(values.filter(Number.isFinite).slice(-(baselineBars+1),-1)),ratio=base>0?value/base:NaN,matched=Number.isFinite(ratio)&&ratio>=indicatorParam(params,'minimum_ratio',1,.1,10);return{buy:matched,sell:matched};}
+  if(clause.indicator==='volume_confirmation'){const lookback=Math.floor(indicatorParam(params,'lookback',30,5,200)),base=median(bars.slice(index-lookback,index).map(b=>b.volume)),ratio=base>0?current.volume/base:NaN,matched=Number.isFinite(ratio)&&ratio>=indicatorParam(params,'minimum_ratio',1,.1,10);return{buy:matched,sell:matched};}
+  if(clause.indicator==='trend_strength'){const score=metrics(bars,index).trend_score;return{buy:Number.isFinite(score)&&score>=indicatorParam(params,'buy_above',35,-100,100),sell:Number.isFinite(score)&&score<=indicatorParam(params,'sell_below',-35,-100,100)};}
+  if(clause.indicator==='linearity'){const lookback=Math.floor(indicatorParam(params,'lookback',30,5,200)),value=corr(closes.slice(-lookback)),minimum=indicatorParam(params,'minimum',.6,0,1);return{buy:value>=minimum,sell:value<=-minimum};}
+  return empty;
+}
+function indicatorSides(definition:any,bars:Bar[],index:number){const clauses=(definition?.indicators||[]).slice(0,4);if(!clauses.length)return{buy:false,sell:false};let buy=false,sell=false;clauses.forEach((clause:any,i:number)=>{const result=indicatorClause(clause,bars,index);if(i===0){buy=result.buy;sell=result.sell;}else if(clause.join==='or'){buy=buy||result.buy;sell=sell||result.sell;}else{buy=buy&&result.buy;sell=sell&&result.sell;}});return{buy,sell};}
+
 function entry(strategy: any, bars: Bar[], index: number): Side | null {
   if (index < 80) return null; const config = strategy.config || {}, m = metrics(bars, index), current = bars[index], previous = bars[index - 1];
   let side: Side | null = null;
   if (strategy.kind === 'custom_rules') {
-    for (const [name, candidate] of [['long','buy'],['short','sell']] as const) { const rules = strategy.rule_definition?.[name] || []; if (rules.length && rules.every((rule: any) => rule.timeframe === strategy.timeframe && compare((m as any)[rule.metric], rule.operator, Number(rule.value)))) { if (side) return null; side = candidate; } }
+    if(strategy.rule_definition?.version===2){const result=indicatorSides(strategy.rule_definition,bars,index);if(result.buy!==result.sell)side=result.buy?'buy':'sell';}
+    else for (const [name, candidate] of [['long','buy'],['short','sell']] as const) { const rules = strategy.rule_definition?.[name] || []; if (rules.length && rules.every((rule: any) => rule.timeframe === strategy.timeframe && compare((m as any)[rule.metric], rule.operator, Number(rule.value)))) { if (side) return null; side = candidate; } }
   } else if (strategy.kind === 'momentum_breakout' || strategy.kind === 'volatility_compression_breakout') {
     const lookback = Math.max(3, Math.min(100, Math.floor(n(config.breakout_lookback, strategy.kind === 'momentum_breakout' ? 12 : 20)))); const prior = bars.slice(index - lookback, index); const high = Math.max(...prior.map((b) => b.high)), low = Math.min(...prior.map((b) => b.low));
     if (current.close > high && m.adx14 >= n(config.adx_min, 18) && m.volume_ratio >= n(config.volume_ratio_min, 1)) side = 'buy';
@@ -94,7 +117,7 @@ Deno.serve(async (req) => {
   const {data:raw,error:barsError}=await admin.from('price_bars').select('bar_time,open,high,low,close,volume,spread').eq('terminal_id',strategy.terminal_id).eq('symbol',body.symbol).eq('timeframe',strategy.timeframe).order('bar_time',{ascending:true}).limit(1000);
   if(barsError||!raw||raw.length<250)return fail('At least 250 closed candles are required for this timeframe. Let the EA finish backfilling first.');
   if(strategy.kind==='news_continuation')return fail('News-continuation backtests require a historical event-replay dataset; use shadow mode for this strategy.');
-  if(strategy.kind==='custom_rules'&&[...(strategy.rule_definition?.long||[]),...(strategy.rule_definition?.short||[])].some((r:any)=>r.timeframe!==strategy.timeframe))return fail('Multi-timeframe custom backtests are not yet supported; shadow mode evaluates them correctly.');
+  if(strategy.kind==='custom_rules'&&strategy.rule_definition?.version===1&&[...(strategy.rule_definition?.long||[]),...(strategy.rule_definition?.short||[])].some((r:any)=>r.timeframe!==strategy.timeframe))return fail('Multi-timeframe custom backtests are not yet supported; shadow mode evaluates them correctly.');
   const bars:Bar[]=raw.map((b:any)=>({...b,open:Number(b.open),high:Number(b.high),low:Number(b.low),close:Number(b.close),volume:Number(b.volume),spread:b.spread==null?null:Number(b.spread)})); const results:{index:number,r:number}[]=[];
   const exits=strategy.exit_config||{}, stopAtr=n(exits.stop_atr??strategy.config?.stop_atr,1.8), targetR=n(exits.target_r??strategy.config?.target_r,2), horizon=Math.max(5,Math.min(200,Math.floor(n(strategy.config?.shadow_horizon_bars,50))));
   for(let i=80;i<bars.length-horizon;i++){const side=entry(strategy,bars,i);if(!side)continue;const a=metrics(bars,i).atr;if(!(a>0))continue;const risk=stopAtr*a,ep=bars[i].close,sl=side==='buy'?ep-risk:ep+risk,tp=side==='buy'?ep+targetR*risk:ep-targetR*risk;let result=0,exit=i+horizon;
@@ -102,6 +125,6 @@ Deno.serve(async (req) => {
     results.push({index:i,r:result});i=exit;
   }
   const split=Math.floor(bars.length*.7),train=results.filter(x=>x.index<split).map(x=>x.r),validation=results.filter(x=>x.index>=split).map(x=>x.r),all=stats(results.map(x=>x.r)),validationStats=stats(validation);
-  const payload={...all,bars_tested:bars.length,train_bars:split,validation_bars:bars.length-split,validation_expectancy_r:validationStats.expectancy_r,result:{engine_version:'bounded-v1',conservative_same_bar_ordering:true,non_overlapping:true,train:stats(train),validation:validationStats,warning:'Operational-cache backtests are diagnostic and do not model slippage.'},status:'completed',completed_at:new Date().toISOString()};
+  const payload={...all,bars_tested:bars.length,train_bars:split,validation_bars:bars.length-split,validation_expectancy_r:validationStats.expectancy_r,result:{engine_version:'bounded-v2',conservative_same_bar_ordering:true,non_overlapping:true,train:stats(train),validation:validationStats,warning:'Operational-cache backtests are diagnostic and do not model slippage.'},status:'completed',completed_at:new Date().toISOString()};
   if(run)await admin.from('strategy_backtest_runs').update(payload).eq('id',run.id);return json({run_id:run?.id,...payload});
 });

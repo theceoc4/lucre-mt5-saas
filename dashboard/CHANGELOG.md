@@ -7,6 +7,19 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.31 — Progressive indicator strategy builder (2026-08-31)
+
+- Replaced the template-heavy strategy form with a progressive builder that
+  shows indicator parameters only after that indicator is added.
+- Added EMA crossover, RSI, ADX, price-vs-EMA, breakout, ATR volatility,
+  volume confirmation, trend-strength, and linearity indicators.
+- Supports up to four indicators with explicit AND/OR connectors and keeps
+  legacy strategies unchanged until a new indicator stack replaces them.
+- Consolidated execution into Shadow, Manual, and Auto choices. Manual and
+  Auto can now be selected at creation without a mandatory shadow promotion.
+- Grouped less-frequent lot, risk, spread, stop, target, trailing, cooldown,
+  and position-cap controls under a compact advanced section.
+
 ## v1.0.29 — Adaptive strategy risk controls (2026-08-28)
 
 - Strategy setup now uses maximum lot size as a safety ceiling and adds configurable percentage risk per signal.
