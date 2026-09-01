@@ -22,6 +22,8 @@ independently but share the same numbering scheme for easy cross-reference.
   so health totals only cover series the terminal can actually report.
 - Clean snapshots authoritatively refresh matching broker candles, including
   OHLCV, spread, real volume, and source precision, instead of only filling gaps.
+- High-frequency EA heartbeats compare a compact manifest first; database
+  reconciliation writes run only when mappings, visibility, or priority change.
 
 ## v1.0.34 — Durable broker candle-feed checkpoints (2026-09-01)
 

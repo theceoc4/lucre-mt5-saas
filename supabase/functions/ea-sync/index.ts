@@ -847,29 +847,63 @@ Deno.serve(async (req: Request) => {
       priority_rank: priorityTimeframes.has(timeframe) ? symbolRank : 99,
     }));
   });
-  const { error: reconcileFeedError } = await admin.rpc("reconcile_price_feed_manifest", {
-    p_terminal_id: terminal.id,
-    p_desired: desiredFeedSeries,
-  });
-  if (reconcileFeedError) {
-    return jsonResponse({ error: "price_feed_manifest_reconcile_failed", detail: reconcileFeedError.message }, 500);
-  }
-
-  const { data: feedStates, error: feedStatesError } = await admin
-    .from("price_feed_series_state")
-    .select("symbol,timeframe,latest_bar_time,oldest_bar_time,history_bar_count,bootstrap_generation,bootstrap_required,status")
-    .eq("terminal_id", terminal.id);
-  if (feedStatesError) {
-    return jsonResponse({ error: "price_feed_state_fetch_failed", detail: feedStatesError.message }, 500);
-  }
   type FeedState = {
+    symbol: string;
+    timeframe: string;
     latest_bar_time: string | null;
     oldest_bar_time: string | null;
     history_bar_count: number;
+    desired_enabled: boolean;
+    priority_rank: number;
     bootstrap_generation: number;
     bootstrap_required: boolean;
     status: string;
   };
+  let { data: feedStates, error: feedStatesError } = await admin
+    .from("price_feed_series_state")
+    .select("symbol,timeframe,latest_bar_time,oldest_bar_time,history_bar_count,desired_enabled,priority_rank,bootstrap_generation,bootstrap_required,status")
+    .eq("terminal_id", terminal.id);
+  if (feedStatesError) {
+    return jsonResponse({ error: "price_feed_state_fetch_failed", detail: feedStatesError.message }, 500);
+  }
+
+  // ea-sync is a high-frequency heartbeat. Compare the compact manifest first
+  // so unchanged polls never run 8 x symbol-count conflict checks in Postgres.
+  // Reconciliation writes occur only after a mapping/visibility/priority change
+  // or when a lifecycle row is genuinely missing.
+  const existingManifest = new Map((feedStates ?? []).map((state) => [
+    `${state.symbol}:${state.timeframe}`,
+    state as FeedState,
+  ]));
+  const desiredEnabledKeys = new Set(desiredFeedSeries
+    .filter((series) => series.enabled)
+    .map((series) => `${series.symbol}:${series.timeframe}`));
+  const manifestNeedsReconcile = desiredFeedSeries.some((desired) => {
+    const current = existingManifest.get(`${desired.symbol}:${desired.timeframe}`);
+    return !current || current.desired_enabled !== desired.enabled ||
+      current.priority_rank !== desired.priority_rank;
+  }) || (feedStates ?? []).some((state) =>
+    state.desired_enabled && !desiredEnabledKeys.has(`${state.symbol}:${state.timeframe}`)
+  );
+
+  if (manifestNeedsReconcile) {
+    const { error: reconcileFeedError } = await admin.rpc("reconcile_price_feed_manifest", {
+      p_terminal_id: terminal.id,
+      p_desired: desiredFeedSeries,
+    });
+    if (reconcileFeedError) {
+      return jsonResponse({ error: "price_feed_manifest_reconcile_failed", detail: reconcileFeedError.message }, 500);
+    }
+    const refreshed = await admin
+      .from("price_feed_series_state")
+      .select("symbol,timeframe,latest_bar_time,oldest_bar_time,history_bar_count,desired_enabled,priority_rank,bootstrap_generation,bootstrap_required,status")
+      .eq("terminal_id", terminal.id);
+    if (refreshed.error) {
+      return jsonResponse({ error: "price_feed_state_refresh_failed", detail: refreshed.error.message }, 500);
+    }
+    feedStates = refreshed.data;
+  }
+
   const feedStatesBySymbol = new Map<string, Record<string, FeedState>>();
   for (const state of feedStates ?? []) {
     if (!feedStatesBySymbol.has(state.symbol)) feedStatesBySymbol.set(state.symbol, {});
