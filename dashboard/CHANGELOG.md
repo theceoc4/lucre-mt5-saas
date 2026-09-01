@@ -7,6 +7,18 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.38 — Pair feed-health cards and targeted repair (2026-09-01)
+
+- Pair cards flip horizontally to a feed-health view with M1 through W1
+  availability derived from real retained history and latest closed candles.
+- Red timeframe controls request a rate-limited clean snapshot for exactly that
+  terminal, symbol, and timeframe; Realtime updates show repair progress.
+- Pair win rate and realized P/L now live on the card back while trading,
+  trend, Auto SL/TP, Buy, and Sell controls remain unchanged on the front.
+- Stale strategy evaluations automatically request a targeted repair at most
+  once per series every five minutes, and touched series prune immediately to
+  the newest 1,000 rows.
+
 ## v1.0.37 — Active EA ownership and live trading capabilities (2026-09-01)
 
 - Atomically leases each terminal API key to one live EA session, preventing a

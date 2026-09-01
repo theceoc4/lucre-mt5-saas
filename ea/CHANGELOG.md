@@ -1,5 +1,14 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.35 — Fast bootstrap and stale-cache repair (2026-09-01)
+
+- Runs missing/forced 1,000-candle snapshots in bounded five-second batches
+  while preserving the once-per-minute all-series freshness pass.
+- Detects non-empty but frozen MT5 `CopyRates` caches when live ticks prove the
+  market is active, explicitly requests history synchronization, and retries.
+- Avoids repeatedly uploading the same 1,000 frozen candles while waiting for
+  MT5 to advance the broker cache.
+
 ## v1.0.34 — Active-session lease and capability truth (2026-09-01)
 
 - Adds an opaque per-session ID so Supabase can lease each terminal key to one

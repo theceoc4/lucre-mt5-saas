@@ -1,4 +1,4 @@
-// v1.0.35 — report-bars
+// v1.0.38 — report-bars with immediate per-series retention.
 //
 // The MT5 EA posts newly closed bars for selected symbol/timeframe series.
 // This function reverse-resolves each broker-native spelling to the terminal's
@@ -397,6 +397,20 @@ Deno.serve(async (req: Request) => {
   }
   const acceptedSeries = [...acceptedByKey.values()];
 
+  // Retire the oldest rows immediately for only the series touched by this
+  // request. The hourly global sweep remains a safety net, but the normal
+  // ingest path now holds the 1,000-candle contract without temporary drift.
+  const { data: prunedRows, error: pruneError } = await admin.rpc("prune_touched_price_bar_series", {
+    p_terminal_id: terminal.id,
+    p_series: acceptedSeries.map((series) => ({
+      symbol: series.symbol,
+      timeframe: series.timeframe,
+    })),
+  });
+  if (pruneError) {
+    return jsonResponse({ error: "retention_failed", detail: pruneError.message }, 500);
+  }
+
   // Supabase's accepted checkpoint is the durable source of truth. The next
   // ea-sync response gives it back to the EA, so a terminal/VPS restart does
   // not turn every warm series into a blind 1,000-candle replay.
@@ -436,6 +450,7 @@ Deno.serve(async (req: Request) => {
       bootstrap_generation, snapshot_complete,
     })),
     trend_update_scheduled: true,
+    pruned: Number(prunedRows) || 0,
     warnings,
   });
 });

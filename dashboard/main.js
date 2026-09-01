@@ -6,6 +6,7 @@ import {
   modifyPosition,
   closePosition,
   rescanSymbols,
+  repairPriceFeed,
   bindSymbol,
 } from './edge-functions.js';
 
@@ -29,6 +30,7 @@ const state = {
   symbolSettings: [],
   symbolMappings: [],
   trendStates: [],
+  priceFeedStates: [],
   calendarEvents: [],
   scenarioStats: [],
   portfolioRisk: null,
@@ -57,6 +59,13 @@ const POSITION_STREAM_TTL_MS = 10000;
 // (up to 60s) after "Rescan Symbols" is clicked, since report-symbols runs
 // asynchronously once the EA's next ea-sync poll picks up the flag.
 let symbolRescanPollId = null;
+const flippedPairCards = new Set();
+const pairRepairsInFlight = new Set();
+const PRICE_TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1'];
+const PRICE_TIMEFRAME_SECONDS = {
+  M1: 60, M5: 300, M15: 900, M30: 1800,
+  H1: 3600, H4: 14400, D1: 86400, W1: 604800,
+};
 
 // ---------------------------------------------------------------------------
 // DOM refs
@@ -136,6 +145,12 @@ function initials(text) {
   const parts = text.trim().split(/\s+/);
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character]);
 }
 
 function setAuthMessage(text, isError = true) {
@@ -312,6 +327,7 @@ function setActiveView(view) {
   if (isPairs) {
     renderPairsView();
     renderSymbolMappingPanel();
+    loadPriceFeedStates();
   }
 }
 
@@ -1503,6 +1519,23 @@ function startRealtime(terminalId) {
     )
     .on(
       'postgres_changes',
+      { event: '*', schema: 'public', table: 'price_feed_series_state', filter: `terminal_id=eq.${terminalId}` },
+      (payload) => {
+        const next = payload.new;
+        if (!next?.symbol || !next?.timeframe || state.activeTerminalId !== terminalId) return;
+        const index = state.priceFeedStates.findIndex(
+          (item) => item.symbol === next.symbol && item.timeframe === next.timeframe
+        );
+        if (next.desired_enabled === false) {
+          if (index >= 0) state.priceFeedStates.splice(index, 1);
+        } else if (index >= 0) state.priceFeedStates[index] = next;
+        else state.priceFeedStates.push(next);
+        pairRepairsInFlight.delete(`${next.symbol}:${next.timeframe}`);
+        if (!viewPairs.hidden) renderPairsView();
+      }
+    )
+    .on(
+      'postgres_changes',
       { event: '*', schema: 'public', table: 'signal_deliveries', filter: `terminal_id=eq.${terminalId}` },
       () => loadPendingSignals()
     )
@@ -1756,6 +1789,7 @@ async function loadTerminals() {
     loadPendingSignals(),
     loadSymbolSettings(),
     loadTrendStates(),
+    loadPriceFeedStates(),
     loadScenarioStats(),
   ]);
 }
@@ -1815,6 +1849,7 @@ terminalSelect?.addEventListener('change', async (e) => {
     loadPendingSignals(),
     loadSymbolSettings(),
     loadTrendStates(),
+    loadPriceFeedStates(),
     loadScenarioStats(),
   ]);
 });
@@ -2216,6 +2251,25 @@ async function loadTrendStates() {
   if (!viewPairs.hidden) renderPairsView();
 }
 
+async function loadPriceFeedStates() {
+  if (!state.activeTerminalId) {
+    state.priceFeedStates = [];
+    if (!viewPairs.hidden) renderPairsView();
+    return;
+  }
+  const { data, error } = await supabase
+    .from('price_feed_series_state')
+    .select('symbol,timeframe,latest_bar_time,oldest_bar_time,history_bar_count,last_received_at,desired_enabled,bootstrap_required,status,last_error,repair_requested_at')
+    .eq('terminal_id', state.activeTerminalId)
+    .eq('desired_enabled', true);
+  if (error) {
+    console.error('loadPriceFeedStates error', error);
+    return;
+  }
+  state.priceFeedStates = data || [];
+  if (!viewPairs.hidden) renderPairsView();
+}
+
 async function loadSymbolSettings() {
   // Only scanned and broker-resolved symbols are configurable or visible.
   const resolvedSymbols = getResolvedSymbols().map((s) => s.symbol);
@@ -2368,6 +2422,69 @@ function trendMeterPresentation(symbol) {
   };
 }
 
+function compactAge(isoTime) {
+  if (!isoTime) return 'never';
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(isoTime).getTime()) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+function priceFeedPresentation(symbol, timeframe) {
+  const row = state.priceFeedStates.find(
+    (item) => item.symbol === symbol && item.timeframe === timeframe
+  );
+  if (!row) return { available: false, label: 'Missing', detail: 'No feed manifest exists yet.', row: null };
+  if (row.bootstrap_required || ['pending', 'bootstrapping', 'incomplete', 'error'].includes(row.status)) {
+    const repairing = row.status === 'pending' || row.status === 'bootstrapping';
+    return {
+      available: false,
+      label: repairing ? 'Refreshing' : 'Incomplete',
+      detail: `${Number(row.history_bar_count) || 0} candles stored${row.last_error ? ` · ${row.last_error}` : ''}`,
+      row,
+    };
+  }
+  if (Number(row.history_bar_count) < 240 || !row.latest_bar_time) {
+    return {
+      available: false,
+      label: 'History short',
+      detail: `${Number(row.history_bar_count) || 0} candles stored; at least 240 are required.`,
+      row,
+    };
+  }
+  const timeframeSeconds = PRICE_TIMEFRAME_SECONDS[timeframe] || 60;
+  const staleAfterMs = Math.max(180, timeframeSeconds * 2.5) * 1000;
+  const latestMs = new Date(row.latest_bar_time).getTime();
+  const stale = !Number.isFinite(latestMs) || Date.now() - latestMs > staleAfterMs;
+  return {
+    available: !stale,
+    label: stale ? 'Stale' : 'Available',
+    detail: `${Number(row.history_bar_count).toLocaleString()} candles · latest ${compactAge(row.latest_bar_time)}`,
+    row,
+  };
+}
+
+async function handlePriceFeedRepair(symbol, timeframe, button) {
+  if (!state.activeTerminalId) return;
+  const key = `${symbol}:${timeframe}`;
+  if (pairRepairsInFlight.has(key)) return;
+  pairRepairsInFlight.add(key);
+  button.disabled = true;
+  button.classList.add('is-loading');
+  button.setAttribute('aria-label', `Refreshing ${symbol} ${timeframe}`);
+  try {
+    await repairPriceFeed(state.activeTerminalId, symbol, timeframe);
+    await loadPriceFeedStates();
+    pairRepairsInFlight.delete(key);
+    renderPairsView();
+  } catch (error) {
+    pairRepairsInFlight.delete(key);
+    alert(error.message || `Could not refresh ${symbol} ${timeframe}.`);
+    renderPairsView();
+  }
+}
+
 async function handleQuickOrder(symbol, side, btn) {
   if (!state.activeTerminalId) return;
   const terminal = state.terminals.find((t) => t.id === state.activeTerminalId);
@@ -2427,57 +2544,133 @@ function renderPairsView() {
         perf.count === 0
           ? 'No closed trades yet'
           : `${perf.winRate}% win rate · ${perf.count} trades`;
+      const timeframeButtons = PRICE_TIMEFRAMES.map((timeframe) => {
+        const feed = priceFeedPresentation(s.symbol, timeframe);
+        const key = `${s.symbol}:${timeframe}`;
+        const loading = pairRepairsInFlight.has(key) || Boolean(feed.row?.bootstrap_required);
+        const feedDetail = escapeHtml(feed.detail);
+        return `<button type="button"
+          class="pair-timeframe-status ${feed.available ? 'is-available' : 'is-unavailable'}${loading ? ' is-loading' : ''}"
+          data-repair-symbol="${s.symbol}" data-repair-timeframe="${timeframe}"
+          aria-label="${s.symbol} ${timeframe}: ${loading ? 'refreshing' : feed.label}. ${feedDetail}"
+          title="${feedDetail}${feed.available ? '' : ' · Tap to refresh'}"
+          ${feed.available || loading ? 'disabled' : ''}>${timeframe}</button>`;
+      }).join('');
+      const flipped = flippedPairCards.has(s.symbol);
       return `
-      <div class="card card-pad pair-card" data-symbol-card="${s.symbol}">
-        <div class="pair-card-header">
-          <span class="pair-card-name">${s.symbol}</span>
-          <label class="strategy-toggle">
-            <input type="checkbox" class="strategy-toggle-input" data-pair-enable="${s.symbol}" checked />
-            <span>On</span>
-          </label>
-        </div>
-
-        <div class="pair-strength${trend.stale ? ' is-stale' : ''}" aria-label="Trend strength: ${trend.status}" title="${trend.detail}">
-          <div class="pair-strength-heading">
-            <span class="pair-card-section-label">Trend Strength</span>
-            <span class="pair-strength-pending">${trend.status}</span>
-          </div>
-          <div class="pair-strength-bar" role="meter" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="${Math.round(trend.score)}"><span style="left:${trend.position}%"></span></div>
-          <div class="pair-strength-labels"><span>SELL</span><span>BUY</span></div>
-        </div>
-
-        <div>
-          <div class="pair-auto-row">
-            <span class="pair-card-section-label" style="margin-bottom:0;">Auto SL/TP</span>
-            <label class="strategy-toggle">
-              <input type="checkbox" class="strategy-toggle-input" data-auto-sltp-toggle="${s.symbol}" ${s.auto_sl_tp_enabled ? 'checked' : ''} />
-              <span>${s.auto_sl_tp_enabled ? 'On' : 'Off'}</span>
-            </label>
-          </div>
-          <div class="pair-auto-fields" data-auto-fields="${s.symbol}" ${s.auto_sl_tp_enabled ? '' : 'hidden'}>
-            <div class="field">
-              <label>SL (pips)</label>
-              <input type="number" min="1" step="any" data-auto-sl-pips="${s.symbol}" value="${s.auto_sl_pips ?? ''}" placeholder="e.g. 20" />
+      <article class="pair-card-shell${flipped ? ' is-flipped' : ''}" data-symbol-card="${s.symbol}" tabindex="0" aria-label="${s.symbol} pair card. ${flipped ? 'Feed health side shown' : 'Trading side shown'}. Press Enter to flip.">
+        <div class="pair-card-inner">
+          <section class="card card-pad pair-card pair-card-face pair-card-front" aria-hidden="${flipped}">
+            <div class="pair-card-header">
+              <span class="pair-card-name">${s.symbol}</span>
+              <div class="pair-card-head-actions">
+                <button type="button" class="pair-flip-button" data-pair-flip="${s.symbol}" aria-label="View ${s.symbol} feed health">Health ↻</button>
+                <label class="strategy-toggle">
+                  <input type="checkbox" class="strategy-toggle-input" data-pair-enable="${s.symbol}" checked />
+                  <span>On</span>
+                </label>
+              </div>
             </div>
-            <div class="field">
-              <label>TP (pips)</label>
-              <input type="number" min="1" step="any" data-auto-tp-pips="${s.symbol}" value="${s.auto_tp_pips ?? ''}" placeholder="e.g. 40" />
+
+            <div class="pair-strength${trend.stale ? ' is-stale' : ''}" aria-label="Trend strength: ${trend.status}" title="${trend.detail}">
+              <div class="pair-strength-heading">
+                <span class="pair-card-section-label">Trend Strength</span>
+                <span class="pair-strength-pending">${trend.status}</span>
+              </div>
+              <div class="pair-strength-bar" role="meter" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="${Math.round(trend.score)}"><span style="left:${trend.position}%"></span></div>
+              <div class="pair-strength-labels"><span>SELL</span><span>BUY</span></div>
             </div>
-          </div>
-        </div>
 
-        <div class="pair-perf">
-          <span>${perfText}</span>
-          ${perf.count > 0 ? `<strong style="color:${plColor}">${perf.totalPl >= 0 ? '+' : ''}${perf.totalPl.toFixed(2)}</strong>` : ''}
-        </div>
+            <div>
+              <div class="pair-auto-row">
+                <span class="pair-card-section-label" style="margin-bottom:0;">Auto SL/TP</span>
+                <label class="strategy-toggle">
+                  <input type="checkbox" class="strategy-toggle-input" data-auto-sltp-toggle="${s.symbol}" ${s.auto_sl_tp_enabled ? 'checked' : ''} />
+                  <span>${s.auto_sl_tp_enabled ? 'On' : 'Off'}</span>
+                </label>
+              </div>
+              <div class="pair-auto-fields" data-auto-fields="${s.symbol}" ${s.auto_sl_tp_enabled ? '' : 'hidden'}>
+                <div class="field">
+                  <label>SL (pips)</label>
+                  <input type="number" min="1" step="any" data-auto-sl-pips="${s.symbol}" value="${s.auto_sl_pips ?? ''}" placeholder="e.g. 20" />
+                </div>
+                <div class="field">
+                  <label>TP (pips)</label>
+                  <input type="number" min="1" step="any" data-auto-tp-pips="${s.symbol}" value="${s.auto_tp_pips ?? ''}" placeholder="e.g. 40" />
+                </div>
+              </div>
+            </div>
 
-        <div class="pair-actions">
-          <button type="button" class="btn-sell" data-quick-sell="${s.symbol}">Sell</button>
-          <button type="button" class="btn-buy" data-quick-buy="${s.symbol}">Buy</button>
+            <div class="pair-actions">
+              <button type="button" class="btn-sell" data-quick-sell="${s.symbol}">Sell</button>
+              <button type="button" class="btn-buy" data-quick-buy="${s.symbol}">Buy</button>
+            </div>
+          </section>
+
+          <section class="card card-pad pair-card pair-card-face pair-card-back" aria-hidden="${!flipped}">
+            <div class="pair-card-header">
+              <div>
+                <span class="pair-card-name">${s.symbol}</span>
+                <p class="pair-card-back-subtitle">Price-history health</p>
+              </div>
+              <button type="button" class="pair-flip-button" data-pair-flip="${s.symbol}" aria-label="Return to ${s.symbol} trading controls">Trading ↻</button>
+            </div>
+
+            <div class="pair-feed-section">
+              <div class="pair-feed-heading">
+                <span class="pair-card-section-label">Timeframes</span>
+                <span>Tap red to repair</span>
+              </div>
+              <div class="pair-timeframe-row" aria-label="${s.symbol} candle feed availability">
+                ${timeframeButtons}
+              </div>
+              <div class="pair-feed-legend"><span><i class="is-available"></i>Current</span><span><i class="is-unavailable"></i>Needs attention</span></div>
+            </div>
+
+            <div class="pair-winrate-panel">
+              <span class="pair-card-section-label">Pair win rate</span>
+              <strong>${perf.winRate == null ? '—' : `${perf.winRate}%`}</strong>
+              <span>${perfText}</span>
+              ${perf.count > 0 ? `<small style="color:${plColor}">${perf.totalPl >= 0 ? '+' : ''}${perf.totalPl.toFixed(2)} realized P/L</small>` : ''}
+            </div>
+
+            <p class="pair-card-back-note">Health uses closed broker candles stored for this terminal. A green timeframe has sufficient history and a current latest candle.</p>
+          </section>
         </div>
-      </div>`;
+      </article>`;
     })
     .join('');
+
+  const flipCard = (symbol) => {
+    if (flippedPairCards.has(symbol)) flippedPairCards.delete(symbol);
+    else flippedPairCards.add(symbol);
+    renderPairsView();
+    requestAnimationFrame(() => pairGrid.querySelector(`[data-symbol-card="${symbol}"]`)?.focus());
+  };
+
+  pairGrid.querySelectorAll('[data-symbol-card]').forEach((card) => {
+    card.addEventListener('click', (event) => {
+      if (event.target.closest('button,input,label,select,a')) return;
+      flipCard(card.dataset.symbolCard);
+    });
+    card.addEventListener('keydown', (event) => {
+      if (event.target !== card || !['Enter', ' '].includes(event.key)) return;
+      event.preventDefault();
+      flipCard(card.dataset.symbolCard);
+    });
+  });
+
+  pairGrid.querySelectorAll('[data-pair-flip]').forEach((button) => {
+    button.addEventListener('click', () => flipCard(button.dataset.pairFlip));
+  });
+
+  pairGrid.querySelectorAll('[data-repair-symbol]').forEach((button) => {
+    button.addEventListener('click', () => handlePriceFeedRepair(
+      button.dataset.repairSymbol,
+      button.dataset.repairTimeframe,
+      button
+    ));
+  });
 
   pairGrid.querySelectorAll('[data-pair-enable]').forEach((input) => {
     input.addEventListener('change', async (e) => {

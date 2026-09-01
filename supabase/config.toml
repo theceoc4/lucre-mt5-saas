@@ -445,6 +445,9 @@ verify_jwt = false
 [functions.request-symbol-rescan]
 verify_jwt = true
 
+[functions.request-price-feed-repair]
+verify_jwt = true
+
 [functions.bind-symbol]
 verify_jwt = true
 

@@ -1,4 +1,4 @@
-// v1.0.37 — active-feed readiness and compact per-pair evaluation health.
+// v1.0.38 — active-feed readiness, auto-repair, and per-pair evaluation health.
 // v1.0.31 — progressive indicator stacks with bounded AND/OR evaluation.
 // v1.0.30 — strategy-signal-engine
 //
@@ -1096,7 +1096,7 @@ Deno.serve(async (req: Request) => {
     );
     const { data: feedStates, error: feedStatesError } = await admin
       .from("price_feed_series_state")
-      .select("terminal_id,symbol,timeframe,status,bootstrap_required,history_bar_count,latest_bar_time")
+      .select("terminal_id,symbol,timeframe,status,bootstrap_required,history_bar_count,latest_bar_time,repair_requested_at")
       .in("terminal_id", terminalIds);
     if (feedStatesError) {
       return jsonResponse({ error: "price_feed_states_fetch_failed", detail: feedStatesError.message }, 500);
@@ -1119,6 +1119,7 @@ Deno.serve(async (req: Request) => {
     let processed = 0;
     let signalsGenerated = 0;
     let commandsQueued = 0;
+    const repairRequests = new Set<string>();
     const evaluationStates = new Map<string, Record<string, unknown>>();
     const recordEvaluation = (
       strategy: StrategyRow,
@@ -1219,6 +1220,23 @@ Deno.serve(async (req: Request) => {
           recordEvaluation(strategy, symbol, "stale_candles", sourceBarTime, candleAgeSeconds, {
             stale_after_seconds: staleAfterSeconds,
           });
+          const repairKey = `${strategy.terminal_id}:${symbol}:${timeframe}`;
+          const repairRequestedAt = feedStateBySeries.get(repairKey)?.repair_requested_at;
+          const repairIsCoolingDown = repairRequestedAt &&
+            now.getTime() - new Date(repairRequestedAt).getTime() < 5 * 60_000;
+          if (!repairIsCoolingDown && !repairRequests.has(repairKey)) {
+            repairRequests.add(repairKey);
+            const { error: repairError } = await admin.rpc("request_price_feed_repair", {
+              p_terminal_id: strategy.terminal_id,
+              p_symbol: symbol,
+              p_timeframe: timeframe,
+              p_requested_by: null,
+              p_reason: "automatic_stale",
+            });
+            if (repairError) console.error(
+              `strategy-signal-engine: automatic feed repair failed for ${repairKey}: ${repairError.message}`,
+            );
+          }
           continue;
         }
 

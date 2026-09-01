@@ -1,4 +1,4 @@
-// edge-functions.js — v1.0.3
+// edge-functions.js — v1.0.38
 //
 // Thin client for the dashboard-facing Supabase Edge Functions. Originally
 // shipped in mt5_backend v1.0.1 (provision-terminal-key, signal-action,
@@ -28,6 +28,9 @@ const ERROR_MESSAGES = {
 
   terminal_id_required: 'Select a terminal first.',
   terminal_not_found: 'That terminal could not be found.',
+  unsupported_timeframe: 'That candle timeframe is not supported.',
+  series_not_enabled: 'That pair and timeframe are not currently enabled.',
+  repair_request_failed: 'The candle-feed repair could not be requested. Try again.',
 
   symbol_required: 'Symbol is required.',
   invalid_symbol_format: 'Enter a valid symbol (3-20 letters/numbers).',
@@ -162,6 +165,10 @@ export function closePosition(position_id, { max_deviation_points, client_reques
  */
 export function rescanSymbols(terminal_id) {
   return callEdgeFunction('request-symbol-rescan', { terminal_id });
+}
+
+export function repairPriceFeed(terminal_id, symbol, timeframe) {
+  return callEdgeFunction('request-price-feed-repair', { terminal_id, symbol, timeframe });
 }
 
 /**
