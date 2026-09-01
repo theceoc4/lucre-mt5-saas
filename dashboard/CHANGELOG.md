@@ -7,6 +7,13 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.39 — Stable pair-card interaction (2026-09-01)
+
+- Keeps the front and back face rotations intact when desktop or mobile Safari
+  applies hover styles, preventing oscillation and invisible card backs.
+- Flips cards in place instead of rebuilding the full Pairs grid, preserving
+  the active back-side controls and avoiding mobile focus/hover remount issues.
+
 ## v1.0.38 — Pair feed-health cards and targeted repair (2026-09-01)
 
 - Pair cards flip horizontally to a feed-health view with M1 through W1

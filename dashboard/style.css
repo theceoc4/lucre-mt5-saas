@@ -2339,6 +2339,7 @@ body {
 .pair-card-shell {
   min-width: 0;
   perspective: 1200px;
+  -webkit-perspective: 1200px;
   outline: none;
 }
 
@@ -2349,6 +2350,7 @@ body {
 .pair-card-inner {
   display: grid;
   transform-style: preserve-3d;
+  -webkit-transform-style: preserve-3d;
   transition: transform 560ms cubic-bezier(0.2, 0.75, 0.2, 1);
 }
 
@@ -2371,9 +2373,21 @@ body {
   cursor: pointer;
 }
 
-.pair-card-back {
+.pair-card-front,
+.pair-card-front:hover {
+  transform: rotateY(0deg);
+}
+
+.pair-card-back,
+.pair-card-back:hover {
   transform: rotateY(180deg);
   pointer-events: none;
+}
+
+/* The shared .card:hover rule changes transform. Preserve each 3D face's
+   rotation so desktop hover and iOS Safari's sticky hover cannot hide it. */
+.pair-card-face:hover {
+  box-shadow: var(--glass-shadow-outer), var(--glass-inset-top), var(--glass-inset-bottom);
 }
 
 .pair-card-shell.is-flipped .pair-card-front {

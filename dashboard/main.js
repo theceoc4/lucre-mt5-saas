@@ -2641,27 +2641,41 @@ function renderPairsView() {
     })
     .join('');
 
-  const flipCard = (symbol) => {
-    if (flippedPairCards.has(symbol)) flippedPairCards.delete(symbol);
-    else flippedPairCards.add(symbol);
-    renderPairsView();
-    requestAnimationFrame(() => pairGrid.querySelector(`[data-symbol-card="${symbol}"]`)?.focus());
+  const flipCard = (symbol, card, restoreFocus = false) => {
+    const flipped = !flippedPairCards.has(symbol);
+    if (flipped) flippedPairCards.add(symbol);
+    else flippedPairCards.delete(symbol);
+
+    const targetCard = card || pairGrid.querySelector(`[data-symbol-card="${symbol}"]`);
+    if (!targetCard) return;
+
+    targetCard.classList.toggle('is-flipped', flipped);
+    targetCard.setAttribute(
+      'aria-label',
+      `${symbol} pair card. ${flipped ? 'Feed health side shown' : 'Trading side shown'}. Press Enter to flip.`
+    );
+    targetCard.querySelector('.pair-card-front')?.setAttribute('aria-hidden', String(flipped));
+    targetCard.querySelector('.pair-card-back')?.setAttribute('aria-hidden', String(!flipped));
+    if (restoreFocus) targetCard.focus({ preventScroll: true });
   };
 
   pairGrid.querySelectorAll('[data-symbol-card]').forEach((card) => {
     card.addEventListener('click', (event) => {
       if (event.target.closest('button,input,label,select,a')) return;
-      flipCard(card.dataset.symbolCard);
+      flipCard(card.dataset.symbolCard, card);
     });
     card.addEventListener('keydown', (event) => {
       if (event.target !== card || !['Enter', ' '].includes(event.key)) return;
       event.preventDefault();
-      flipCard(card.dataset.symbolCard);
+      flipCard(card.dataset.symbolCard, card, true);
     });
   });
 
   pairGrid.querySelectorAll('[data-pair-flip]').forEach((button) => {
-    button.addEventListener('click', () => flipCard(button.dataset.pairFlip));
+    button.addEventListener('click', () => {
+      const card = button.closest('[data-symbol-card]');
+      flipCard(button.dataset.pairFlip, card);
+    });
   });
 
   pairGrid.querySelectorAll('[data-repair-symbol]').forEach((button) => {
