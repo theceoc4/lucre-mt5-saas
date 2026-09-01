@@ -1,3 +1,4 @@
+// v1.0.32 -- Multi-symbol draft backtests with session/spread/cooldown and adaptive exits.
 // v1.0.31 -- Progressive indicator stacks shared with the live engine.
 // v1.0.30 -- Bounded diagnostic backtest over the 1,000-bar operational cache.
 // This intentionally uses closed candles, conservative same-bar SL/TP ordering,
@@ -13,6 +14,7 @@ const cors = {
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 type Bar = { bar_time: string; open: number; high: number; low: number; close: number; volume: number; spread: number | null };
 type Side = "buy" | "sell";
+type Session = "asia" | "london" | "overlap" | "ny";
 const n = (value: unknown, fallback: number) => { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : fallback; };
 const median = (values: number[]) => { const sorted = [...values].sort((a, b) => a - b); const m = Math.floor(sorted.length / 2); return sorted.length ? (sorted.length % 2 ? sorted[m] : (sorted[m - 1] + sorted[m]) / 2) : NaN; };
 
@@ -108,27 +110,58 @@ function stats(results: number[]) {
   return { trade_count: results.length, win_rate: results.length ? wins.length/results.length : null, profit_factor: grossLoss ? grossWin/grossLoss : null, expectancy_r: results.length ? equity/results.length : null, max_drawdown_r: drawdown };
 }
 
-Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response(null,{headers:cors}); if (req.method !== 'POST') return json({error:'method_not_allowed'},405);
-  const url=Deno.env.get('SUPABASE_URL')!, anon=Deno.env.get('SUPABASE_ANON_KEY')!, service=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, authorization=req.headers.get('Authorization')||'';
-  const client=createClient(url,anon,{global:{headers:{Authorization:authorization}}}), admin=createClient(url,service); const {data:{user}}=await client.auth.getUser(); if(!user) return json({error:'unauthorized'},401);
-  const body=await req.json().catch(()=>null); if(!body?.strategy_id || !body?.symbol) return json({error:'strategy_id_and_symbol_required'},400);
-  const {data:strategy,error:strategyError}=await admin.from('strategies').select('*').eq('id',body.strategy_id).single(); if(strategyError||!strategy) return json({error:'strategy_not_found'},404);
-  const {data:terminal}=await admin.from('mt5_terminals').select('user_id').eq('id',strategy.terminal_id).single(); if(!terminal||terminal.user_id!==user.id) return json({error:'forbidden'},403);
-  const snapshot={kind:strategy.kind,timeframe:strategy.timeframe,config:strategy.config,exit_config:strategy.exit_config,rule_definition:strategy.rule_definition,direction_mode:strategy.direction_mode};
-  const {data:run}=await admin.from('strategy_backtest_runs').insert({terminal_id:strategy.terminal_id,strategy_id:strategy.id,symbol:body.symbol,timeframe:strategy.timeframe,definition_snapshot:snapshot,status:'running'}).select('id').single();
-  const fail=async(message:string,status=400)=>{if(run)await admin.from('strategy_backtest_runs').update({status:'failed',completed_at:new Date().toISOString(),error_message:message}).eq('id',run.id);return json({error:message},status);};
-  const {data:raw,error:barsError}=await admin.from('price_bars').select('bar_time,open,high,low,close,volume,spread').eq('terminal_id',strategy.terminal_id).eq('symbol',body.symbol).eq('timeframe',strategy.timeframe).order('bar_time',{ascending:true}).limit(1000);
-  if(barsError||!raw||raw.length<250)return fail('At least 250 closed candles are required for this timeframe. Let the EA finish backfilling first.');
-  if(strategy.kind==='news_continuation')return fail('News-continuation backtests require a historical event-replay dataset; use shadow mode for this strategy.');
-  if(strategy.kind==='custom_rules'&&strategy.rule_definition?.version===1&&[...(strategy.rule_definition?.long||[]),...(strategy.rule_definition?.short||[])].some((r:any)=>r.timeframe!==strategy.timeframe))return fail('Multi-timeframe custom backtests are not yet supported; shadow mode evaluates them correctly.');
-  const bars:Bar[]=raw.map((b:any)=>({...b,open:Number(b.open),high:Number(b.high),low:Number(b.low),close:Number(b.close),volume:Number(b.volume),spread:b.spread==null?null:Number(b.spread)})); const results:{index:number,r:number}[]=[];
-  const exits=strategy.exit_config||{}, stopAtr=n(exits.stop_atr??strategy.config?.stop_atr,1.8), targetR=n(exits.target_r??strategy.config?.target_r,2), horizon=Math.max(5,Math.min(200,Math.floor(n(strategy.config?.shadow_horizon_bars,50))));
-  for(let i=80;i<bars.length-horizon;i++){const side=entry(strategy,bars,i);if(!side)continue;const a=metrics(bars,i).atr;if(!(a>0))continue;const risk=stopAtr*a,ep=bars[i].close,sl=side==='buy'?ep-risk:ep+risk,tp=side==='buy'?ep+targetR*risk:ep-targetR*risk;let result=0,exit=i+horizon;
-    for(let j=i+1;j<=Math.min(i+horizon,bars.length-1);j++){const hitSl=side==='buy'?bars[j].low<=sl:bars[j].high>=sl,hitTp=side==='buy'?bars[j].high>=tp:bars[j].low<=tp;if(hitSl){result=-1;exit=j;break;}if(hitTp){result=targetR;exit=j;break;}if(j===Math.min(i+horizon,bars.length-1))result=(side==='buy'?bars[j].close-ep:ep-bars[j].close)/risk;}
+function sessionAt(barTime:string):Session { const h=new Date(barTime).getUTCHours(); return h<7?'asia':h<12?'london':h<16?'overlap':h<21?'ny':'asia'; }
+
+function simulate(strategy:any,bars:Bar[]){
+  const exits=strategy.exit_config||{},stopAtr=Math.max(.1,n(exits.stop_atr??strategy.config?.stop_atr,1.8)),targetR=Math.max(.1,n(exits.target_r??strategy.config?.target_r,2));
+  const breakevenR=Math.max(0,n(exits.breakeven_r,1)),trailingStartR=Math.max(0,n(exits.trailing_start_r,1.5)),trailAtr=Math.max(.1,n(exits.trail_atr,1.5));
+  const horizon=Math.max(5,Math.min(200,Math.floor(n(strategy.config?.shadow_horizon_bars,50)))),atrValues=atr(bars),results:{index:number,r:number}[]=[];
+  const allowed=new Set(Array.isArray(strategy.allowed_sessions)?strategy.allowed_sessions:[]),cooldownMs=Math.max(0,n(strategy.cooldown_minutes,0))*60000,maxSpread=strategy.max_spread_points==null?Infinity:n(strategy.max_spread_points,Infinity);let lastEntry=-Infinity;
+  for(let i=80;i<bars.length-horizon;i++){
+    const enteredAt=new Date(bars[i].bar_time).getTime();if(allowed.size&&!allowed.has(sessionAt(bars[i].bar_time)))continue;if(Number.isFinite(Number(bars[i].spread))&&Number(bars[i].spread)>maxSpread)continue;if(enteredAt-lastEntry<cooldownMs)continue;
+    const side=entry(strategy,bars,i);if(!side)continue;const a=atrValues[i];if(!(a>0))continue;
+    const risk=stopAtr*a,ep=bars[i].close,tp=side==='buy'?ep+targetR*risk:ep-targetR*risk;let sl=side==='buy'?ep-risk:ep+risk,result=0,exit=i+horizon;lastEntry=enteredAt;
+    for(let j=i+1;j<=Math.min(i+horizon,bars.length-1);j++){
+      const hitSl=side==='buy'?bars[j].low<=sl:bars[j].high>=sl,hitTp=side==='buy'?bars[j].high>=tp:bars[j].low<=tp;
+      if(hitSl){result=(side==='buy'?sl-ep:ep-sl)/risk;exit=j;break;}if(hitTp){result=targetR;exit=j;break;}
+      const favorableR=(side==='buy'?bars[j].high-ep:ep-bars[j].low)/risk,currentAtr=atrValues[j];
+      if(favorableR>=breakevenR)sl=side==='buy'?Math.max(sl,ep):Math.min(sl,ep);
+      if(favorableR>=trailingStartR&&currentAtr>0){const candidate=side==='buy'?bars[j].high-trailAtr*currentAtr:bars[j].low+trailAtr*currentAtr;sl=side==='buy'?Math.max(sl,candidate):Math.min(sl,candidate);}
+      if(j===Math.min(i+horizon,bars.length-1))result=(side==='buy'?bars[j].close-ep:ep-bars[j].close)/risk;
+    }
     results.push({index:i,r:result});i=exit;
   }
-  const split=Math.floor(bars.length*.7),train=results.filter(x=>x.index<split).map(x=>x.r),validation=results.filter(x=>x.index>=split).map(x=>x.r),all=stats(results.map(x=>x.r)),validationStats=stats(validation);
-  const payload={...all,bars_tested:bars.length,train_bars:split,validation_bars:bars.length-split,validation_expectancy_r:validationStats.expectancy_r,result:{engine_version:'bounded-v2',conservative_same_bar_ordering:true,non_overlapping:true,train:stats(train),validation:validationStats,warning:'Operational-cache backtests are diagnostic and do not model slippage.'},status:'completed',completed_at:new Date().toISOString()};
-  if(run)await admin.from('strategy_backtest_runs').update(payload).eq('id',run.id);return json({run_id:run?.id,...payload});
+  const split=Math.floor(bars.length*.7),train=results.filter(x=>x.index<split).map(x=>x.r),validation=results.filter(x=>x.index>=split).map(x=>x.r),values=results.map(x=>x.r),all=stats(values),validationStats=stats(validation);
+  return{results:values,validationResults:validation,split,all,validationStats,details:{train:stats(train),validation:validationStats}};
+}
+
+function draftStrategy(saved:any,draft:any){
+  if(!draft||typeof draft!=='object')return saved;const sessions=['asia','london','overlap','ny'];
+  return{...saved,kind:typeof draft.kind==='string'?draft.kind:saved.kind,timeframe:typeof draft.timeframe==='string'?draft.timeframe:saved.timeframe,config:draft.config&&typeof draft.config==='object'?draft.config:saved.config,exit_config:draft.exit_config&&typeof draft.exit_config==='object'?draft.exit_config:saved.exit_config,rule_definition:draft.rule_definition&&typeof draft.rule_definition==='object'?draft.rule_definition:saved.rule_definition,direction_mode:['both','long_only','short_only'].includes(draft.direction_mode)?draft.direction_mode:saved.direction_mode,allowed_sessions:Array.isArray(draft.allowed_sessions)?draft.allowed_sessions.filter((v:any)=>sessions.includes(v)):saved.allowed_sessions,cooldown_minutes:n(draft.cooldown_minutes,n(saved.cooldown_minutes,0)),max_spread_points:draft.max_spread_points==null?null:n(draft.max_spread_points,n(saved.max_spread_points,Infinity))};
+}
+
+Deno.serve(async(req)=>{
+  if(req.method==='OPTIONS')return new Response(null,{headers:cors});if(req.method!=='POST')return json({error:'method_not_allowed'},405);
+  const url=Deno.env.get('SUPABASE_URL')!,anon=Deno.env.get('SUPABASE_ANON_KEY')!,service=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,authorization=req.headers.get('Authorization')||'';
+  const client=createClient(url,anon,{global:{headers:{Authorization:authorization}}}),admin=createClient(url,service);const{data:{user}}=await client.auth.getUser();if(!user)return json({error:'unauthorized'},401);
+  const body=await req.json().catch(()=>null);if(!body?.strategy_id)return json({error:'strategy_id_required'},400);
+  const{data:saved,error:strategyError}=await admin.from('strategies').select('*').eq('id',body.strategy_id).single();if(strategyError||!saved)return json({error:'strategy_not_found'},404);
+  const{data:terminal}=await admin.from('mt5_terminals').select('user_id').eq('id',saved.terminal_id).single();if(!terminal||terminal.user_id!==user.id)return json({error:'forbidden'},403);
+  const strategy=draftStrategy(saved,body.definition_snapshot),requested=Array.isArray(body.symbols)?body.symbols:Array.isArray(body.definition_snapshot?.symbols)?body.definition_snapshot.symbols:body.symbol?[body.symbol]:saved.symbols;
+  const symbols=[...new Set((requested||[]).filter((v:any)=>typeof v==='string'&&v.trim().length>0&&v.length<=64).map((v:string)=>v.trim().toUpperCase()))].slice(0,32);if(!symbols.length)return json({error:'at_least_one_symbol_required'},400);
+  const snapshot={kind:strategy.kind,timeframe:strategy.timeframe,config:strategy.config,exit_config:strategy.exit_config,rule_definition:strategy.rule_definition,direction_mode:strategy.direction_mode,allowed_sessions:strategy.allowed_sessions,cooldown_minutes:strategy.cooldown_minutes,max_spread_points:strategy.max_spread_points,symbols};
+  if(strategy.kind==='news_continuation')return json({error:'News-continuation backtests require a historical event-replay dataset; use shadow mode for this strategy.'},400);
+  if(strategy.kind==='custom_rules'&&strategy.rule_definition?.version===1&&[...(strategy.rule_definition?.long||[]),...(strategy.rule_definition?.short||[])].some((r:any)=>r.timeframe!==strategy.timeframe))return json({error:'Multi-timeframe custom backtests are not yet supported; shadow mode evaluates them correctly.'},400);
+  const perSymbol:any[]=[],allResults:number[]=[],allValidation:number[]=[];let totalBars=0,totalTrainBars=0,totalValidationBars=0;
+  for(const symbol of symbols){
+    const{data:run}=await admin.from('strategy_backtest_runs').insert({terminal_id:strategy.terminal_id,strategy_id:strategy.id,symbol,timeframe:strategy.timeframe,definition_snapshot:snapshot,status:'running'}).select('id').single();
+    const fail=async(message:string)=>{if(run)await admin.from('strategy_backtest_runs').update({status:'failed',completed_at:new Date().toISOString(),error_message:message}).eq('id',run.id);perSymbol.push({symbol,status:'failed',error:message});};
+    const{data:raw,error:barsError}=await admin.from('price_bars').select('bar_time,open,high,low,close,volume,spread').eq('terminal_id',strategy.terminal_id).eq('symbol',symbol).eq('timeframe',strategy.timeframe).order('bar_time',{ascending:false}).limit(1000);
+    if(barsError||!raw||raw.length<250){await fail('At least 250 closed candles are required for this timeframe. Let the EA finish backfilling first.');continue;}
+    const bars:Bar[]=raw.reverse().map((b:any)=>({...b,open:Number(b.open),high:Number(b.high),low:Number(b.low),close:Number(b.close),volume:Number(b.volume),spread:b.spread==null?null:Number(b.spread)})),outcome=simulate(strategy,bars);
+    const payload={...outcome.all,bars_tested:bars.length,train_bars:outcome.split,validation_bars:bars.length-outcome.split,validation_expectancy_r:outcome.validationStats.expectancy_r,result:{engine_version:'bounded-v3',conservative_same_bar_ordering:true,non_overlapping:true,train:outcome.details.train,validation:outcome.details.validation,modeled_controls:['indicator parameters','direction','sessions','spread cap','cooldown','ATR stop','R target','breakeven','ATR trailing stop'],warning:'Operational-cache backtests are diagnostic and do not model slippage.'},status:'completed',completed_at:new Date().toISOString()};
+    if(run)await admin.from('strategy_backtest_runs').update(payload).eq('id',run.id);perSymbol.push({symbol,run_id:run?.id,status:'completed',...payload});allResults.push(...outcome.results);allValidation.push(...outcome.validationResults);totalBars+=bars.length;totalTrainBars+=outcome.split;totalValidationBars+=bars.length-outcome.split;
+  }
+  const completed=perSymbol.filter(row=>row.status==='completed');if(!completed.length)return json({error:'No selected pair had enough retained candles to run the backtest.',symbols_requested:symbols,per_symbol:perSymbol},400);
+  const aggregate=stats(allResults),validation=stats(allValidation);return json({...aggregate,bars_tested:totalBars,train_bars:totalTrainBars,validation_bars:totalValidationBars,validation_expectancy_r:validation.expectancy_r,max_drawdown_r:Math.max(...completed.map(row=>Number(row.max_drawdown_r)||0)),symbols_requested:symbols,symbols_tested:completed.map(row=>row.symbol),per_symbol:perSymbol,result:{engine_version:'bounded-v3',aggregation:'trade-weighted across selected pairs',warning:'Diagnostic only; slippage is not modeled.'},status:'completed',completed_at:new Date().toISOString()});
 });

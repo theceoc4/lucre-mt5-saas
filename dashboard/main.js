@@ -822,25 +822,90 @@ function openEditStrategyModal(id) {
   window.LucreUI.openModal('modal-add-strategy');
 }
 
-document.getElementById('button-run-strategy-backtest')?.addEventListener('click', async () => {
+function strategyBacktestDraft(form, existingStrategy) {
+  const numeric = (field, fallback) => Number.isFinite(parseFloat(form[field]?.value)) ? parseFloat(form[field].value) : fallback;
+  const replacingLegacyDefinition = strategyIndicatorRows.length > 0;
+  return {
+    kind: replacingLegacyDefinition ? 'custom_rules' : existingStrategy.kind,
+    timeframe: form.timeframe.value,
+    symbols: strategySelectedSymbols.slice(),
+    config: {
+      ...(existingStrategy.config || {}),
+      stop_atr: numeric('stop_atr', 1.8),
+      target_r: numeric('target_r', 2.2),
+    },
+    exit_config: {
+      stop_atr: numeric('stop_atr', 1.8),
+      target_r: numeric('target_r', 2.2),
+      breakeven_r: numeric('breakeven_r', 1),
+      trailing_start_r: numeric('trailing_start_r', 1.5),
+      trail_atr: numeric('trail_atr', 1.5),
+      swing_lookback: 5,
+      max_stop_atr: 4,
+    },
+    rule_definition: replacingLegacyDefinition ? {
+      version: 2,
+      indicators: strategyIndicatorRows.map((row, index) => ({
+        indicator: row.indicator,
+        join: index === 0 ? 'and' : (row.join === 'or' ? 'or' : 'and'),
+        params: { ...row.params },
+      })),
+    } : existingStrategy.rule_definition,
+    direction_mode: form.direction_mode.value,
+    allowed_sessions: [...form.querySelectorAll('input[name="allowed_sessions"]:checked')].map((input) => input.value),
+    cooldown_minutes: Math.max(0, Math.min(10080, Math.round(numeric('cooldown_minutes', 0)))),
+    max_spread_points: form.max_spread_points.value ? numeric('max_spread_points', null) : null,
+  };
+}
+
+document.getElementById('button-run-strategy-backtest')?.addEventListener('click', async (event) => {
   const form = document.getElementById('form-add-strategy');
   const strategyId = form.edit_id.value;
-  const symbol = strategySelectedSymbols[0];
+  const existingStrategy = state.strategies.find((strategy) => strategy.id === strategyId);
   const msg = document.getElementById('add-strategy-message');
-  if (!strategyId || !symbol) return;
-  msg.style.color = 'var(--color-text-muted)';
-  msg.textContent = `Testing ${symbol} against the retained closed-candle history…`;
-  const { data, error } = await supabase.functions.invoke('strategy-backtest', { body: { strategy_id: strategyId, symbol } });
-  if (error || data?.error) {
+  if (!strategyId || !existingStrategy || strategySelectedSymbols.length === 0) return;
+  const indicatorError = strategyIndicatorRows.length > 0 ? validateIndicatorStack() : '';
+  if (indicatorError) {
     msg.style.color = 'var(--color-danger, #c0432f)';
-    msg.textContent = data?.error || error?.message || 'Backtest failed.';
+    msg.textContent = indicatorError;
     return;
   }
-  const pct = data.win_rate == null ? '—' : `${Math.round(data.win_rate * 100)}%`;
-  const expectancy = data.expectancy_r == null ? '—' : `${Number(data.expectancy_r).toFixed(2)}R`;
-  const validation = data.validation_expectancy_r == null ? '—' : `${Number(data.validation_expectancy_r).toFixed(2)}R`;
-  msg.style.color = 'var(--color-accent)';
-  msg.textContent = `${symbol}: ${data.trade_count} trades · ${pct} wins · ${expectancy} expectancy · ${validation} validation expectancy. Diagnostic only; slippage is not modeled.`;
+  const draft = strategyBacktestDraft(form, existingStrategy);
+  if (draft.allowed_sessions.length === 0) {
+    msg.style.color = 'var(--color-danger, #c0432f)';
+    msg.textContent = 'Select at least one trading session before running the backtest.';
+    return;
+  }
+  const button = event.currentTarget;
+  button.disabled = true;
+  msg.style.color = 'var(--color-text-muted)';
+  msg.textContent = `Testing ${strategySelectedSymbols.length} selected pair${strategySelectedSymbols.length === 1 ? '' : 's'} with the parameters currently shown…`;
+  try {
+    const { data, error } = await supabase.functions.invoke('strategy-backtest', {
+      body: { strategy_id: strategyId, symbols: strategySelectedSymbols, definition_snapshot: draft },
+    });
+    if (error || data?.error) {
+      msg.style.color = 'var(--color-danger, #c0432f)';
+      msg.textContent = data?.error || error?.message || 'Backtest failed.';
+      return;
+    }
+    const pct = data.win_rate == null ? '—' : `${Math.round(data.win_rate * 100)}%`;
+    const expectancy = data.expectancy_r == null ? '—' : `${Number(data.expectancy_r).toFixed(2)}R`;
+    const validation = data.validation_expectancy_r == null ? '—' : `${Number(data.validation_expectancy_r).toFixed(2)}R`;
+    const tested = data.symbols_tested?.length || 0;
+    const requested = data.symbols_requested?.length || strategySelectedSymbols.length;
+    const pairLines = (data.per_symbol || []).map((row) => {
+      if (row.status !== 'completed') return `${row.symbol}: skipped — ${row.error}`;
+      const pairWins = row.win_rate == null ? '—' : `${Math.round(row.win_rate * 100)}%`;
+      const pairExpectancy = row.expectancy_r == null ? '—' : `${Number(row.expectancy_r).toFixed(2)}R`;
+      return `${row.symbol}: ${row.trade_count} trades · ${pairWins} wins · ${pairExpectancy}`;
+    });
+    msg.style.color = 'var(--color-accent)';
+    msg.style.whiteSpace = 'pre-line';
+    msg.textContent = [`Portfolio (${tested}/${requested} pairs): ${data.trade_count} trades · ${pct} wins · ${expectancy} expectancy · ${validation} validation expectancy.`, ...pairLines, 'Diagnostic only; slippage is not modeled.'].join('\n');
+  } finally {
+    button.disabled = false;
+  }
 });
 
 async function handleDeleteStrategy(id) {
