@@ -1,5 +1,13 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.41 — Deterministic live outbox initialization (2026-09-02)
+
+- Explicitly initializes every newly allocated outbox field before appending a
+  candle, preventing garbage bar counts and malformed JSON on MT5 VPS builds.
+- Validates outbox shape, count, timestamp, and JSON boundaries before upload.
+- Self-heals an invalid entry by discarding and reacquiring it from MT5; the
+  durable checkpoint never advances until the clean replacement is accepted.
+
 ## v1.0.40 — Deadline-driven all-series candle delivery (2026-09-02)
 
 - Replaces the global minute scan with a one-second deadline check for every

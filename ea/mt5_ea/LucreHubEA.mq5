@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.40 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.41 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.40"
+#property version   "1.41"
 #property strict
 
 
@@ -1259,7 +1259,7 @@ string EASync_BuildRequestBody()
       "\"account_login\":\"" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) + "\","
       "\"server\":\"" + EASync_JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\","
       "\"is_live\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL ? "true" : "false") + ","
-      "\"ea_version\":\"1.0.40\","
+      "\"ea_version\":\"1.0.41\","
       "\"terminal_trade_allowed\":" + (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
       "\"mql_trade_allowed\":" + (MQLInfoInteger(MQL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
       "\"account_trade_allowed\":" + (AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
@@ -3019,11 +3019,40 @@ void PriceReporter_OutboxAppend(const string series_key,
       g_pr_outbox_brokers[index] = broker_symbol;
       g_pr_outbox_timeframes[index] = timeframe;
       g_pr_outbox_digits[index] = digits;
+      // ArrayResize reserves storage but MT5 does not guarantee that newly
+      // exposed primitive/string slots contain our required identity values.
+      // Explicit initialization prevents garbage counts and malformed JSON.
+      g_pr_outbox_bars[index] = "";
+      g_pr_outbox_counts[index] = 0;
+      g_pr_outbox_latest[index] = 0;
    }
    if(g_pr_outbox_bars[index] != "") g_pr_outbox_bars[index] += ",";
    g_pr_outbox_bars[index] += bars_json;
    g_pr_outbox_counts[index] += bar_count;
    if(newest_time > g_pr_outbox_latest[index]) g_pr_outbox_latest[index] = newest_time;
+}
+
+bool PriceReporter_OutboxEntryValid(const int index)
+{
+   if(index < 0 ||
+      index >= ArraySize(g_pr_outbox_keys) ||
+      index >= ArraySize(g_pr_outbox_brokers) ||
+      index >= ArraySize(g_pr_outbox_timeframes) ||
+      index >= ArraySize(g_pr_outbox_digits) ||
+      index >= ArraySize(g_pr_outbox_bars) ||
+      index >= ArraySize(g_pr_outbox_counts) ||
+      index >= ArraySize(g_pr_outbox_latest)) return false;
+   string bars = g_pr_outbox_bars[index];
+   int length = StringLen(bars);
+   return g_pr_outbox_keys[index] != "" &&
+          g_pr_outbox_brokers[index] != "" &&
+          g_pr_outbox_timeframes[index] != "" &&
+          g_pr_outbox_counts[index] > 0 &&
+          g_pr_outbox_counts[index] <= 1000 &&
+          g_pr_outbox_latest[index] > 0 &&
+          length >= 2 &&
+          StringGetCharacter(bars, 0) == '{' &&
+          StringGetCharacter(bars, length - 1) == '}';
 }
 
 void PriceReporter_OutboxRemove(const int index)
@@ -3750,6 +3779,17 @@ void PriceReporter_Run()
    string freshness_json = "";
    int freshness_series = 0;
    int freshness_bars = 0;
+   // Self-heal instead of replaying a poisoned batch forever. No checkpoint
+   // has advanced yet, so discarded entries are safely reacquired from MT5 on
+   // the next deadline pass.
+   for(int i = ArraySize(g_pr_outbox_keys) - 1; i >= 0; i--)
+   {
+      if(PriceReporter_OutboxEntryValid(i)) continue;
+      int invalid_count = (i < ArraySize(g_pr_outbox_counts)) ? g_pr_outbox_counts[i] : -1;
+      PrintFormat("PriceReporter: discarded invalid outbox entry index=%d key=%s count=%d",
+                  i, g_pr_outbox_keys[i], invalid_count);
+      PriceReporter_OutboxRemove(i);
+   }
    for(int i = 0; i < ArraySize(g_pr_outbox_keys); i++)
    {
       if(freshness_bars + g_pr_outbox_counts[i] > 2200) break;
