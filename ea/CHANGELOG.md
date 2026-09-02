@@ -1,5 +1,15 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.37 — Continuous off-chart candle refresh (2026-09-01)
+
+- Keeps every enabled broker symbol/timeframe cache warm with a bounded,
+  rotating local `CopyRates` probe between candle closes; all 136 current
+  series are touched in roughly 25 seconds without adding Supabase traffic.
+- Corrects the per-series retry gate so a frozen cache waits through its
+  backoff and is reread when the retry becomes due, instead of the reverse.
+- Preserves the verified 1,000-candle bootstrap lane, closed-candle-only
+  uploads, one-minute freshness cadence, and existing repair generations.
+
 ## v1.0.36 — Resilient per-series history synchronization (2026-09-01)
 
 - Replaces immediate stale-cache rereads with a timer-driven MT5 history

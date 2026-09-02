@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.36 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.37 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.36"
+#property version   "1.37"
 #property strict
 
 
@@ -1259,7 +1259,7 @@ string EASync_BuildRequestBody()
       "\"account_login\":\"" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) + "\","
       "\"server\":\"" + EASync_JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\","
       "\"is_live\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL ? "true" : "false") + ","
-      "\"ea_version\":\"1.0.36\","
+      "\"ea_version\":\"1.0.37\","
       "\"terminal_trade_allowed\":" + (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
       "\"mql_trade_allowed\":" + (MQLInfoInteger(MQL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
       "\"account_trade_allowed\":" + (AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
@@ -2896,12 +2896,15 @@ datetime g_pr_last_report = 0;
 #define PR_BOOTSTRAP_INTERVAL_SECONDS 5
 #define PR_FRESHNESS_INTERVAL_SECONDS 60
 #define PR_DIAGNOSTIC_INTERVAL_SECONDS 60
+#define PR_CACHE_PUMP_INTERVAL_SECONDS 5
+#define PR_CACHE_PUMP_SERIES_PER_RUN 32
 string   g_pr_series_keys[];
 datetime g_pr_series_last_sent[];
 string   g_pr_bootstrap_keys[];
 int      g_pr_bootstrap_generations[];
 int      g_pr_priority_cursor = 0;
 int      g_pr_background_cursor = 0;
+int      g_pr_cache_pump_cursor = 0;
 datetime g_pr_last_freshness = 0;
 datetime g_pr_last_diagnostics = 0;
 bool     g_pr_bootstrap_pending = true;
@@ -3268,6 +3271,31 @@ void PriceReporter_Run()
    }
 
    int candidate_count = ArraySize(candidate_brokers);
+
+   // MT5 automatically keeps the chart's own symbol/timeframe hot, but its
+   // off-chart CopyRates caches can stop at the last explicit read. Touch a
+   // bounded rotating slice every five seconds so every enabled series gets a
+   // current-bar request at least once every ~25 seconds at today's 136-series
+   // scale. This is terminal-local only: no HTTP request or Supabase write is
+   // produced by the pump.
+   if(candidate_count > 0)
+   {
+      int pump_count = (int)MathMin(PR_CACHE_PUMP_SERIES_PER_RUN, candidate_count);
+      for(int pump_offset = 0; pump_offset < pump_count; pump_offset++)
+      {
+         int pump_index = (g_pr_cache_pump_cursor + pump_offset) % candidate_count;
+         string pump_broker = candidate_brokers[pump_index];
+         ENUM_TIMEFRAMES pump_period = PriceReporter_TimeframeEnum(candidate_timeframes[pump_index]);
+         if(!SymbolInfoInteger(pump_broker, SYMBOL_SELECT))
+            SymbolSelect(pump_broker, true);
+         MqlTick pump_tick;
+         SymbolInfoTick(pump_broker, pump_tick); // maintain the Market Watch subscription
+         MqlRates pump_rates[];
+         CopyRates(pump_broker, pump_period, 0, 2, pump_rates);
+      }
+      g_pr_cache_pump_cursor = (g_pr_cache_pump_cursor + pump_count) % candidate_count;
+   }
+
    bool needs_bootstrap[];
    bool forced_gap[];
    bool collector_ready[];
@@ -3317,11 +3345,15 @@ void PriceReporter_Run()
       needs_bootstrap[i] = base_bootstrap_needed || checkpoint_gap;
       if(base_bootstrap_needed) g_pr_bootstrap_pending = true;
 
-      // A pending repair keeps a five-second local lane, but healthy series
-      // still need inspection only on the minute freshness pass. This avoids
-      // hammering all 136 MT5 caches while one unrelated series is warming.
-      if(!freshness_due && !base_bootstrap_needed && !PriceReporter_SyncWaiting(series_key, run_started))
-         continue;
+      // Healthy series are handled by the lightweight cache pump between
+      // minute freshness passes. A stale series is reread only after its
+      // backoff has elapsed (v1.0.36 accidentally did the inverse).
+      if(!freshness_due && !base_bootstrap_needed)
+      {
+         bool sync_active = PriceReporter_SyncAttempts(series_key) > 0;
+         if(!sync_active || PriceReporter_SyncWaiting(series_key, run_started))
+            continue;
+      }
 
       MqlRates rates[];
       ResetLastError();
@@ -3570,7 +3602,7 @@ void PriceReporter_Run()
       EASync_ForceSync();
    }
 
-   if(freshness_series == 0 && bootstrap_series == 0)
+   if(freshness_due && freshness_series == 0 && bootstrap_series == 0)
       Print("PriceReporter: all enabled candle series are current");
 }
 
@@ -3589,6 +3621,7 @@ void PriceReporter_Init(const string base_url, const string api_key, const int r
    ArrayResize(g_pr_bootstrap_generations, 0);
    g_pr_priority_cursor = 0;
    g_pr_background_cursor = 0;
+   g_pr_cache_pump_cursor = 0;
    g_pr_last_freshness = 0;
    g_pr_last_diagnostics = 0;
    g_pr_bootstrap_pending = true;
@@ -3605,9 +3638,10 @@ void PriceReporter_Init(const string base_url, const string api_key, const int r
 void PriceReporter_OnTimer()
 {
    if(g_pr_base_url == "" || g_pr_api_key == "") return;
-   int next_interval = g_pr_bootstrap_pending
-      ? PR_BOOTSTRAP_INTERVAL_SECONDS
-      : (int)MathMax(g_pr_report_interval_seconds, PR_FRESHNESS_INTERVAL_SECONDS);
+   // Wake every five seconds for the bounded local cache pump. PriceReporter_Run
+   // independently gates network freshness and diagnostics to one minute, so
+   // this does not multiply Supabase traffic.
+   int next_interval = PR_CACHE_PUMP_INTERVAL_SECONDS;
    if(TimeCurrent() - g_pr_last_report < next_interval) return;
    PriceReporter_Run();
 }
