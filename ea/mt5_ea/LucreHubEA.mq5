@@ -3667,6 +3667,14 @@ void PriceReporter_Run()
       bool quote_session_open = PriceReporter_QuoteSessionOpen(
          broker_symbol, run_started, session_schedule_known);
       bool confirmed_market_closed = session_schedule_known && !quote_session_open;
+      string source_tick_json = "";
+      if(has_tick)
+         source_tick_json = "\"source_tick_time\":\"" +
+            EASync_ToIso8601(latest_tick.time) + "\",";
+      string missing_tick_error_json = "";
+      if(!confirmed_market_closed)
+         missing_tick_error_json =
+            "\"last_error\":\"No current broker tick or candle during an open or unknown session\",";
       if(copied <= 0)
       {
          // During a legitimate market closure, the requested recent date
@@ -3688,8 +3696,8 @@ void PriceReporter_Run()
                diagnostics_json +=
                   "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
                   "\"timeframe\":\"" + timeframe + "\",\"state\":\"" + collector_state + "\"," +
-                  (has_tick ? "\"source_tick_time\":\"" + EASync_ToIso8601(latest_tick.time) + "\"," : "") +
-                  (!confirmed_market_closed ? "\"last_error\":\"No current broker tick or candle during an open or unknown session\"," : "") +
+                  source_tick_json +
+                  missing_tick_error_json +
                   "\"attempt_count\":0,"
                   "\"retry_after_seconds\":5}";
                diagnostic_count++;
@@ -3749,9 +3757,9 @@ void PriceReporter_Run()
             diagnostics_json +=
                "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
                "\"timeframe\":\"" + timeframe + "\",\"state\":\"" + collector_state + "\"," +
-               (has_tick ? "\"source_tick_time\":\"" + EASync_ToIso8601(latest_tick.time) + "\"," : "") +
-               "\"source_latest_bar_time\":\"" + EASync_ToIso8601(newest_closed) + "\","
-               (!confirmed_market_closed ? "\"last_error\":\"No current broker tick during an open or unknown session\"," : "") +
+               source_tick_json +
+               "\"source_latest_bar_time\":\"" + EASync_ToIso8601(newest_closed) + "\"," +
+               missing_tick_error_json +
                "\"attempt_count\":0,"
                "\"retry_after_seconds\":5}";
             diagnostic_count++;
@@ -3769,7 +3777,7 @@ void PriceReporter_Run()
          diagnostics_json +=
             "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
             "\"timeframe\":\"" + timeframe + "\",\"state\":\"ready\"," +
-            (has_tick ? "\"source_tick_time\":\"" + EASync_ToIso8601(latest_tick.time) + "\"," : "") +
+            source_tick_json +
             "\"source_latest_bar_time\":\"" + EASync_ToIso8601(last_sent) + "\","
             "\"expected_bar_time\":\"" + EASync_ToIso8601(actual_current_bar + timeframe_seconds) + "\","
             "\"attempt_count\":0,\"retry_after_seconds\":5}";
