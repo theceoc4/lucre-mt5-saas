@@ -1,5 +1,20 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.42 — Deterministic all-series candle cursors (2026-09-02)
+
+- Explicitly initializes each per-symbol/timeframe accepted-candle cursor and
+  bootstrap generation, preventing random series from inheriting a future-ish
+  primitive value and silently dropping out of the deadline scheduler.
+- Routes missing, underfilled, and manually requested series directly through
+  the 1,000-candle snapshot lane instead of trapping a null checkpoint in the
+  incremental retry loop.
+- Classifies a candle as closed from its timestamp and timeframe. A one-row
+  `CopyRates` response can now publish a just-closed candle even when MT5 has
+  not constructed the next forming bar for that off-chart series yet.
+- Allows one bounded history repair to proceed while another series is waiting
+  on broker history, without overlapping an unacknowledged live upload.
+- Initializes all per-pass scheduling arrays before candidate evaluation.
+
 ## v1.0.41 — Deterministic live outbox initialization (2026-09-02)
 
 - Explicitly initializes every newly allocated outbox field before appending a

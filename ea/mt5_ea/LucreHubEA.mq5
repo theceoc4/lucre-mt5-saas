@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.41 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.42 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.41"
+#property version   "1.42"
 #property strict
 
 
@@ -1259,7 +1259,7 @@ string EASync_BuildRequestBody()
       "\"account_login\":\"" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) + "\","
       "\"server\":\"" + EASync_JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\","
       "\"is_live\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL ? "true" : "false") + ","
-      "\"ea_version\":\"1.0.41\","
+      "\"ea_version\":\"1.0.42\","
       "\"terminal_trade_allowed\":" + (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
       "\"mql_trade_allowed\":" + (MQLInfoInteger(MQL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
       "\"account_trade_allowed\":" + (AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
@@ -3178,6 +3178,10 @@ void PriceReporter_MarkSent(const string series_key, const datetime bar_time)
       ArrayResize(g_pr_series_keys, index + 1);
       ArrayResize(g_pr_series_last_sent, index + 1);
       g_pr_series_keys[index] = series_key;
+      // A new primitive slot is not a trustworthy application cursor until
+      // we initialize it. Garbage here can look like a future timestamp and
+      // permanently suppress deadline checks for a random subset of series.
+      g_pr_series_last_sent[index] = 0;
    }
    if(bar_time > g_pr_series_last_sent[index])
       g_pr_series_last_sent[index] = bar_time;
@@ -3205,6 +3209,7 @@ void PriceReporter_MarkBootstrapComplete(const string series_key, const int gene
       ArrayResize(g_pr_bootstrap_keys, index + 1);
       ArrayResize(g_pr_bootstrap_generations, index + 1);
       g_pr_bootstrap_keys[index] = series_key;
+      g_pr_bootstrap_generations[index] = 0;
    }
    if(generation > g_pr_bootstrap_generations[index])
       g_pr_bootstrap_generations[index] = generation;
@@ -3503,6 +3508,13 @@ void PriceReporter_Run()
    ArrayResize(forced_gap, candidate_count);
    ArrayResize(collector_ready, candidate_count);
    ArrayResize(generations, candidate_count);
+   for(int i = 0; i < candidate_count; i++)
+   {
+      needs_bootstrap[i] = false;
+      forced_gap[i] = false;
+      collector_ready[i] = false;
+      generations[i] = 0;
+   }
 
    string diagnostics_json = "";
    int diagnostic_count = 0;
@@ -3541,7 +3553,17 @@ void PriceReporter_Run()
       bool server_requires = StringFind(candidate_required[i], "\"" + timeframe + "\"") >= 0;
       int history_count = PriceReporter_ServerHistoryCount(candidate_counts_json[i], timeframe);
       bool base_bootstrap_needed = server_requires || history_count < PR_MIN_BOOTSTRAP_BARS || last_sent == 0;
-      if(base_bootstrap_needed) g_pr_bootstrap_pending = true;
+      needs_bootstrap[i] = base_bootstrap_needed;
+      if(base_bootstrap_needed)
+      {
+         // A missing/repair-requested foundation belongs in the snapshot lane.
+         // Sending a null checkpoint through the incremental lane traps that
+         // series in an exact-time retry loop (the AUDCAD M1 failure seen in
+         // v1.41) and prevents it from ever establishing a valid cursor.
+         forced_gap[i] = true;
+         g_pr_bootstrap_pending = true;
+         continue;
+      }
 
       int timeframe_seconds = PriceReporter_TimeframeSeconds(timeframe);
       // A stored closed candle with open time T remains current until the bar
@@ -3648,15 +3670,18 @@ void PriceReporter_Run()
          continue;
       }
       if(tick_is_current) PriceReporter_ClearTickWait(series_key);
-      PriceReporter_MarkCurrentOpen(series_key, actual_current_bar);
+      if(actual_current_bar + timeframe_seconds > run_started)
+         PriceReporter_MarkCurrentOpen(series_key, actual_current_bar);
 
       datetime newest_closed = 0;
       int newer_closed_count = 0;
       for(int newest_index = 0; newest_index < copied; newest_index++)
       {
-         // The greatest timestamp in the requested window is bar zero, which
-         // is still forming. Only timestamps strictly before it are closed.
-         if(rates[newest_index].time >= actual_current_bar) continue;
+         // A date-based CopyRates call can legitimately return only the candle
+         // that just closed while MT5 is still constructing the next bar. The
+         // greatest timestamp is therefore not automatically a forming bar.
+         // Time proves closure even when bar zero is not present yet.
+         if(rates[newest_index].time + timeframe_seconds > run_started) continue;
          if(rates[newest_index].time > newest_closed) newest_closed = rates[newest_index].time;
          if(rates[newest_index].time > last_sent) newer_closed_count++;
       }
@@ -3756,7 +3781,7 @@ void PriceReporter_Run()
       datetime newest_time = last_sent;
       for(int r = 0; r < copied; r++)
       {
-         if(rates[r].time >= actual_current_bar) continue; // never publish forming bar zero
+         if(rates[r].time + timeframe_seconds > run_started) continue;
          if(rates[r].time <= last_sent) continue;
          if(included > 0) bars_json += ",";
          bars_json +=
@@ -3830,11 +3855,13 @@ void PriceReporter_Run()
    if(diagnostics_due) g_pr_last_diagnostics = run_started;
 
    int selected[];
-   // Live deadlines always win. Historical population resumes on the next
-   // one-second event only after every due candle is captured and accepted.
-   if(g_pr_live_sync_pending || ArraySize(g_pr_outbox_keys) > 0)
+   // Never overlap a captured-but-unacknowledged live batch with a large
+   // snapshot. A broker-history retry by itself must not starve an unrelated
+   // repair forever, though, so one snapshot slot remains available.
+   if(ArraySize(g_pr_outbox_keys) > 0)
       return;
-   for(int pass = 0; pass < 2 && ArraySize(selected) < PR_MAX_BOOTSTRAP_SERIES_PER_RUN; pass++)
+   int bootstrap_limit = g_pr_live_sync_pending ? 1 : PR_MAX_BOOTSTRAP_SERIES_PER_RUN;
+   for(int pass = 0; pass < 2 && ArraySize(selected) < bootstrap_limit; pass++)
    {
       // Reserve at most one slot for each lane. A permanently failing
       // strategy-priority series must never consume both request slots and
@@ -3861,7 +3888,7 @@ void PriceReporter_Run()
    // checks preserve the one-request-per-series rule while keeping initial
    // population moving at the full two-series capacity.
    for(int offset = 0; offset < candidate_count &&
-       ArraySize(selected) < PR_MAX_BOOTSTRAP_SERIES_PER_RUN; offset++)
+       ArraySize(selected) < bootstrap_limit; offset++)
    {
       int index = (g_pr_background_cursor + offset) % candidate_count;
       bool already_selected = false;
@@ -3894,8 +3921,10 @@ void PriceReporter_Run()
       ENUM_TIMEFRAMES period = PriceReporter_TimeframeEnum(timeframe);
       MqlRates rates[];
       ResetLastError();
-      // End the request at a concrete server time, then explicitly remove bar
-      // zero. This shares the live lane's time-addressed synchronization path.
+      // End the request at a concrete server time. Closure is decided from
+      // each timestamp rather than assuming the greatest returned bar is
+      // forming; MT5 sometimes returns 1,000 closed bars before bar zero is
+      // available for an off-chart symbol.
       int copied = CopyRates(broker_symbol, period, run_started,
                              PR_BACKFILL_BARS + 1, rates);
       if(copied <= 1)
@@ -3909,13 +3938,10 @@ void PriceReporter_Run()
       if(digits < 0 || digits > 12) digits = 8;
       string bars_json = "";
       datetime newest_time = 0;
-      datetime current_bar_open = 0;
-      for(int r = 0; r < copied; r++)
-         if(rates[r].time > current_bar_open) current_bar_open = rates[r].time;
       int closed_count = 0;
       for(int r = 0; r < copied; r++)
       {
-         if(rates[r].time >= current_bar_open) continue;
+         if(rates[r].time + PriceReporter_TimeframeSeconds(timeframe) > run_started) continue;
          if(closed_count > 0) bars_json += ",";
          bars_json +=
             "{\"time\":\"" + EASync_ToIso8601(rates[r].time) + "\","
@@ -4049,7 +4075,7 @@ input int    PositionStreamSeconds   = 2;  // ephemeral mark-to-market broadcast
 input int    CalendarSyncMinutes  = 15;  // Economic calendar push interval
 input bool   EnableCalendarSync   = true; // Turn off only if this terminal should not push calendar data
 input bool   EnableWebSocketPush  = true; // Persistent WebSocket for command wake-ups and ephemeral live position state; durable polling remains the fallback
-input int    PriceScanSeconds     = 1;   // compatibility input; v1.40 deadline checks are fixed at 1s and send only new bars
+input int    PriceScanSeconds     = 1;   // compatibility input; v1.42 deadline checks are fixed at 1s and send only new bars
 input int    SymbolMapRefreshHours = 24;  // Full broker-symbol rescan interval (also runs once on startup and on-demand from the dashboard)
 
 //+------------------------------------------------------------------+

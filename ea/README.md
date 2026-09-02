@@ -1,4 +1,4 @@
-# LucreHubEA — v1.0.41 (single-file build)
+# LucreHubEA — v1.0.42 (single-file build)
 
 ## What changed in this build
 
@@ -95,6 +95,12 @@ all-series freshness sweep from clean historical bootstrap work. New and
 re-enabled pairs import up to 1,000 closed candles on all eight timeframes,
 while every enabled series continues receiving current candles during that
 background bootstrap.
+
+Version 1.0.42 makes the live candle cursor deterministic for every
+symbol/timeframe, sends missing foundations directly to the snapshot lane,
+and accepts a just-closed bar by timestamp even if MT5 has not yet exposed the
+next forming bar. These changes prevent a random subset of off-chart M1/M5
+series from stopping after the EA's initial bootstrap.
 
 Version 1.0.35 also identifies each attached EA session. Supabase leases a
 terminal key to one active session at a time, preventing a local chart and its
