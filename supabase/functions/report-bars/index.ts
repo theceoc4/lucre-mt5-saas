@@ -1,4 +1,4 @@
-// v1.0.40 — atomic deadline-candle ingestion and acknowledgements.
+// v1.0.43 — bounded snapshots plus broker-session collector evidence.
 //
 // The MT5 EA posts newly closed bars for selected symbol/timeframe series.
 // This function reverse-resolves each broker-native spelling to the terminal's
@@ -35,7 +35,7 @@ const CORS_HEADERS = {
 };
 
 const MAX_SERIES_PER_REQUEST = 400; // 50 symbols x 8 timeframes
-const MAX_BARS_PER_SYMBOL = 1000;
+const MAX_BARS_PER_SERIES = 1000;
 const MAX_BARS_PER_REQUEST = 2200;
 
 function jsonResponse(body: unknown, status = 200) {
@@ -72,6 +72,7 @@ interface IncomingCollectorDiagnostic {
     "awaiting_tick" | "upload_pending" | "uploading" | "retry_backoff" |
     "market_closed" | "error";
   source_latest_bar_time?: string;
+  source_tick_time?: string;
   expected_bar_time?: string;
   last_error?: string;
   attempt_count?: number;
@@ -266,11 +267,14 @@ Deno.serve(async (req: Request) => {
     if (!symbolPayload || typeof symbolPayload.broker_symbol !== "string" || !Array.isArray(symbolPayload.bars)) {
       return jsonResponse({ error: "invalid_symbol_payload" }, 400);
     }
-    if (symbolPayload.bars.length > MAX_BARS_PER_SYMBOL) {
+    if (symbolPayload.bars.length > MAX_BARS_PER_SERIES) {
+      const timeframe = symbolPayload.timeframe ?? "M5";
       return jsonResponse({
-        error: "too_many_bars_for_symbol",
+        error: "too_many_bars_for_series",
         broker_symbol: symbolPayload.broker_symbol,
-        max: MAX_BARS_PER_SYMBOL,
+        timeframe,
+        received: symbolPayload.bars.length,
+        max: MAX_BARS_PER_SERIES,
       }, 413);
     }
     const timeframe = symbolPayload.timeframe ?? "M5";
@@ -325,6 +329,8 @@ Deno.serve(async (req: Request) => {
       ? new Date(diagnostic.source_latest_bar_time) : null;
     const expectedTime = diagnostic.expected_bar_time
       ? new Date(diagnostic.expected_bar_time) : null;
+    const sourceTickTime = diagnostic.source_tick_time
+      ? new Date(diagnostic.source_tick_time) : null;
     return [{
       symbol: canonicalSymbol,
       timeframe: diagnostic.timeframe,
@@ -333,6 +339,8 @@ Deno.serve(async (req: Request) => {
         ? sourceTime.toISOString() : null,
       expected_bar_time: expectedTime && !Number.isNaN(expectedTime.getTime())
         ? expectedTime.toISOString() : null,
+      source_tick_time: sourceTickTime && !Number.isNaN(sourceTickTime.getTime())
+        ? sourceTickTime.toISOString() : null,
       last_error: diagnostic.last_error?.slice(0, 240) ?? null,
       attempt_count: Number.isInteger(diagnostic.attempt_count)
         ? Math.max(0, Number(diagnostic.attempt_count)) : 0,

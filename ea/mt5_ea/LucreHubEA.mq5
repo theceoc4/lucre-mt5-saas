@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.42 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.43 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.42"
+#property version   "1.43"
 #property strict
 
 
@@ -1259,7 +1259,7 @@ string EASync_BuildRequestBody()
       "\"account_login\":\"" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) + "\","
       "\"server\":\"" + EASync_JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\","
       "\"is_live\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL ? "true" : "false") + ","
-      "\"ea_version\":\"1.0.42\","
+      "\"ea_version\":\"1.0.43\","
       "\"terminal_trade_allowed\":" + (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
       "\"mql_trade_allowed\":" + (MQLInfoInteger(MQL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
       "\"account_trade_allowed\":" + (AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
@@ -2904,6 +2904,10 @@ int      g_pr_priority_cursor = 0;
 int      g_pr_background_cursor = 0;
 datetime g_pr_last_freshness = 0;
 datetime g_pr_last_diagnostics = 0;
+datetime g_pr_last_bootstrap_attempt = 0;
+datetime g_pr_bootstrap_retry_at = 0;
+int      g_pr_bootstrap_failure_streak = 0;
+int      g_pr_last_http_status = 0;
 bool     g_pr_bootstrap_pending = true;
 bool     g_pr_live_sync_pending = false;
 string   g_pr_sync_keys[];
@@ -3291,6 +3295,47 @@ int PriceReporter_TimeframeSeconds(const string timeframe)
    return 60;
 }
 
+int PriceReporter_SecondsOfDay(const datetime value)
+{
+   MqlDateTime parts;
+   if(!TimeToStruct(value, parts)) return 0;
+   return parts.hour * 3600 + parts.min * 60 + parts.sec;
+}
+
+// Broker session metadata is the only safe proof that a quiet symbol is
+// intentionally paused. A stale/missing tick during an open session remains a
+// collection failure; it must never be hidden behind a market-closed label.
+bool PriceReporter_QuoteSessionOpen(const string broker_symbol,
+                                    const datetime now,
+                                    bool &schedule_known)
+{
+   schedule_known = false;
+   MqlDateTime current;
+   if(!TimeToStruct(now, current)) return false;
+   int now_seconds = PriceReporter_SecondsOfDay(now);
+   bool open_now = false;
+   for(int weekday = 0; weekday < 7; weekday++)
+   {
+      for(uint session = 0; session < 32; session++)
+      {
+         datetime session_from = 0;
+         datetime session_to = 0;
+         if(!SymbolInfoSessionQuote(broker_symbol, (ENUM_DAY_OF_WEEK)weekday,
+                                    session, session_from, session_to))
+            break;
+         schedule_known = true;
+         if(weekday != current.day_of_week) continue;
+         int from_seconds = PriceReporter_SecondsOfDay(session_from);
+         int to_seconds = PriceReporter_SecondsOfDay(session_to);
+         if(from_seconds == to_seconds ||
+            (from_seconds < to_seconds && now_seconds >= from_seconds && now_seconds < to_seconds) ||
+            (from_seconds > to_seconds && (now_seconds >= from_seconds || now_seconds < to_seconds)))
+            open_now = true;
+      }
+   }
+   return open_now;
+}
+
 //+------------------------------------------------------------------+
 //| Requests only the recent wall-clock window that can contain a new |
 //| closed candle. Unlike a positional CopyRates(1, n) request, this   |
@@ -3410,6 +3455,7 @@ bool PriceReporter_SendPayload(const string symbols_json,
    string result_headers;
    ResetLastError();
    int status = WebRequest("POST", url, headers, 5000, data, result, result_headers);
+   g_pr_last_http_status = status;
 
    if(status == -1)
    {
@@ -3614,8 +3660,13 @@ void PriceReporter_Run()
       int copy_error = GetLastError();
       int stale_after_seconds = 180;
       MqlTick latest_tick;
-      bool tick_is_current = SymbolInfoTick(broker_symbol, latest_tick) &&
+      bool has_tick = SymbolInfoTick(broker_symbol, latest_tick);
+      bool tick_is_current = has_tick &&
                              latest_tick.time >= run_started - stale_after_seconds;
+      bool session_schedule_known = false;
+      bool quote_session_open = PriceReporter_QuoteSessionOpen(
+         broker_symbol, run_started, session_schedule_known);
+      bool confirmed_market_closed = session_schedule_known && !quote_session_open;
       if(copied <= 0)
       {
          // During a legitimate market closure, the requested recent date
@@ -3633,11 +3684,12 @@ void PriceReporter_Run()
             if(diagnostics_due)
             {
                if(diagnostic_count > 0) diagnostics_json += ",";
+               string collector_state = confirmed_market_closed ? "market_closed" : "awaiting_tick";
                diagnostics_json +=
                   "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
-                  "\"timeframe\":\"" + timeframe + "\",\"state\":\"awaiting_tick\","
-                  "\"expected_bar_time\":\"" + EASync_ToIso8601(last_sent + timeframe_seconds) + "\","
-                  "\"last_error\":\"Candle boundary passed; waiting for the broker's next tick\","
+                  "\"timeframe\":\"" + timeframe + "\",\"state\":\"" + collector_state + "\"," +
+                  (has_tick ? "\"source_tick_time\":\"" + EASync_ToIso8601(latest_tick.time) + "\"," : "") +
+                  (!confirmed_market_closed ? "\"last_error\":\"No current broker tick or candle during an open or unknown session\"," : "") +
                   "\"attempt_count\":0,"
                   "\"retry_after_seconds\":5}";
                diagnostic_count++;
@@ -3693,12 +3745,13 @@ void PriceReporter_Run()
          if(diagnostics_due)
          {
             if(diagnostic_count > 0) diagnostics_json += ",";
+            string collector_state = confirmed_market_closed ? "market_closed" : "awaiting_tick";
             diagnostics_json +=
                "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
-               "\"timeframe\":\"" + timeframe + "\",\"state\":\"awaiting_tick\","
+               "\"timeframe\":\"" + timeframe + "\",\"state\":\"" + collector_state + "\"," +
+               (has_tick ? "\"source_tick_time\":\"" + EASync_ToIso8601(latest_tick.time) + "\"," : "") +
                "\"source_latest_bar_time\":\"" + EASync_ToIso8601(newest_closed) + "\","
-               "\"expected_bar_time\":\"" + EASync_ToIso8601(last_sent + timeframe_seconds) + "\","
-               "\"last_error\":\"Candle boundary passed; waiting for the broker's next tick\","
+               (!confirmed_market_closed ? "\"last_error\":\"No current broker tick during an open or unknown session\"," : "") +
                "\"attempt_count\":0,"
                "\"retry_after_seconds\":5}";
             diagnostic_count++;
@@ -3710,6 +3763,18 @@ void PriceReporter_Run()
       // still our checkpoint, the gap contains no broker candles to ingest.
       bool session_gap_advanced = actual_current_bar > last_sent + timeframe_seconds &&
                                   newest_closed <= last_sent;
+      if(session_gap_advanced && diagnostics_due)
+      {
+         if(diagnostic_count > 0) diagnostics_json += ",";
+         diagnostics_json +=
+            "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
+            "\"timeframe\":\"" + timeframe + "\",\"state\":\"ready\"," +
+            (has_tick ? "\"source_tick_time\":\"" + EASync_ToIso8601(latest_tick.time) + "\"," : "") +
+            "\"source_latest_bar_time\":\"" + EASync_ToIso8601(last_sent) + "\","
+            "\"expected_bar_time\":\"" + EASync_ToIso8601(actual_current_bar + timeframe_seconds) + "\","
+            "\"attempt_count\":0,\"retry_after_seconds\":5}";
+         diagnostic_count++;
+      }
       bool expected_candle_missing = new_close_expected && market_is_active &&
                                      newest_closed <= last_sent && !session_gap_advanced;
       if(expected_candle_missing)
@@ -3860,6 +3925,10 @@ void PriceReporter_Run()
    // repair forever, though, so one snapshot slot remains available.
    if(ArraySize(g_pr_outbox_keys) > 0)
       return;
+   if((g_pr_last_bootstrap_attempt > 0 &&
+       run_started - g_pr_last_bootstrap_attempt < PR_BOOTSTRAP_INTERVAL_SECONDS) ||
+      g_pr_bootstrap_retry_at > run_started)
+      return;
    int bootstrap_limit = g_pr_live_sync_pending ? 1 : PR_MAX_BOOTSTRAP_SERIES_PER_RUN;
    for(int pass = 0; pass < 2 && ArraySize(selected) < bootstrap_limit; pass++)
    {
@@ -3934,6 +4003,13 @@ void PriceReporter_Run()
                      (int)SeriesInfoInteger(broker_symbol, period, SERIES_SYNCHRONIZED));
          continue;
       }
+      int eligible_closed = 0;
+      for(int r = 0; r < copied; r++)
+         if(rates[r].time + PriceReporter_TimeframeSeconds(timeframe) <= run_started)
+            eligible_closed++;
+      int closed_to_skip = eligible_closed > PR_BACKFILL_BARS
+         ? eligible_closed - PR_BACKFILL_BARS : 0;
+      int closed_seen = 0;
       int digits = (int)SymbolInfoInteger(broker_symbol, SYMBOL_DIGITS);
       if(digits < 0 || digits > 12) digits = 8;
       string bars_json = "";
@@ -3942,6 +4018,7 @@ void PriceReporter_Run()
       for(int r = 0; r < copied; r++)
       {
          if(rates[r].time + PriceReporter_TimeframeSeconds(timeframe) > run_started) continue;
+         if(closed_seen++ < closed_to_skip) continue;
          if(closed_count > 0) bars_json += ",";
          bars_json +=
             "{\"time\":\"" + EASync_ToIso8601(rates[r].time) + "\","
@@ -3956,6 +4033,12 @@ void PriceReporter_Run()
          closed_count++;
       }
       if(closed_count <= 0) continue;
+      if(closed_count > PR_BACKFILL_BARS)
+      {
+         PrintFormat("PriceReporter: refused oversized bootstrap series %s %s count=%d max=%d",
+                     broker_symbol, timeframe, closed_count, PR_BACKFILL_BARS);
+         continue;
+      }
       bool server_requires_snapshot = StringFind(candidate_required[i], "\"" + timeframe + "\"") >= 0;
       datetime server_checkpoint = PriceReporter_ServerCheckpoint(candidate_checkpoints[i], timeframe);
       if(forced_gap[i] && !server_requires_snapshot && newest_time <= server_checkpoint)
@@ -3989,18 +4072,37 @@ void PriceReporter_Run()
    }
 
    string bootstrap_response = "";
-   if(bootstrap_series > 0 && PriceReporter_SendPayload(
-      bootstrap_json, bootstrap_series, bootstrap_bars, "bootstrap", bootstrap_response))
+   if(bootstrap_series > 0)
    {
-      for(int i = 0; i < ArraySize(bootstrap_keys); i++)
+      g_pr_last_bootstrap_attempt = run_started;
+      if(PriceReporter_SendPayload(
+         bootstrap_json, bootstrap_series, bootstrap_bars, "bootstrap", bootstrap_response))
       {
-         PriceReporter_MarkSent(bootstrap_keys[i], bootstrap_times[i]);
-         if(bootstrap_counts[i] >= PR_MIN_BOOTSTRAP_BARS)
-            PriceReporter_MarkBootstrapComplete(bootstrap_keys[i], bootstrap_generations[i]);
+         g_pr_bootstrap_failure_streak = 0;
+         g_pr_bootstrap_retry_at = 0;
+         for(int i = 0; i < ArraySize(bootstrap_keys); i++)
+         {
+            PriceReporter_MarkSent(bootstrap_keys[i], bootstrap_times[i]);
+            if(bootstrap_counts[i] >= PR_MIN_BOOTSTRAP_BARS)
+               PriceReporter_MarkBootstrapComplete(bootstrap_keys[i], bootstrap_generations[i]);
+         }
+         // Refresh the manifest immediately so successfully verified series leave
+         // the bootstrap queue without waiting for the normal durable poll.
+         EASync_ForceSync();
       }
-      // Refresh the manifest immediately so successfully verified series leave
-      // the bootstrap queue without waiting for the normal durable poll.
-      EASync_ForceSync();
+      else
+      {
+         g_pr_bootstrap_failure_streak++;
+         int backoff_shift = g_pr_bootstrap_failure_streak - 1;
+         if(backoff_shift < 0) backoff_shift = 0;
+         if(backoff_shift > 3) backoff_shift = 3;
+         int backoff_seconds = PR_BOOTSTRAP_INTERVAL_SECONDS * (1 << backoff_shift);
+         if(backoff_seconds > 60) backoff_seconds = 60;
+         if(g_pr_last_http_status == 413) backoff_seconds = 60;
+         g_pr_bootstrap_retry_at = run_started + backoff_seconds;
+         PrintFormat("PriceReporter: bootstrap retry deferred %ds after HTTP %d (failure %d)",
+                     backoff_seconds, g_pr_last_http_status, g_pr_bootstrap_failure_streak);
+      }
    }
 
    if(freshness_due && ArraySize(g_pr_outbox_keys) == 0 && bootstrap_series == 0)
@@ -4024,6 +4126,10 @@ void PriceReporter_Init(const string base_url, const string api_key, const int r
    g_pr_background_cursor = 0;
    g_pr_last_freshness = 0;
    g_pr_last_diagnostics = 0;
+   g_pr_last_bootstrap_attempt = 0;
+   g_pr_bootstrap_retry_at = 0;
+   g_pr_bootstrap_failure_streak = 0;
+   g_pr_last_http_status = 0;
    g_pr_bootstrap_pending = true;
    g_pr_live_sync_pending = false;
    ArrayResize(g_pr_sync_keys, 0);
@@ -4075,7 +4181,7 @@ input int    PositionStreamSeconds   = 2;  // ephemeral mark-to-market broadcast
 input int    CalendarSyncMinutes  = 15;  // Economic calendar push interval
 input bool   EnableCalendarSync   = true; // Turn off only if this terminal should not push calendar data
 input bool   EnableWebSocketPush  = true; // Persistent WebSocket for command wake-ups and ephemeral live position state; durable polling remains the fallback
-input int    PriceScanSeconds     = 1;   // compatibility input; v1.42 deadline checks are fixed at 1s and send only new bars
+input int    PriceScanSeconds     = 1;   // compatibility input; v1.43 deadline checks are fixed at 1s and send only new bars
 input int    SymbolMapRefreshHours = 24;  // Full broker-symbol rescan interval (also runs once on startup and on-demand from the dashboard)
 
 //+------------------------------------------------------------------+

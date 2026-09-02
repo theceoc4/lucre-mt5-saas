@@ -1,5 +1,4 @@
-// v1.0.39 — active-feed readiness and per-pair evaluation health without
-//            turning transient stale candles into full-history repair storms.
+// v1.0.43 — broker-session-aware feed readiness without synthetic candles.
 // v1.0.31 — progressive indicator stacks with bounded AND/OR evaluation.
 // v1.0.30 — strategy-signal-engine
 //
@@ -25,6 +24,7 @@ type Session = "asia" | "london" | "ny" | "overlap";
 type Regime = "trending" | "ranging";
 type PolicyDecision = "ok" | "downweight" | "block";
 type EvaluationStatus = "session_blocked" | "symbol_disabled" | "missing_bars" | "stale_candles" |
+  "market_paused" |
   "no_setup" | "direction_blocked" | "spread_blocked" | "cooldown_blocked" | "duplicate_bar" |
   "shadow_signal" | "manual_signal" | "ea_version_blocked" | "policy_blocked" | "risk_blocked" |
   "broker_mapping_failed" | "command_failed" | "command_queued";
@@ -1097,7 +1097,7 @@ Deno.serve(async (req: Request) => {
     );
     const { data: feedStates, error: feedStatesError } = await admin
       .from("price_feed_series_state")
-      .select("terminal_id,symbol,timeframe,status,bootstrap_required,history_bar_count,latest_bar_time")
+      .select("terminal_id,symbol,timeframe,status,bootstrap_required,history_bar_count,latest_bar_time,collector_state,collector_reported_at,expected_bar_time,source_tick_time")
       .in("terminal_id", terminalIds);
     if (feedStatesError) {
       return jsonResponse({ error: "price_feed_states_fetch_failed", detail: feedStatesError.message }, 500);
@@ -1217,6 +1217,24 @@ Deno.serve(async (req: Request) => {
         const candleAgeSeconds = Math.max(0, (now.getTime() - new Date(sourceBarTime).getTime()) / 1000);
         const staleAfterSeconds = Math.max(180, (TIMEFRAME_SECONDS[timeframe] ?? 60) * 2.5);
         if (candleAgeSeconds > staleAfterSeconds) {
+          const primaryFeedState = feedStateBySeries.get(
+            `${strategy.terminal_id}:${symbol}:${timeframe}`,
+          );
+          const collectorReportedMs = primaryFeedState?.collector_reported_at
+            ? new Date(primaryFeedState.collector_reported_at).getTime() : 0;
+          const collectorIsRecent = Number.isFinite(collectorReportedMs) &&
+            now.getTime() - collectorReportedMs < 90_000;
+          if (collectorIsRecent && ["market_closed", "ready"].includes(
+            String(primaryFeedState?.collector_state ?? ""),
+          )) {
+            recordEvaluation(strategy, symbol, "market_paused", sourceBarTime, candleAgeSeconds, {
+              feed_state: primaryFeedState?.collector_state,
+              expected_bar_time: primaryFeedState?.expected_bar_time ?? null,
+              source_tick_time: primaryFeedState?.source_tick_time ?? null,
+              recovery: "wait_for_next_broker_close",
+            });
+            continue;
+          }
           recordEvaluation(strategy, symbol, "stale_candles", sourceBarTime, candleAgeSeconds, {
             stale_after_seconds: staleAfterSeconds,
             recovery: "ea_authoritative_timeseries_refresh",

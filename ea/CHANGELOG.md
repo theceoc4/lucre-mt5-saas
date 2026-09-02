@@ -1,5 +1,17 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.43 — Bounded snapshots and broker-session truth (2026-09-02)
+
+- Caps each bootstrap payload at the newest 1,000 closed candles after MT5
+  closure classification, eliminating the 1,001-row HTTP 413 loop.
+- Enforces the five-second bootstrap lane interval and applies bounded
+  exponential backoff after rejected or failed uploads.
+- Reports broker maintenance/session pauses separately from missing candle
+  history, including the latest broker tick when available.
+- Detects the first forming candle after a session gap and reports the exact
+  next close expected without creating synthetic gap candles.
+- Keeps deadline-driven live candle capture ahead of all bootstrap work.
+
 ## v1.0.42 — Deterministic all-series candle cursors (2026-09-02)
 
 - Explicitly initializes each per-symbol/timeframe accepted-candle cursor and

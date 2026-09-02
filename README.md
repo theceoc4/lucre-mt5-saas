@@ -10,9 +10,9 @@ was synchronized from production on **2026-08-21**.
 
 | Component | Location in repo | Live location | Version |
 |---|---|---|---|
-| Backend (Supabase) | [`supabase/`](./supabase) | [qxlfnscmrhwfcpattqxa.supabase.co](https://qxlfnscmrhwfcpattqxa.supabase.co) | reliable strategy state mutation v1.0.40 |
-| Dashboard (frontend) | [`dashboard/`](./dashboard) | [mt5dashboardui.vercel.app](https://mt5dashboardui.vercel.app) | v1.0.42 |
-| EA (MetaTrader 5) | [`ea/`](./ea) | Runs on MT5 terminal / VPS | v1.0.35 (single-file) |
+| Backend (Supabase) | [`supabase/`](./supabase) | [qxlfnscmrhwfcpattqxa.supabase.co](https://qxlfnscmrhwfcpattqxa.supabase.co) | broker-session feed health v1.0.43 |
+| Dashboard (frontend) | [`dashboard/`](./dashboard) | [mt5dashboardui.vercel.app](https://mt5dashboardui.vercel.app) | v1.0.45 |
+| EA (MetaTrader 5) | [`ea/`](./ea) | Runs on MT5 terminal / VPS | v1.0.43 (single-file) |
 
 ## Important caveats
 

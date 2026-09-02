@@ -1,4 +1,4 @@
-# LucreHubEA — v1.0.42 (single-file build)
+# LucreHubEA — v1.0.43 (single-file build)
 
 ## What changed in this build
 
@@ -101,6 +101,13 @@ symbol/timeframe, sends missing foundations directly to the snapshot lane,
 and accepts a just-closed bar by timestamp even if MT5 has not yet exposed the
 next forming bar. These changes prevent a random subset of off-chart M1/M5
 series from stopping after the EA's initial bootstrap.
+
+Version 1.0.43 caps every historical snapshot at the newest 1,000 closed
+candles even when MT5 returns 1,001 already-closed rows. Bootstrap failures use
+bounded backoff instead of replaying a rejected request every second. The EA
+also reports broker-session pauses and the latest source tick so the dashboard
+and strategy engine can wait for the first real post-session candle without
+inventing bars or mislabeling the feed stale.
 
 Version 1.0.35 also identifies each attached EA session. Supabase leases a
 terminal key to one active session at a time, preventing a local chart and its

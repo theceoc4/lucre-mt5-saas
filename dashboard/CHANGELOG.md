@@ -7,6 +7,15 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.45 — Broker-session-aware candle health (2026-09-02)
+
+- Shows broker maintenance windows as a waiting state instead of a broken
+  candle feed when the EA has recently confirmed that no real candle is due.
+- Shows the first forming candle after a session gap as awaiting close, keeping
+  repair actions reserved for genuine collection failures.
+- Strategy health records market-paused evaluations separately from stale
+  candle errors and resumes on the first real post-session close.
+
 ## v1.0.44 — Pair performance strip (2026-09-02)
 
 - Adds a compact three-column performance row to the trading side of every

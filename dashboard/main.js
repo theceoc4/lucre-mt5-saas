@@ -2101,6 +2101,7 @@ const STRATEGY_HEALTH_LABELS = {
   symbol_disabled: 'Pair hidden in Settings',
   missing_bars: 'Waiting for candle history',
   stale_candles: 'Candle feed is stale',
+  market_paused: 'Waiting for next broker candle',
   no_setup: 'No setup on latest candle',
   direction_blocked: 'Direction filter blocked setup',
   spread_blocked: 'Spread above limit',
@@ -2120,7 +2121,7 @@ function strategyHealthSummary(strategy) {
   if (!strategy.enabled) return { label: 'Disabled', tone: 'neutral', checked: null };
   const rows = strategy.evaluation_states || [];
   if (rows.length === 0) return { label: 'Waiting for first engine evaluation', tone: 'warn', checked: null };
-  const priority = ['command_failed', 'ea_version_blocked', 'broker_mapping_failed', 'stale_candles', 'missing_bars', 'risk_blocked', 'policy_blocked', 'spread_blocked', 'session_blocked', 'cooldown_blocked', 'direction_blocked', 'no_setup', 'duplicate_bar', 'manual_signal', 'shadow_signal', 'command_queued'];
+  const priority = ['command_failed', 'ea_version_blocked', 'broker_mapping_failed', 'stale_candles', 'missing_bars', 'risk_blocked', 'policy_blocked', 'spread_blocked', 'session_blocked', 'market_paused', 'cooldown_blocked', 'direction_blocked', 'no_setup', 'duplicate_bar', 'manual_signal', 'shadow_signal', 'command_queued'];
   const status = priority.find((candidate) => rows.some((row) => row.status === candidate)) || rows[0].status;
   const count = rows.filter((row) => row.status === status).length;
   const checked = rows.reduce((latest, row) => !latest || new Date(row.last_checked_at) > new Date(latest) ? row.last_checked_at : latest, null);
@@ -2704,12 +2705,20 @@ function priceFeedPresentation(symbol, timeframe) {
   }
   const collectorReportedMs = row.collector_reported_at ? new Date(row.collector_reported_at).getTime() : 0;
   const collectorIsRecent = Number.isFinite(collectorReportedMs) && Date.now() - collectorReportedMs < 90_000;
-  if (row.collector_state === 'awaiting_tick' && collectorIsRecent) {
+  if (['market_closed', 'ready'].includes(row.collector_state) && collectorIsRecent) {
+    const stateLabels = {
+      market_closed: 'Market paused',
+      ready: 'Awaiting candle close',
+    };
     return {
       available: true,
       tone: 'waiting',
-      label: 'Awaiting broker tick',
-      detail: `${Number(row.history_bar_count).toLocaleString()} candles · broker has not emitted the next candle yet`,
+      label: stateLabels[row.collector_state] || 'Awaiting broker',
+      detail: `${Number(row.history_bar_count).toLocaleString()} candles · ${
+        row.collector_state === 'market_closed'
+          ? 'broker session is paused'
+          : 'waiting for the next real broker candle to close'
+      }`,
       row,
     };
   }
