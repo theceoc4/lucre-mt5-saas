@@ -1,5 +1,21 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.38 — Authoritative off-chart timeseries refresh (2026-09-02)
+
+- Replaces cached `CopyRates` wake-up probes with uncached `iTime` requests,
+  forcing MT5 to obtain the actual current series when a candle should have
+  closed or a repair is active, even when no matching chart is open.
+- Explicitly activates symbols that MT5 marks selected but keeps invisible as
+  internal conversion dependencies, ensuring they receive broker quotes.
+- Uses both the current quote and authoritative current-bar time to distinguish
+  an active market from a legitimate session closure.
+- Reports retry-backoff state instead of leaving frozen series labeled idle.
+- Skips healthy series between their expected candle boundaries, keeping the
+  authoritative collector workload near 22 reads per minute for 17 symbols
+  instead of repeatedly scanning all 136 series.
+- Keeps 1,000-candle snapshots, closed-candle-only ingestion, and the existing
+  one-minute Supabase write cadence unchanged.
+
 ## v1.0.37 — Continuous off-chart candle refresh (2026-09-01)
 
 - Keeps every enabled broker symbol/timeframe cache warm with a bounded,

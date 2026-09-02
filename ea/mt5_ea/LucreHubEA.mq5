@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.37 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.38 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.37"
+#property version   "1.38"
 #property strict
 
 
@@ -1259,7 +1259,7 @@ string EASync_BuildRequestBody()
       "\"account_login\":\"" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) + "\","
       "\"server\":\"" + EASync_JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\","
       "\"is_live\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL ? "true" : "false") + ","
-      "\"ea_version\":\"1.0.37\","
+      "\"ea_version\":\"1.0.38\","
       "\"terminal_trade_allowed\":" + (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
       "\"mql_trade_allowed\":" + (MQLInfoInteger(MQL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
       "\"account_trade_allowed\":" + (AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
@@ -2896,15 +2896,12 @@ datetime g_pr_last_report = 0;
 #define PR_BOOTSTRAP_INTERVAL_SECONDS 5
 #define PR_FRESHNESS_INTERVAL_SECONDS 60
 #define PR_DIAGNOSTIC_INTERVAL_SECONDS 60
-#define PR_CACHE_PUMP_INTERVAL_SECONDS 5
-#define PR_CACHE_PUMP_SERIES_PER_RUN 32
 string   g_pr_series_keys[];
 datetime g_pr_series_last_sent[];
 string   g_pr_bootstrap_keys[];
 int      g_pr_bootstrap_generations[];
 int      g_pr_priority_cursor = 0;
 int      g_pr_background_cursor = 0;
-int      g_pr_cache_pump_cursor = 0;
 datetime g_pr_last_freshness = 0;
 datetime g_pr_last_diagnostics = 0;
 bool     g_pr_bootstrap_pending = true;
@@ -3096,6 +3093,19 @@ int PriceReporter_TimeframeSeconds(const string timeframe)
 }
 
 //+------------------------------------------------------------------+
+//| Requests the actual current series rather than merely rereading   |
+//| MT5's last locally cached CopyRates block. MetaQuotes documents   |
+//| iTime as an uncached timeseries request on every call, which is   |
+//| essential for symbol/period pairs that do not have an open chart. |
+//+------------------------------------------------------------------+
+datetime PriceReporter_RequestActualSeries(const string broker_symbol,
+                                           const ENUM_TIMEFRAMES period)
+{
+   ResetLastError();
+   return iTime(broker_symbol, period, 0);
+}
+
+//+------------------------------------------------------------------+
 //| Splits top-level "bound_symbols":[ ... ] into object pairs. This  |
 //| deliberately mirrors EASync_ProcessPendingCommands' bracket-depth  |
 //| parser rather than assuming a comma split is safe for JSON objects. |
@@ -3272,30 +3282,6 @@ void PriceReporter_Run()
 
    int candidate_count = ArraySize(candidate_brokers);
 
-   // MT5 automatically keeps the chart's own symbol/timeframe hot, but its
-   // off-chart CopyRates caches can stop at the last explicit read. Touch a
-   // bounded rotating slice every five seconds so every enabled series gets a
-   // current-bar request at least once every ~25 seconds at today's 136-series
-   // scale. This is terminal-local only: no HTTP request or Supabase write is
-   // produced by the pump.
-   if(candidate_count > 0)
-   {
-      int pump_count = (int)MathMin(PR_CACHE_PUMP_SERIES_PER_RUN, candidate_count);
-      for(int pump_offset = 0; pump_offset < pump_count; pump_offset++)
-      {
-         int pump_index = (g_pr_cache_pump_cursor + pump_offset) % candidate_count;
-         string pump_broker = candidate_brokers[pump_index];
-         ENUM_TIMEFRAMES pump_period = PriceReporter_TimeframeEnum(candidate_timeframes[pump_index]);
-         if(!SymbolInfoInteger(pump_broker, SYMBOL_SELECT))
-            SymbolSelect(pump_broker, true);
-         MqlTick pump_tick;
-         SymbolInfoTick(pump_broker, pump_tick); // maintain the Market Watch subscription
-         MqlRates pump_rates[];
-         CopyRates(pump_broker, pump_period, 0, 2, pump_rates);
-      }
-      g_pr_cache_pump_cursor = (g_pr_cache_pump_cursor + pump_count) % candidate_count;
-   }
-
    bool needs_bootstrap[];
    bool forced_gap[];
    bool collector_ready[];
@@ -3317,7 +3303,7 @@ void PriceReporter_Run()
    {
       string broker_symbol = candidate_brokers[i];
       string timeframe = candidate_timeframes[i];
-      if(!SymbolInfoInteger(broker_symbol, SYMBOL_SELECT) && !SymbolSelect(broker_symbol, true))
+      if(!SymbolInfoInteger(broker_symbol, SYMBOL_VISIBLE) && !SymbolSelect(broker_symbol, true))
       {
          PrintFormat("PriceReporter: SymbolSelect failed for %s; will retry", broker_symbol);
          g_pr_bootstrap_pending = true;
@@ -3338,22 +3324,39 @@ void PriceReporter_Run()
       generations[i] = PriceReporter_ServerBootstrapGeneration(candidate_generations_json[i], timeframe);
       bool server_requires = StringFind(candidate_required[i], "\"" + timeframe + "\"") >= 0;
       int history_count = PriceReporter_ServerHistoryCount(candidate_counts_json[i], timeframe);
-      int bar_shift = (freshness_due && last_sent > 0)
-         ? iBarShift(broker_symbol, period, last_sent, false) : -1;
-      bool checkpoint_gap = (last_sent > 0 && bar_shift > PR_FRESHNESS_BARS + 1);
       bool base_bootstrap_needed = server_requires || history_count < PR_MIN_BOOTSTRAP_BARS || last_sent == 0;
-      needs_bootstrap[i] = base_bootstrap_needed || checkpoint_gap;
       if(base_bootstrap_needed) g_pr_bootstrap_pending = true;
 
-      // Healthy series are handled by the lightweight cache pump between
-      // minute freshness passes. A stale series is reread only after its
-      // backoff has elapsed (v1.0.36 accidentally did the inverse).
+      int timeframe_seconds = PriceReporter_TimeframeSeconds(timeframe);
+      // A stored closed candle with open time T remains current until the bar
+      // opened at T + timeframe_seconds itself closes. Avoid authoritative
+      // history calls between closes; stale checkpoints remain due and are
+      // retried on every minute pass until they advance.
+      bool new_close_expected = last_sent == 0 ||
+                                run_started >= last_sent + (timeframe_seconds * 2);
+
+      // A stale series is reread only after its backoff has elapsed (v1.0.36
+      // accidentally did the inverse). Healthy series with no newly closed
+      // bar are skipped entirely instead of loading all 136 caches.
       if(!freshness_due && !base_bootstrap_needed)
       {
          bool sync_active = PriceReporter_SyncAttempts(series_key) > 0;
          if(!sync_active || PriceReporter_SyncWaiting(series_key, run_started))
             continue;
       }
+      if(freshness_due && !base_bootstrap_needed &&
+         PriceReporter_SyncAttempts(series_key) == 0 && !new_close_expected)
+         continue;
+
+      // Force an authoritative current-series request before iBarShift and
+      // CopyRates inspect the local block. Without this, an off-chart cache
+      // can remain internally "synchronized" while its last bar is hours old.
+      // This runs only when a new close is expected or a repair is active.
+      datetime actual_current_bar = PriceReporter_RequestActualSeries(broker_symbol, period);
+      int bar_shift = (freshness_due && last_sent > 0)
+         ? iBarShift(broker_symbol, period, last_sent, false) : -1;
+      bool checkpoint_gap = (last_sent > 0 && bar_shift > PR_FRESHNESS_BARS + 1);
+      needs_bootstrap[i] = base_bootstrap_needed || checkpoint_gap;
 
       MqlRates rates[];
       ResetLastError();
@@ -3389,10 +3392,13 @@ void PriceReporter_Run()
       datetime newest_closed = 0;
       for(int newest_index = 0; newest_index < copied; newest_index++)
          if(rates[newest_index].time > newest_closed) newest_closed = rates[newest_index].time;
-      int stale_after_seconds = (int)MathMax(180, PriceReporter_TimeframeSeconds(timeframe) * 2.5);
+      int stale_after_seconds = (int)MathMax(180, timeframe_seconds * 2.5);
       MqlTick latest_tick;
-      bool market_is_active = SymbolInfoTick(broker_symbol, latest_tick) &&
-                              latest_tick.time >= run_started - stale_after_seconds;
+      bool tick_is_current = SymbolInfoTick(broker_symbol, latest_tick) &&
+                             latest_tick.time >= run_started - stale_after_seconds;
+      bool series_is_current = actual_current_bar > 0 &&
+                               actual_current_bar >= run_started - stale_after_seconds;
+      bool market_is_active = tick_is_current || series_is_current;
       bool cache_stale = market_is_active && newest_closed > 0 &&
                          newest_closed < run_started - stale_after_seconds;
       if(cache_stale)
@@ -3407,6 +3413,18 @@ void PriceReporter_Run()
             forced_gap[i] = true;
             needs_bootstrap[i] = true;
             g_pr_bootstrap_pending = true;
+            if(diagnostics_due)
+            {
+               if(diagnostic_count > 0) diagnostics_json += ",";
+               diagnostics_json +=
+                  "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\"," +
+                  "\"timeframe\":\"" + timeframe + "\",\"state\":\"retry_backoff\"," +
+                  "\"source_latest_bar_time\":\"" + EASync_ToIso8601(newest_closed) + "\"," +
+                  "\"last_error\":\"Waiting for authoritative MT5 timeseries refresh\"," +
+                  "\"attempt_count\":" + IntegerToString(PriceReporter_SyncAttempts(series_key)) + "," +
+                  "\"retry_after_seconds\":" + IntegerToString((int)(g_pr_sync_retry_at[sync_index] - run_started)) + "}";
+               diagnostic_count++;
+            }
             continue;
          }
          int attempt = PriceReporter_SyncAttempt(series_key);
@@ -3621,7 +3639,6 @@ void PriceReporter_Init(const string base_url, const string api_key, const int r
    ArrayResize(g_pr_bootstrap_generations, 0);
    g_pr_priority_cursor = 0;
    g_pr_background_cursor = 0;
-   g_pr_cache_pump_cursor = 0;
    g_pr_last_freshness = 0;
    g_pr_last_diagnostics = 0;
    g_pr_bootstrap_pending = true;
@@ -3638,10 +3655,9 @@ void PriceReporter_Init(const string base_url, const string api_key, const int r
 void PriceReporter_OnTimer()
 {
    if(g_pr_base_url == "" || g_pr_api_key == "") return;
-   // Wake every five seconds for the bounded local cache pump. PriceReporter_Run
-   // independently gates network freshness and diagnostics to one minute, so
-   // this does not multiply Supabase traffic.
-   int next_interval = PR_CACHE_PUMP_INTERVAL_SECONDS;
+   int next_interval = g_pr_bootstrap_pending
+      ? PR_BOOTSTRAP_INTERVAL_SECONDS
+      : (int)MathMax(g_pr_report_interval_seconds, PR_FRESHNESS_INTERVAL_SECONDS);
    if(TimeCurrent() - g_pr_last_report < next_interval) return;
    PriceReporter_Run();
 }
