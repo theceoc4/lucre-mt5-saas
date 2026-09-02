@@ -1,5 +1,23 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.39 — Exact-time live candle state machine (2026-09-02)
+
+- Replaces position-based incremental `CopyRates(1, n)` reads with explicit
+  date-window requests that cannot be satisfied by an old off-chart cache.
+- Verifies that the newest returned closed candle advances beyond Supabase's
+  accepted checkpoint before declaring a symbol/timeframe healthy.
+- Keeps incomplete MT5 timeseries construction on a five-second, event-driven
+  retry lane and uploads immediately when a retry succeeds.
+- Separates live-candle retries from full 1,000-candle history repair so one
+  delayed close never escalates into a large snapshot automatically.
+- Reserves one historical-repair slot for priority strategy series and one for
+  background/manual repairs, preventing recurring M5 work from starving M1,
+  M15, M30, or other timeframes.
+- Uses time-addressed history snapshots ending at the current broker time and
+  explicitly excludes the still-forming bar zero.
+- Logs checkpoint, current-bar, newest-closed-bar, synchronization flags, and
+  retry timing for every series that fails to advance.
+
 ## v1.0.38 — Authoritative off-chart timeseries refresh (2026-09-02)
 
 - Replaces cached `CopyRates` wake-up probes with uncached `iTime` requests,

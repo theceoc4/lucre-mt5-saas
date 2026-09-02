@@ -1,4 +1,4 @@
-# LucreHubEA — v1.0.35 (single-file build)
+# LucreHubEA — v1.0.39 (single-file build)
 
 ## What changed in this build
 
@@ -13,8 +13,8 @@ files that had to be copied separately into `MQL5/Include`:
   pickup
 - `SymbolMap.mqh` — reports the broker's full symbol list to
   `report-symbols`
-- `PriceReporter.mqh` — reports closed M5 bars to `report-bars` for the
-  strategy-signal-engine
+- `PriceReporter.mqh` — reports broker-native closed bars for all enabled
+  symbols across M1, M5, M15, M30, H1, H4, D1, and W1 to `report-bars`
 
 That works fine on a terminal you control directly, but **MetaTrader VPS
 hosting does not reliably sync sibling `.mq5`/`.mqh` source files** — it
@@ -89,7 +89,7 @@ constants in `mt5_ea/LucreHubEA.mq5` before changing risk policy.
   to 300 closed candles and reports broker precision, tick volume, spread and
   real volume.
 
-Before deployment, apply migrations through 060 and deploy the functions,
+Before deployment, apply migrations through 063 and deploy the functions,
 then compile this EA in MetaEditor. Version 1.0.35 separates a lightweight
 all-series freshness sweep from clean historical bootstrap work. New and
 re-enabled pairs import up to 1,000 closed candles on all eight timeframes,
@@ -105,6 +105,14 @@ Initial and manually requested history now loads in bounded five-second batches,
 while normal restarts still resume from Supabase checkpoints. A non-empty but
 stale MT5 `CopyRates` cache is actively synchronized and retried instead of
 being mistaken for a current feed.
+
+Version 1.0.39 addresses every incremental candle by its missing broker-time
+window instead of trusting positions in MT5's possibly stale off-chart cache.
+The reporter does not mark a series current until a returned closed candle
+advances beyond Supabase's durable checkpoint. MT5 history construction stays
+event-driven and retryable, while live-candle work and full-history repairs use
+separate scheduling. Priority strategy repairs and background/manual repairs
+each receive capacity, so one recurring M5 issue cannot starve other periods.
 
 ## Functional behavior
 
