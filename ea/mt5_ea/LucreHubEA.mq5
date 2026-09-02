@@ -4009,7 +4009,7 @@ input int    PositionStreamSeconds   = 2;  // ephemeral mark-to-market broadcast
 input int    CalendarSyncMinutes  = 15;  // Economic calendar push interval
 input bool   EnableCalendarSync   = true; // Turn off only if this terminal should not push calendar data
 input bool   EnableWebSocketPush  = true; // Persistent WebSocket for command wake-ups and ephemeral live position state; durable polling remains the fallback
-input int    PriceScanSeconds     = 5;   // local scan only; network sends occur only for newly closed bars
+input int    PriceScanSeconds     = 1;   // compatibility input; v1.40 deadline checks are fixed at 1s and send only new bars
 input int    SymbolMapRefreshHours = 24;  // Full broker-symbol rescan interval (also runs once on startup and on-demand from the dashboard)
 
 //+------------------------------------------------------------------+
