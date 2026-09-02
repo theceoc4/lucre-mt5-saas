@@ -2712,6 +2712,49 @@ body {
   color: var(--color-text);
 }
 
+.pair-performance-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-surface-sunken) 88%, transparent);
+}
+
+.pair-performance-stat {
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 4px;
+  padding: 10px 7px;
+  text-align: center;
+}
+
+.pair-performance-stat + .pair-performance-stat {
+  border-left: 1px solid var(--color-border);
+}
+
+.pair-performance-stat span {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.pair-performance-stat strong {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--color-text);
+  font-family: var(--font-display);
+  font-size: clamp(0.92rem, 2vw, 1.08rem);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .pair-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;

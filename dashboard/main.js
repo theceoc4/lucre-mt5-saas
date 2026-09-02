@@ -2578,11 +2578,46 @@ function renderSymbolSettingsList() {
 }
 
 function computeSymbolPerformance(symbol) {
-  const trades = state.tradeHistory.filter((t) => t.symbol === symbol);
-  if (trades.length === 0) return { count: 0, winRate: null, totalPl: 0 };
-  const wins = trades.filter((t) => (t.profit ?? 0) > 0).length;
-  const totalPl = trades.reduce((sum, t) => sum + (t.profit ?? 0), 0);
-  return { count: trades.length, winRate: Math.round((wins / trades.length) * 100), totalPl };
+  const trades = getVerifiedTradeHistory().filter((t) => t.symbol === symbol && t.close_time);
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const startOfTomorrow = new Date(startOfToday);
+  startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
+  const todayTrades = trades.filter((trade) => {
+    const closedAt = new Date(trade.close_time);
+    return closedAt >= startOfToday && closedAt < startOfTomorrow;
+  });
+  const dailyPl = todayTrades.reduce((sum, trade) => sum + Number(trade.profit ?? 0), 0);
+
+  if (trades.length === 0) {
+    return { count: 0, winRate: null, totalPl: 0, bestSession: null, dailyPl, dailyCount: 0 };
+  }
+
+  const isWin = (trade) => trade.outcome ? trade.outcome === 'win' : Number(trade.profit ?? 0) > 0;
+  const wins = trades.filter(isWin).length;
+  const totalPl = trades.reduce((sum, trade) => sum + Number(trade.profit ?? 0), 0);
+  const sessions = new Map();
+  trades.forEach((trade) => {
+    if (!trade.session || trade.session === 'unknown') return;
+    const current = sessions.get(trade.session) || { count: 0, wins: 0 };
+    current.count += 1;
+    if (isWin(trade)) current.wins += 1;
+    sessions.set(trade.session, current);
+  });
+  const bestSession = [...sessions.entries()]
+    .sort((left, right) =>
+      (right[1].wins / right[1].count) - (left[1].wins / left[1].count) ||
+      right[1].count - left[1].count
+    )[0]?.[0] ?? null;
+
+  return {
+    count: trades.length,
+    winRate: Math.round((wins / trades.length) * 100),
+    totalPl,
+    bestSession,
+    dailyPl,
+    dailyCount: todayTrades.length,
+  };
 }
 
 function trendMeterPresentation(symbol) {
@@ -2780,6 +2815,15 @@ function renderPairsView() {
         perf.count === 0
           ? 'No closed trades yet'
           : `${perf.winRate}% win rate · ${perf.count} trades`;
+      const bestSessionLabel = perf.bestSession
+        ? SESSION_LABELS[perf.bestSession] || perf.bestSession
+        : '—';
+      const dailyPlColor = perf.dailyPl > 0
+        ? 'var(--color-positive)'
+        : perf.dailyPl < 0
+          ? 'var(--color-negative)'
+          : 'var(--color-text)';
+      const dailyPlLabel = `${perf.dailyPl > 0 ? '+' : ''}${fmtUsd(perf.dailyPl)}`;
       const timeframeButtons = PRICE_TIMEFRAMES.map((timeframe) => {
         const feed = priceFeedPresentation(s.symbol, timeframe);
         const key = `${s.symbol}:${timeframe}`;
@@ -2834,6 +2878,21 @@ function renderPairsView() {
                   <label>TP (pips)</label>
                   <input type="number" min="1" step="any" data-auto-tp-pips="${s.symbol}" value="${s.auto_tp_pips ?? ''}" placeholder="e.g. 40" />
                 </div>
+              </div>
+            </div>
+
+            <div class="pair-performance-row" aria-label="${s.symbol} performance summary">
+              <div class="pair-performance-stat" title="Win rate from ${perf.count} verified closed trade${perf.count === 1 ? '' : 's'}">
+                <span>Win %</span>
+                <strong>${perf.winRate == null ? '—' : `${perf.winRate}%`}</strong>
+              </div>
+              <div class="pair-performance-stat" title="Highest verified win-rate session for ${s.symbol}">
+                <span>Best Session</span>
+                <strong>${bestSessionLabel}</strong>
+              </div>
+              <div class="pair-performance-stat" title="Broker profit from ${perf.dailyCount} verified trade${perf.dailyCount === 1 ? '' : 's'} closed today">
+                <span>Daily P/L</span>
+                <strong style="color:${dailyPlColor}">${dailyPlLabel}</strong>
               </div>
             </div>
 

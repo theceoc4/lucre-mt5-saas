@@ -7,6 +7,16 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.44 — Pair performance strip (2026-09-02)
+
+- Adds a compact three-column performance row to the trading side of every
+  pair card with all-time win rate, best session, and today's realized P/L.
+- Calculates each value from verified closed trades for that symbol and keeps
+  it current through the existing trade-history Realtime refresh.
+- Uses raw broker profit for Daily P/L and reserves positive/negative color for
+  the value, keeping the metric visually scannable without crowding one-click
+  trading controls.
+
 ## v1.0.43 — Visible, idempotent candle repairs (2026-09-01)
 
 - Keeps an active repair generation stable across repeated manual and automatic
