@@ -1,4 +1,4 @@
-# LucreHubEA — v1.0.39 (single-file build)
+# LucreHubEA — v1.0.40 (single-file build)
 
 ## What changed in this build
 
@@ -89,7 +89,7 @@ constants in `mt5_ea/LucreHubEA.mq5` before changing risk policy.
   to 300 closed candles and reports broker precision, tick volume, spread and
   real volume.
 
-Before deployment, apply migrations through 063 and deploy the functions,
+Before deployment, apply migrations through 064 and deploy the functions,
 then compile this EA in MetaEditor. Version 1.0.35 separates a lightweight
 all-series freshness sweep from clean historical bootstrap work. New and
 re-enabled pairs import up to 1,000 closed candles on all eight timeframes,
@@ -113,6 +113,12 @@ advances beyond Supabase's durable checkpoint. MT5 history construction stays
 event-driven and retryable, while live-candle work and full-history repairs use
 separate scheduling. Priority strategy repairs and background/manual repairs
 each receive capacity, so one recurring M5 issue cannot starve other periods.
+
+Version 1.0.40 makes live delivery deadline-driven. Every enabled series is
+checked once per second and every series whose broker candle is due is serviced
+in the same pass, without priority queues or live-series caps. Captured candles
+remain in a local outbox until the backend acknowledges their exact timestamps;
+historical bootstrap work cannot run while live delivery is pending.
 
 ## Functional behavior
 

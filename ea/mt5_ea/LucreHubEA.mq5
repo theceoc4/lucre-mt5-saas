@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.39 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.40 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -40,7 +40,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.39"
+#property version   "1.40"
 #property strict
 
 
@@ -1259,7 +1259,7 @@ string EASync_BuildRequestBody()
       "\"account_login\":\"" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) + "\","
       "\"server\":\"" + EASync_JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\","
       "\"is_live\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL ? "true" : "false") + ","
-      "\"ea_version\":\"1.0.39\","
+      "\"ea_version\":\"1.0.40\","
       "\"terminal_trade_allowed\":" + (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
       "\"mql_trade_allowed\":" + (MQLInfoInteger(MQL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
       "\"account_trade_allowed\":" + (AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
@@ -1479,7 +1479,7 @@ void EASync_Run()
    uchar result[];
    string result_headers;
    ResetLastError();
-   int status = WebRequest("POST", url, headers, 10000, data, result, result_headers);
+   int status = WebRequest("POST", url, headers, 5000, data, result, result_headers);
 
    if(status == -1)
    {
@@ -1705,7 +1705,7 @@ bool CalendarSync_PostBatch(const string &json_events[], const int count)
    uchar result[];
    string result_headers;
    ResetLastError();
-   int status = WebRequest("POST", url, headers, 10000, data, result, result_headers);
+   int status = WebRequest("POST", url, headers, 5000, data, result, result_headers);
 
    if(status == -1)
    {
@@ -1979,7 +1979,7 @@ bool EAStream_LoadConfig()
    uchar result[];
    string result_headers;
    ResetLastError();
-   int status = WebRequest("POST", url, headers, 10000, data, result, result_headers);
+   int status = WebRequest("POST", url, headers, 5000, data, result, result_headers);
    if(status != 200)
    {
       string detail = (status == -1) ? IntegerToString(GetLastError()) : CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
@@ -2765,7 +2765,7 @@ void SymbolMap_Run()
    uchar result[];
    string result_headers;
    ResetLastError();
-   int status = WebRequest("POST", url, headers, 10000, data, result, result_headers);
+   int status = WebRequest("POST", url, headers, 5000, data, result, result_headers);
 
    if(status == -1)
    {
@@ -2894,7 +2894,7 @@ datetime g_pr_last_report = 0;
 #define PR_MIN_BOOTSTRAP_BARS 240
 #define PR_MAX_BOOTSTRAP_SERIES_PER_RUN 2
 #define PR_BOOTSTRAP_INTERVAL_SECONDS 5
-#define PR_FRESHNESS_INTERVAL_SECONDS 60
+#define PR_FRESHNESS_INTERVAL_SECONDS 1
 #define PR_DIAGNOSTIC_INTERVAL_SECONDS 60
 string   g_pr_series_keys[];
 datetime g_pr_series_last_sent[];
@@ -2909,6 +2909,170 @@ bool     g_pr_live_sync_pending = false;
 string   g_pr_sync_keys[];
 datetime g_pr_sync_retry_at[];
 int      g_pr_sync_attempts[];
+// Live delivery outbox. A network failure must never turn a candle that was
+// already captured from MT5 back into a history-discovery problem.
+string   g_pr_outbox_keys[];
+string   g_pr_outbox_brokers[];
+string   g_pr_outbox_timeframes[];
+int      g_pr_outbox_digits[];
+string   g_pr_outbox_bars[];
+int      g_pr_outbox_counts[];
+datetime g_pr_outbox_latest[];
+string   g_pr_tick_wait_keys[];
+datetime g_pr_tick_retry_at[];
+string   g_pr_current_open_keys[];
+datetime g_pr_current_opens[];
+
+datetime PriceReporter_CurrentOpen(const string series_key)
+{
+   for(int i = 0; i < ArraySize(g_pr_current_open_keys); i++)
+      if(g_pr_current_open_keys[i] == series_key) return g_pr_current_opens[i];
+   return 0;
+}
+
+void PriceReporter_MarkCurrentOpen(const string series_key, const datetime bar_time)
+{
+   if(bar_time <= 0) return;
+   for(int i = 0; i < ArraySize(g_pr_current_open_keys); i++)
+   {
+      if(g_pr_current_open_keys[i] != series_key) continue;
+      if(bar_time > g_pr_current_opens[i]) g_pr_current_opens[i] = bar_time;
+      return;
+   }
+   int index = ArraySize(g_pr_current_open_keys);
+   ArrayResize(g_pr_current_open_keys, index + 1);
+   ArrayResize(g_pr_current_opens, index + 1);
+   g_pr_current_open_keys[index] = series_key;
+   g_pr_current_opens[index] = bar_time;
+}
+
+int PriceReporter_TickWaitIndex(const string series_key, const bool create = false)
+{
+   for(int i = 0; i < ArraySize(g_pr_tick_wait_keys); i++)
+      if(g_pr_tick_wait_keys[i] == series_key) return i;
+   if(!create) return -1;
+   int index = ArraySize(g_pr_tick_wait_keys);
+   ArrayResize(g_pr_tick_wait_keys, index + 1);
+   ArrayResize(g_pr_tick_retry_at, index + 1);
+   g_pr_tick_wait_keys[index] = series_key;
+   g_pr_tick_retry_at[index] = 0;
+   return index;
+}
+
+bool PriceReporter_TickWaiting(const string series_key, const datetime now)
+{
+   int index = PriceReporter_TickWaitIndex(series_key, false);
+   return index >= 0 && g_pr_tick_retry_at[index] > now;
+}
+
+void PriceReporter_ScheduleTickCheck(const string series_key, const datetime now)
+{
+   int index = PriceReporter_TickWaitIndex(series_key, true);
+   g_pr_tick_retry_at[index] = now + 5;
+}
+
+void PriceReporter_ClearTickWait(const string series_key)
+{
+   int index = PriceReporter_TickWaitIndex(series_key, false);
+   if(index >= 0) g_pr_tick_retry_at[index] = 0;
+}
+
+int PriceReporter_LiveRetrySeconds(const int attempt)
+{
+   return (attempt <= 15) ? 1 : 5;
+}
+
+int PriceReporter_OutboxIndex(const string series_key)
+{
+   for(int i = 0; i < ArraySize(g_pr_outbox_keys); i++)
+      if(g_pr_outbox_keys[i] == series_key) return i;
+   return -1;
+}
+
+datetime PriceReporter_OutboxLatest(const string series_key)
+{
+   int index = PriceReporter_OutboxIndex(series_key);
+   return index >= 0 ? g_pr_outbox_latest[index] : 0;
+}
+
+void PriceReporter_OutboxAppend(const string series_key,
+                                const string broker_symbol,
+                                const string timeframe,
+                                const int digits,
+                                const string bars_json,
+                                const int bar_count,
+                                const datetime newest_time)
+{
+   if(bar_count <= 0 || bars_json == "") return;
+   int index = PriceReporter_OutboxIndex(series_key);
+   if(index < 0)
+   {
+      index = ArraySize(g_pr_outbox_keys);
+      ArrayResize(g_pr_outbox_keys, index + 1);
+      ArrayResize(g_pr_outbox_brokers, index + 1);
+      ArrayResize(g_pr_outbox_timeframes, index + 1);
+      ArrayResize(g_pr_outbox_digits, index + 1);
+      ArrayResize(g_pr_outbox_bars, index + 1);
+      ArrayResize(g_pr_outbox_counts, index + 1);
+      ArrayResize(g_pr_outbox_latest, index + 1);
+      g_pr_outbox_keys[index] = series_key;
+      g_pr_outbox_brokers[index] = broker_symbol;
+      g_pr_outbox_timeframes[index] = timeframe;
+      g_pr_outbox_digits[index] = digits;
+   }
+   if(g_pr_outbox_bars[index] != "") g_pr_outbox_bars[index] += ",";
+   g_pr_outbox_bars[index] += bars_json;
+   g_pr_outbox_counts[index] += bar_count;
+   if(newest_time > g_pr_outbox_latest[index]) g_pr_outbox_latest[index] = newest_time;
+}
+
+void PriceReporter_OutboxRemove(const int index)
+{
+   int last = ArraySize(g_pr_outbox_keys) - 1;
+   if(index < 0 || index > last) return;
+   for(int i = index; i < last; i++)
+   {
+      g_pr_outbox_keys[i] = g_pr_outbox_keys[i + 1];
+      g_pr_outbox_brokers[i] = g_pr_outbox_brokers[i + 1];
+      g_pr_outbox_timeframes[i] = g_pr_outbox_timeframes[i + 1];
+      g_pr_outbox_digits[i] = g_pr_outbox_digits[i + 1];
+      g_pr_outbox_bars[i] = g_pr_outbox_bars[i + 1];
+      g_pr_outbox_counts[i] = g_pr_outbox_counts[i + 1];
+      g_pr_outbox_latest[i] = g_pr_outbox_latest[i + 1];
+   }
+   ArrayResize(g_pr_outbox_keys, last);
+   ArrayResize(g_pr_outbox_brokers, last);
+   ArrayResize(g_pr_outbox_timeframes, last);
+   ArrayResize(g_pr_outbox_digits, last);
+   ArrayResize(g_pr_outbox_bars, last);
+   ArrayResize(g_pr_outbox_counts, last);
+   ArrayResize(g_pr_outbox_latest, last);
+}
+
+bool PriceReporter_ResponseAccepted(const string response,
+                                    const string broker_symbol,
+                                    const string timeframe,
+                                    const datetime expected_time)
+{
+   string broker_token = "\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\"";
+   int start = StringFind(response, broker_token);
+   while(start >= 0)
+   {
+      int end = StringFind(response, "}", start);
+      if(end < 0) end = StringLen(response);
+      string object = StringSubstr(response, start, end - start);
+      string accepted_raw = EASync_JsonGetRaw(object, 0, StringLen(object), "accepted_through");
+      string accepted_value = StringSubstr(accepted_raw, 0, 19);
+      StringReplace(accepted_value, "-", ".");
+      StringReplace(accepted_value, "T", " ");
+      datetime accepted_time = StringToTime(accepted_value);
+      if(StringFind(object, "\"timeframe\":\"" + timeframe + "\"") >= 0 &&
+         accepted_time >= expected_time)
+         return true;
+      start = StringFind(response, broker_token, end);
+   }
+   return false;
+}
 
 int PriceReporter_SyncIndex(const string series_key, const bool create = false)
 {
@@ -3193,9 +3357,11 @@ bool PriceReporter_SendPayload(const string symbols_json,
                                const int sent_series,
                                const int sent_bars,
                                const string lane,
+                               string &response_body,
                                const string diagnostics_json = "",
                                const int diagnostic_count = 0)
 {
+   response_body = "";
    if(sent_series <= 0 && diagnostic_count <= 0) return true;
    string body = "{\"instance_id\":\"" + EASync_JsonEscape(EASync_GetInstanceId()) +
                  "\",\"symbols\":[" + symbols_json + "],\"diagnostics\":[" + diagnostics_json + "]}";
@@ -3209,7 +3375,7 @@ bool PriceReporter_SendPayload(const string symbols_json,
    uchar result[];
    string result_headers;
    ResetLastError();
-   int status = WebRequest("POST", url, headers, 20000, data, result, result_headers);
+   int status = WebRequest("POST", url, headers, 5000, data, result, result_headers);
 
    if(status == -1)
    {
@@ -3223,6 +3389,7 @@ bool PriceReporter_SendPayload(const string symbols_json,
    }
 
    string response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+   response_body = response;
    PrintFormat("PriceReporter: %s lane sent %d series / %d bars / %d diagnostics, HTTP %d",
                lane, sent_series, sent_bars, diagnostic_count, status);
    if(status == 200) return true;
@@ -3231,10 +3398,9 @@ bool PriceReporter_SendPayload(const string symbols_json,
 }
 
 //+------------------------------------------------------------------+
-//| Two-lane candle collection. The freshness lane checks EVERY       |
-//| enabled series on every pass and can never be consumed by history |
-//| work. The bootstrap lane separately repairs one complete          |
-//| 1,000-candle snapshot per pass, keeping each HTTP body bounded.    |
+//| Deadline-driven collection. Every enabled series is checked on    |
+//| each one-second pass but CopyRates runs only when its next closed  |
+//| candle is due. History work never runs while live work is pending. |
 //+------------------------------------------------------------------+
 void PriceReporter_Run()
 {
@@ -3309,11 +3475,6 @@ void PriceReporter_Run()
    ArrayResize(collector_ready, candidate_count);
    ArrayResize(generations, candidate_count);
 
-   string freshness_json = "";
-   int freshness_series = 0;
-   int freshness_bars = 0;
-   string freshness_keys[];
-   datetime freshness_times[];
    string diagnostics_json = "";
    int diagnostic_count = 0;
 
@@ -3338,6 +3499,14 @@ void PriceReporter_Run()
          PriceReporter_MarkSent(series_key, server_checkpoint);
          last_sent = server_checkpoint;
       }
+      int existing_outbox = PriceReporter_OutboxIndex(series_key);
+      if(existing_outbox >= 0 && server_checkpoint >= g_pr_outbox_latest[existing_outbox])
+      {
+         PriceReporter_OutboxRemove(existing_outbox);
+         existing_outbox = -1;
+      }
+      datetime captured_checkpoint = PriceReporter_OutboxLatest(series_key);
+      if(captured_checkpoint > last_sent) last_sent = captured_checkpoint;
 
       generations[i] = PriceReporter_ServerBootstrapGeneration(candidate_generations_json[i], timeframe);
       bool server_requires = StringFind(candidate_required[i], "\"" + timeframe + "\"") >= 0;
@@ -3350,9 +3519,18 @@ void PriceReporter_Run()
       // opened at T + timeframe_seconds itself closes. Avoid authoritative
       // history calls between closes; stale checkpoints remain due and are
       // retried on every minute pass until they advance.
+      datetime known_current_open = PriceReporter_CurrentOpen(series_key);
       bool new_close_expected = last_sent == 0 ||
-                                run_started >= last_sent + (timeframe_seconds * 2);
+         (known_current_open > last_sent
+            ? run_started >= known_current_open + timeframe_seconds
+            : run_started >= last_sent + (timeframe_seconds * 2));
       bool sync_active = PriceReporter_SyncAttempts(series_key) > 0;
+
+      // Closed/quiet broker sessions are not live failures and must not block
+      // unrelated history work. Recheck them every five seconds independently
+      // of the aggressive missing-history retry lane.
+      if(!base_bootstrap_needed && PriceReporter_TickWaiting(series_key, run_started))
+         continue;
 
       // Healthy series sleep between their candle boundaries. A pending live
       // sync remains on the five-second event lane but honors its per-series
@@ -3383,7 +3561,7 @@ void PriceReporter_Run()
          broker_symbol, period, timeframe_seconds, last_sent, run_started,
          rates, actual_current_bar);
       int copy_error = GetLastError();
-      int stale_after_seconds = (int)MathMax(180, timeframe_seconds * 2.5);
+      int stale_after_seconds = 180;
       MqlTick latest_tick;
       bool tick_is_current = SymbolInfoTick(broker_symbol, latest_tick) &&
                              latest_tick.time >= run_started - stale_after_seconds;
@@ -3394,12 +3572,29 @@ void PriceReporter_Run()
          // owes us a newly closed candle right now.
          if(!tick_is_current)
          {
-            PriceReporter_ClearSync(series_key);
+            if(base_bootstrap_needed)
+            {
+               needs_bootstrap[i] = true;
+               continue;
+            }
+            PriceReporter_ScheduleTickCheck(series_key, run_started);
             needs_bootstrap[i] = base_bootstrap_needed;
+            if(diagnostics_due)
+            {
+               if(diagnostic_count > 0) diagnostics_json += ",";
+               diagnostics_json +=
+                  "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
+                  "\"timeframe\":\"" + timeframe + "\",\"state\":\"awaiting_tick\","
+                  "\"expected_bar_time\":\"" + EASync_ToIso8601(last_sent + timeframe_seconds) + "\","
+                  "\"last_error\":\"Candle boundary passed; waiting for the broker's next tick\","
+                  "\"attempt_count\":0,"
+                  "\"retry_after_seconds\":5}";
+               diagnostic_count++;
+            }
             continue;
          }
          int attempt = PriceReporter_SyncAttempt(series_key);
-         int retry_seconds = (int)MathMin(60, MathPow(2, MathMin(attempt, 5)));
+         int retry_seconds = PriceReporter_LiveRetrySeconds(attempt);
          PriceReporter_ScheduleSyncRetry(series_key, run_started, retry_seconds);
          collector_ready[i] = false;
          needs_bootstrap[i] = base_bootstrap_needed;
@@ -3423,6 +3618,8 @@ void PriceReporter_Run()
          }
          continue;
       }
+      if(tick_is_current) PriceReporter_ClearTickWait(series_key);
+      PriceReporter_MarkCurrentOpen(series_key, actual_current_bar);
 
       datetime newest_closed = 0;
       int newer_closed_count = 0;
@@ -3434,11 +3631,33 @@ void PriceReporter_Run()
          if(rates[newest_index].time > newest_closed) newest_closed = rates[newest_index].time;
          if(rates[newest_index].time > last_sent) newer_closed_count++;
       }
-      bool series_is_current = actual_current_bar > 0 &&
-                               actual_current_bar >= run_started - stale_after_seconds;
-      bool market_is_active = tick_is_current || series_is_current;
+      bool market_is_active = tick_is_current;
+      if(new_close_expected && !market_is_active && !base_bootstrap_needed)
+      {
+         PriceReporter_ScheduleTickCheck(series_key, run_started);
+         needs_bootstrap[i] = base_bootstrap_needed;
+         if(diagnostics_due)
+         {
+            if(diagnostic_count > 0) diagnostics_json += ",";
+            diagnostics_json +=
+               "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
+               "\"timeframe\":\"" + timeframe + "\",\"state\":\"awaiting_tick\","
+               "\"source_latest_bar_time\":\"" + EASync_ToIso8601(newest_closed) + "\","
+               "\"expected_bar_time\":\"" + EASync_ToIso8601(last_sent + timeframe_seconds) + "\","
+               "\"last_error\":\"Candle boundary passed; waiting for the broker's next tick\","
+               "\"attempt_count\":0,"
+               "\"retry_after_seconds\":5}";
+            diagnostic_count++;
+         }
+         continue;
+      }
+      // Broker sessions can jump from Friday directly to Monday (and across
+      // holidays). If MT5 has a newer forming bar but the prior closed bar is
+      // still our checkpoint, the gap contains no broker candles to ingest.
+      bool session_gap_advanced = actual_current_bar > last_sent + timeframe_seconds &&
+                                  newest_closed <= last_sent;
       bool expected_candle_missing = new_close_expected && market_is_active &&
-                                     newest_closed <= last_sent;
+                                     newest_closed <= last_sent && !session_gap_advanced;
       if(expected_candle_missing)
       {
          // The exact date request has initiated MT5's asynchronous download or
@@ -3466,7 +3685,7 @@ void PriceReporter_Run()
             continue;
          }
          int attempt = PriceReporter_SyncAttempt(series_key);
-         int retry_seconds = (int)MathMin(60, MathPow(2, MathMin(attempt, 5)));
+         int retry_seconds = PriceReporter_LiveRetrySeconds(attempt);
          PriceReporter_ScheduleSyncRetry(series_key, run_started, retry_seconds);
          collector_ready[i] = false;
          needs_bootstrap[i] = base_bootstrap_needed;
@@ -3521,35 +3740,60 @@ void PriceReporter_Run()
             "\"spread\":" + IntegerToString((long)rates[r].spread) + ","
             "\"real_volume\":" + IntegerToString((long)rates[r].real_volume) + "}";
          included++;
-         freshness_bars++;
          if(rates[r].time > newest_time) newest_time = rates[r].time;
       }
       if(included == 0) continue;
-      if(freshness_series > 0) freshness_json += ",";
-      freshness_json +=
-         "{\"broker_symbol\":\"" + EASync_JsonEscape(broker_symbol) + "\","
-         "\"timeframe\":\"" + timeframe + "\","
-         "\"source_digits\":" + IntegerToString(digits) + ","
-         "\"bars\":[" + bars_json + "]}";
-      freshness_series++;
-      int pending = ArraySize(freshness_keys);
-      ArrayResize(freshness_keys, pending + 1);
-      ArrayResize(freshness_times, pending + 1);
-      freshness_keys[pending] = series_key;
-      freshness_times[pending] = newest_time;
+      PriceReporter_OutboxAppend(series_key, broker_symbol, timeframe, digits,
+                                 bars_json, included, newest_time);
    }
 
+   string freshness_json = "";
+   int freshness_series = 0;
+   int freshness_bars = 0;
+   for(int i = 0; i < ArraySize(g_pr_outbox_keys); i++)
+   {
+      if(freshness_bars + g_pr_outbox_counts[i] > 2200) break;
+      if(freshness_series > 0) freshness_json += ",";
+      freshness_json +=
+         "{\"broker_symbol\":\"" + EASync_JsonEscape(g_pr_outbox_brokers[i]) + "\","
+         "\"timeframe\":\"" + g_pr_outbox_timeframes[i] + "\","
+         "\"source_digits\":" + IntegerToString(g_pr_outbox_digits[i]) + ","
+         "\"bars\":[" + g_pr_outbox_bars[i] + "]}";
+      freshness_bars += g_pr_outbox_counts[i];
+      freshness_series++;
+   }
    if(freshness_series > 0 || diagnostic_count > 0)
    {
-      if(!PriceReporter_SendPayload(freshness_json, freshness_series, freshness_bars, "freshness",
-                                    diagnostics_json, diagnostic_count)) return;
-      for(int i = 0; i < ArraySize(freshness_keys); i++)
-         PriceReporter_MarkSent(freshness_keys[i], freshness_times[i]);
+      string response = "";
+      if(!PriceReporter_SendPayload(freshness_json, freshness_series, freshness_bars, "live",
+                                    response, diagnostics_json, diagnostic_count))
+      {
+         g_pr_live_sync_pending = true;
+         return;
+      }
+      // Remove only series the backend explicitly acknowledged through the
+      // exact captured checkpoint. A 200 with a mapping warning cannot silently
+      // discard an unsaved candle.
+      for(int i = freshness_series - 1; i >= 0; i--)
+      {
+         if(!PriceReporter_ResponseAccepted(response, g_pr_outbox_brokers[i],
+                                            g_pr_outbox_timeframes[i], g_pr_outbox_latest[i]))
+         {
+            g_pr_live_sync_pending = true;
+            continue;
+         }
+         PriceReporter_MarkSent(g_pr_outbox_keys[i], g_pr_outbox_latest[i]);
+         PriceReporter_OutboxRemove(i);
+      }
    }
    if(freshness_due) g_pr_last_freshness = run_started;
    if(diagnostics_due) g_pr_last_diagnostics = run_started;
 
    int selected[];
+   // Live deadlines always win. Historical population resumes on the next
+   // one-second event only after every due candle is captured and accepted.
+   if(g_pr_live_sync_pending || ArraySize(g_pr_outbox_keys) > 0)
+      return;
    for(int pass = 0; pass < 2 && ArraySize(selected) < PR_MAX_BOOTSTRAP_SERIES_PER_RUN; pass++)
    {
       // Reserve at most one slot for each lane. A permanently failing
@@ -3678,8 +3922,9 @@ void PriceReporter_Run()
       bootstrap_counts[pending] = closed_count;
    }
 
+   string bootstrap_response = "";
    if(bootstrap_series > 0 && PriceReporter_SendPayload(
-      bootstrap_json, bootstrap_series, bootstrap_bars, "bootstrap"))
+      bootstrap_json, bootstrap_series, bootstrap_bars, "bootstrap", bootstrap_response))
    {
       for(int i = 0; i < ArraySize(bootstrap_keys); i++)
       {
@@ -3692,7 +3937,7 @@ void PriceReporter_Run()
       EASync_ForceSync();
    }
 
-   if(freshness_due && freshness_series == 0 && bootstrap_series == 0)
+   if(freshness_due && ArraySize(g_pr_outbox_keys) == 0 && bootstrap_series == 0)
       Print("PriceReporter: all enabled candle series are current");
 }
 
@@ -3718,19 +3963,30 @@ void PriceReporter_Init(const string base_url, const string api_key, const int r
    ArrayResize(g_pr_sync_keys, 0);
    ArrayResize(g_pr_sync_retry_at, 0);
    ArrayResize(g_pr_sync_attempts, 0);
+   ArrayResize(g_pr_outbox_keys, 0);
+   ArrayResize(g_pr_outbox_brokers, 0);
+   ArrayResize(g_pr_outbox_timeframes, 0);
+   ArrayResize(g_pr_outbox_digits, 0);
+   ArrayResize(g_pr_outbox_bars, 0);
+   ArrayResize(g_pr_outbox_counts, 0);
+   ArrayResize(g_pr_outbox_latest, 0);
+   ArrayResize(g_pr_tick_wait_keys, 0);
+   ArrayResize(g_pr_tick_retry_at, 0);
+   ArrayResize(g_pr_current_open_keys, 0);
+   ArrayResize(g_pr_current_opens, 0);
    PrintFormat("PriceReporter: initialized, report_interval_seconds=%d", g_pr_report_interval_seconds);
 }
 
 //+------------------------------------------------------------------+
-//| Public: call every OnTimer tick after EASync_OnTimer(). Self-gates |
-//| by report_interval_seconds, matching SymbolMap_OnTimer's pattern.  |
+//| Public: call first on every OnTimer tick. It performs a one-second  |
+//| local deadline gate and sends only when candles or diagnostics exist.|
 //+------------------------------------------------------------------+
 void PriceReporter_OnTimer()
 {
    if(g_pr_base_url == "" || g_pr_api_key == "") return;
-   int next_interval = (g_pr_bootstrap_pending || g_pr_live_sync_pending)
-      ? PR_BOOTSTRAP_INTERVAL_SECONDS
-      : (int)MathMax(g_pr_report_interval_seconds, PR_FRESHNESS_INTERVAL_SECONDS);
+   // This is a local deadline check, not a network polling interval. Healthy
+   // series exit before CopyRates and no HTTP request is made without data.
+   int next_interval = PR_FRESHNESS_INTERVAL_SECONDS;
    if(TimeCurrent() - g_pr_last_report < next_interval) return;
    PriceReporter_Run();
 }
@@ -3810,11 +4066,11 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-   EASync_OnTimer();
-   // Must stay after EASync_OnTimer(): PriceReporter uses its cached ea-sync
-   // response, including bound_symbols, and should see a fresh response when
-   // this tick ran a poll.
+   // Capture broker candles before any synchronous network work. MT5 drops a
+   // Timer event when the prior handler is still running, so account/calendar
+   // WebRequests must not make the market-data deadline miss its turn.
    PriceReporter_OnTimer();
+   EASync_OnTimer();
    if(EnableCalendarSync)
       CalendarSync_OnTimer();
    if(EnableWebSocketPush)

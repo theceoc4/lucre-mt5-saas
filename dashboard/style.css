@@ -2516,6 +2516,16 @@ body {
   box-shadow: 0 0 14px color-mix(in srgb, var(--color-negative) 26%, transparent);
 }
 
+.pair-timeframe-status.is-waiting {
+  background: var(--color-warning, #d0a93b);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--color-warning, #d0a93b) 25%, transparent);
+  cursor: default;
+}
+
+.pair-feed-legend i.is-waiting {
+  background: var(--color-warning, #d0a93b);
+}
+
 .pair-timeframe-status.is-unavailable:hover:not(:disabled) {
   filter: brightness(1.08);
   transform: translateY(-1px);

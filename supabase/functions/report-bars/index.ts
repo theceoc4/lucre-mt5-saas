@@ -1,4 +1,4 @@
-// v1.0.39 — report-bars with collector diagnostics and resilient repairs.
+// v1.0.40 — atomic deadline-candle ingestion and acknowledgements.
 //
 // The MT5 EA posts newly closed bars for selected symbol/timeframe series.
 // This function reverse-resolves each broker-native spelling to the terminal's
@@ -69,8 +69,10 @@ interface IncomingCollectorDiagnostic {
   broker_symbol: string;
   timeframe: string;
   state: "idle" | "sync_requested" | "waiting_history" | "ready" |
-    "uploading" | "retry_backoff" | "error";
+    "awaiting_tick" | "upload_pending" | "uploading" | "retry_backoff" |
+    "market_closed" | "error";
   source_latest_bar_time?: string;
+  expected_bar_time?: string;
   last_error?: string;
   attempt_count?: number;
   retry_after_seconds?: number;
@@ -321,12 +323,16 @@ Deno.serve(async (req: Request) => {
     }
     const sourceTime = diagnostic.source_latest_bar_time
       ? new Date(diagnostic.source_latest_bar_time) : null;
+    const expectedTime = diagnostic.expected_bar_time
+      ? new Date(diagnostic.expected_bar_time) : null;
     return [{
       symbol: canonicalSymbol,
       timeframe: diagnostic.timeframe,
       state: diagnostic.state,
       source_latest_bar_time: sourceTime && !Number.isNaN(sourceTime.getTime())
         ? sourceTime.toISOString() : null,
+      expected_bar_time: expectedTime && !Number.isNaN(expectedTime.getTime())
+        ? expectedTime.toISOString() : null,
       last_error: diagnostic.last_error?.slice(0, 240) ?? null,
       attempt_count: Number.isInteger(diagnostic.attempt_count)
         ? Math.max(0, Number(diagnostic.attempt_count)) : 0,
@@ -414,19 +420,6 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ upserted: 0, diagnostics_recorded: collectorAttempts.length, warnings });
   }
 
-  const { error: upsertError } = await admin
-    .from("price_bars")
-    .upsert(rows, {
-      onConflict: "terminal_id,symbol,timeframe,bar_time",
-      // A verified bootstrap is an authoritative broker snapshot, so matching
-      // timestamps must refresh OHLCV/spread metadata as well as fill gaps.
-      // Normal freshness batches rarely conflict because the EA advances from
-      // the server checkpoint, while retries remain safely idempotent.
-      ignoreDuplicates: false,
-    });
-
-  if (upsertError) return jsonResponse({ error: "upsert_failed", detail: upsertError.message }, 500);
-
   const brokerByCanonical = new Map<string, string>();
   for (const [brokerSymbol, canonicalSymbol] of canonicalByBroker.entries()) {
     if (!brokerByCanonical.has(canonicalSymbol)) brokerByCanonical.set(canonicalSymbol, brokerSymbol);
@@ -459,54 +452,25 @@ Deno.serve(async (req: Request) => {
     }
   }
   const acceptedSeries = [...acceptedByKey.values()];
-
-  // Retire the oldest rows immediately for only the series touched by this
-  // request. The hourly global sweep remains a safety net, but the normal
-  // ingest path now holds the 1,000-candle contract without temporary drift.
-  const { data: prunedRows, error: pruneError } = await admin.rpc("prune_touched_price_bar_series", {
+  const batches = acceptedSeries.map((series) => ({
+    symbol: series.symbol,
+    timeframe: series.timeframe,
+    latest_bar_time: series.accepted_through,
+    bar_count: series.bar_count,
+    bootstrap_generation: series.bootstrap_generation,
+    snapshot_complete: series.snapshot_complete,
+  }));
+  // Store rows, enforce retention, advance checkpoints, and clear collector
+  // health in one transaction. The EA may discard its outbox entry only after
+  // this RPC succeeds and the exact accepted_through value is returned below.
+  const { data: ingestResult, error: ingestError } = await admin.rpc("ingest_price_bar_batch", {
     p_terminal_id: terminal.id,
-    p_series: acceptedSeries.map((series) => ({
-      symbol: series.symbol,
-      timeframe: series.timeframe,
-    })),
+    p_rows: rows.map(({ terminal_id: _terminalId, ...row }) => row),
+    p_batches: batches,
   });
-  if (pruneError) {
-    return jsonResponse({ error: "retention_failed", detail: pruneError.message }, 500);
+  if (ingestError) {
+    return jsonResponse({ error: "atomic_ingest_failed", detail: ingestError.message }, 500);
   }
-
-  // Supabase's accepted checkpoint is the durable source of truth. The next
-  // ea-sync response gives it back to the EA, so a terminal/VPS restart does
-  // not turn every warm series into a blind 1,000-candle replay.
-  const { error: checkpointError } = await admin.rpc("record_price_feed_batches", {
-    p_terminal_id: terminal.id,
-    p_batches: acceptedSeries.map((series) => ({
-      symbol: series.symbol,
-      timeframe: series.timeframe,
-      latest_bar_time: series.accepted_through,
-      bar_count: series.bar_count,
-      bootstrap_generation: series.bootstrap_generation,
-      snapshot_complete: series.snapshot_complete,
-    })),
-  });
-  if (checkpointError) {
-    return jsonResponse({ error: "checkpoint_update_failed", detail: checkpointError.message }, 500);
-  }
-
-  await Promise.all(acceptedSeries.map((series) => admin
-    .from("price_feed_series_state")
-    .update({
-      collector_state: "idle",
-      collector_attempt_count: 0,
-      collector_last_error: null,
-      collector_reported_at: new Date().toISOString(),
-      collector_next_retry_at: null,
-      source_latest_bar_time: series.accepted_through,
-      last_upload_status: 200,
-      last_success_at: new Date().toISOString(),
-    })
-    .eq("terminal_id", terminal.id)
-    .eq("symbol", series.symbol)
-    .eq("timeframe", series.timeframe)));
 
   // Reuse this authenticated minute-level ingestion request instead of adding
   // a cron sweep or browser poll. Only affected series are recalculated, then
@@ -530,7 +494,7 @@ Deno.serve(async (req: Request) => {
     })),
     trend_update_scheduled: true,
     diagnostics_recorded: collectorAttempts.length,
-    pruned: Number(prunedRows) || 0,
+    pruned: Number((ingestResult as { pruned?: number } | null)?.pruned) || 0,
     warnings,
   });
 });

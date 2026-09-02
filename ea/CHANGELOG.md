@@ -1,5 +1,19 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.40 — Deadline-driven all-series candle delivery (2026-09-02)
+
+- Replaces the global minute scan with a one-second deadline check for every
+  enabled symbol/timeframe; healthy series perform no history or network work.
+- Services every due live series without priority ranks or per-run caps.
+- Captures candles before account/calendar network work in the shared MT5 timer.
+- Retries missing broker candles every second for 15 attempts and every five
+  seconds afterward, distinguishing an absent post-boundary broker tick.
+- Holds captured live candles in an outbox until `report-bars` explicitly
+  acknowledges the exact accepted timestamp.
+- Suspends 1,000-candle bootstrap work whenever any live candle is pending.
+- Batches all ready live candles into one request and retains them after HTTP,
+  mapping, or database failures for idempotent retry.
+
 ## v1.0.39 — Exact-time live candle state machine (2026-09-02)
 
 - Replaces position-based incremental `CopyRates(1, n)` reads with explicit

@@ -2451,7 +2451,7 @@ async function loadPriceFeedStates() {
   }
   const { data, error } = await supabase
     .from('price_feed_series_state')
-    .select('symbol,timeframe,latest_bar_time,oldest_bar_time,history_bar_count,last_received_at,desired_enabled,bootstrap_required,status,last_error,repair_requested_at,collector_state,collector_attempt_count,collector_last_error,collector_reported_at,collector_next_retry_at,source_latest_bar_time,last_upload_status,last_success_at')
+    .select('symbol,timeframe,latest_bar_time,oldest_bar_time,history_bar_count,last_received_at,desired_enabled,bootstrap_required,status,last_error,repair_requested_at,collector_state,collector_attempt_count,collector_last_error,collector_reported_at,collector_next_retry_at,source_latest_bar_time,last_upload_status,last_success_at,expected_bar_time,source_tick_time,ingest_lag_seconds')
     .eq('terminal_id', state.activeTerminalId)
     .eq('desired_enabled', true);
   if (error) {
@@ -2667,12 +2667,24 @@ function priceFeedPresentation(symbol, timeframe) {
       row,
     };
   }
+  const collectorReportedMs = row.collector_reported_at ? new Date(row.collector_reported_at).getTime() : 0;
+  const collectorIsRecent = Number.isFinite(collectorReportedMs) && Date.now() - collectorReportedMs < 90_000;
+  if (row.collector_state === 'awaiting_tick' && collectorIsRecent) {
+    return {
+      available: true,
+      tone: 'waiting',
+      label: 'Awaiting broker tick',
+      detail: `${Number(row.history_bar_count).toLocaleString()} candles · broker has not emitted the next candle yet`,
+      row,
+    };
+  }
   const timeframeSeconds = PRICE_TIMEFRAME_SECONDS[timeframe] || 60;
   const staleAfterMs = Math.max(180, timeframeSeconds * 2.5) * 1000;
   const latestMs = new Date(row.latest_bar_time).getTime();
   const stale = !Number.isFinite(latestMs) || Date.now() - latestMs > staleAfterMs;
   return {
     available: !stale,
+    tone: stale ? 'unavailable' : 'available',
     label: stale ? 'Stale' : 'Available',
     detail: `${Number(row.history_bar_count).toLocaleString()} candles · latest ${compactAge(row.latest_bar_time)}`,
     row,
@@ -2774,7 +2786,7 @@ function renderPairsView() {
         const loading = pairRepairsInFlight.has(key) || Boolean(feed.repairing);
         const feedDetail = escapeHtml(feed.detail);
         return `<button type="button"
-          class="pair-timeframe-status ${feed.available ? 'is-available' : 'is-unavailable'}${loading ? ' is-loading' : ''}"
+          class="pair-timeframe-status is-${feed.tone || (feed.available ? 'available' : 'unavailable')}${loading ? ' is-loading' : ''}"
           data-repair-symbol="${s.symbol}" data-repair-timeframe="${timeframe}"
           aria-label="${s.symbol} ${timeframe}: ${feed.label}. ${feedDetail}"
           title="${feedDetail}${feed.available ? '' : ' · Tap to refresh'}"
@@ -2848,7 +2860,7 @@ function renderPairsView() {
               <div class="pair-timeframe-row" aria-label="${s.symbol} candle feed availability">
                 ${timeframeButtons}
               </div>
-              <div class="pair-feed-legend"><span><i class="is-available"></i>Current</span><span><i class="is-unavailable"></i>Needs attention</span></div>
+              <div class="pair-feed-legend"><span><i class="is-available"></i>Current</span><span><i class="is-waiting"></i>Awaiting broker</span><span><i class="is-unavailable"></i>Needs attention</span></div>
             </div>
 
             <div class="pair-winrate-panel">
