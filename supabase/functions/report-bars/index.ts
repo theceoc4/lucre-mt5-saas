@@ -1,4 +1,4 @@
-// v1.0.38 — report-bars with immediate per-series retention.
+// v1.0.39 — report-bars with collector diagnostics and resilient repairs.
 //
 // The MT5 EA posts newly closed bars for selected symbol/timeframe series.
 // This function reverse-resolves each broker-native spelling to the terminal's
@@ -63,6 +63,17 @@ interface IncomingSymbolBars {
   bootstrap_generation?: number;
   snapshot_complete?: boolean;
   bars: IncomingBar[];
+}
+
+interface IncomingCollectorDiagnostic {
+  broker_symbol: string;
+  timeframe: string;
+  state: "idle" | "sync_requested" | "waiting_history" | "ready" |
+    "uploading" | "retry_backoff" | "error";
+  source_latest_bar_time?: string;
+  last_error?: string;
+  attempt_count?: number;
+  retry_after_seconds?: number;
 }
 
 async function updateTrendStates(
@@ -216,7 +227,11 @@ Deno.serve(async (req: Request) => {
   }
   const terminal = auth.terminal!;
 
-  let body: { instance_id?: string; symbols?: IncomingSymbolBars[] };
+  let body: {
+    instance_id?: string;
+    symbols?: IncomingSymbolBars[];
+    diagnostics?: IncomingCollectorDiagnostic[];
+  };
   try {
     body = await req.json();
   } catch {
@@ -235,6 +250,12 @@ Deno.serve(async (req: Request) => {
   }
 
   if (!Array.isArray(body.symbols)) return jsonResponse({ error: "missing_symbols_array" }, 400);
+  if (body.diagnostics != null && !Array.isArray(body.diagnostics)) {
+    return jsonResponse({ error: "invalid_diagnostics_array" }, 400);
+  }
+  if ((body.diagnostics?.length ?? 0) > MAX_SERIES_PER_REQUEST) {
+    return jsonResponse({ error: "too_many_diagnostics", max: MAX_SERIES_PER_REQUEST }, 413);
+  }
   if (body.symbols.length > MAX_SERIES_PER_REQUEST) {
     return jsonResponse({ error: "too_many_series", max: MAX_SERIES_PER_REQUEST }, 413);
   }
@@ -255,13 +276,22 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ error: "unsupported_timeframe", timeframe }, 400);
     }
   }
+  for (const diagnostic of body.diagnostics ?? []) {
+    if (!diagnostic || typeof diagnostic.broker_symbol !== "string" ||
+      !SUPPORTED_TIMEFRAMES.has(diagnostic.timeframe)) {
+      return jsonResponse({ error: "invalid_collector_diagnostic" }, 400);
+    }
+  }
   const requestedBarCount = body.symbols.reduce((total, series) => total + series.bars.length, 0);
   if (requestedBarCount > MAX_BARS_PER_REQUEST) {
     return jsonResponse({ error: "too_many_bars", max: MAX_BARS_PER_REQUEST }, 413);
   }
 
   const warnings: string[] = [];
-  const brokerSymbols = [...new Set(body.symbols.map((s) => s.broker_symbol).filter((s) => s.length > 0))];
+  const brokerSymbols = [...new Set([
+    ...body.symbols.map((s) => s.broker_symbol),
+    ...(body.diagnostics ?? []).map((item) => item.broker_symbol),
+  ].filter((s) => s.length > 0))];
   if (brokerSymbols.length === 0) return jsonResponse({ upserted: 0, warnings });
 
   const { data: mappingRows, error: mappingsError } = await admin
@@ -280,6 +310,37 @@ Deno.serve(async (req: Request) => {
     // first row is safer than rejecting the entire small, frequent EA payload.
     if (!canonicalByBroker.has(mapping.broker_symbol)) {
       canonicalByBroker.set(mapping.broker_symbol, mapping.canonical_symbol);
+    }
+  }
+
+  const collectorAttempts = (body.diagnostics ?? []).flatMap((diagnostic) => {
+    const canonicalSymbol = canonicalByBroker.get(diagnostic.broker_symbol);
+    if (!canonicalSymbol) {
+      warnings.push(`No canonical mapping for diagnostic ${diagnostic.broker_symbol}; skipped.`);
+      return [];
+    }
+    const sourceTime = diagnostic.source_latest_bar_time
+      ? new Date(diagnostic.source_latest_bar_time) : null;
+    return [{
+      symbol: canonicalSymbol,
+      timeframe: diagnostic.timeframe,
+      state: diagnostic.state,
+      source_latest_bar_time: sourceTime && !Number.isNaN(sourceTime.getTime())
+        ? sourceTime.toISOString() : null,
+      last_error: diagnostic.last_error?.slice(0, 240) ?? null,
+      attempt_count: Number.isInteger(diagnostic.attempt_count)
+        ? Math.max(0, Number(diagnostic.attempt_count)) : 0,
+      retry_after_seconds: Number.isInteger(diagnostic.retry_after_seconds)
+        ? Math.max(0, Number(diagnostic.retry_after_seconds)) : 0,
+    }];
+  });
+  if (collectorAttempts.length > 0) {
+    const { error: diagnosticError } = await admin.rpc("record_price_feed_attempts", {
+      p_terminal_id: terminal.id,
+      p_attempts: collectorAttempts,
+    });
+    if (diagnosticError) {
+      return jsonResponse({ error: "collector_diagnostic_failed", detail: diagnosticError.message }, 500);
     }
   }
 
@@ -349,7 +410,9 @@ Deno.serve(async (req: Request) => {
     }
   }
 
-  if (rows.length === 0) return jsonResponse({ upserted: 0, warnings });
+  if (rows.length === 0) {
+    return jsonResponse({ upserted: 0, diagnostics_recorded: collectorAttempts.length, warnings });
+  }
 
   const { error: upsertError } = await admin
     .from("price_bars")
@@ -429,6 +492,22 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "checkpoint_update_failed", detail: checkpointError.message }, 500);
   }
 
+  await Promise.all(acceptedSeries.map((series) => admin
+    .from("price_feed_series_state")
+    .update({
+      collector_state: "idle",
+      collector_attempt_count: 0,
+      collector_last_error: null,
+      collector_reported_at: new Date().toISOString(),
+      collector_next_retry_at: null,
+      source_latest_bar_time: series.accepted_through,
+      last_upload_status: 200,
+      last_success_at: new Date().toISOString(),
+    })
+    .eq("terminal_id", terminal.id)
+    .eq("symbol", series.symbol)
+    .eq("timeframe", series.timeframe)));
+
   // Reuse this authenticated minute-level ingestion request instead of adding
   // a cron sweep or browser poll. Only affected series are recalculated, then
   // one compact current-state row is upserted per affected symbol.
@@ -450,6 +529,7 @@ Deno.serve(async (req: Request) => {
       bootstrap_generation, snapshot_complete,
     })),
     trend_update_scheduled: true,
+    diagnostics_recorded: collectorAttempts.length,
     pruned: Number(prunedRows) || 0,
     warnings,
   });

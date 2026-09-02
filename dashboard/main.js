@@ -2451,7 +2451,7 @@ async function loadPriceFeedStates() {
   }
   const { data, error } = await supabase
     .from('price_feed_series_state')
-    .select('symbol,timeframe,latest_bar_time,oldest_bar_time,history_bar_count,last_received_at,desired_enabled,bootstrap_required,status,last_error,repair_requested_at')
+    .select('symbol,timeframe,latest_bar_time,oldest_bar_time,history_bar_count,last_received_at,desired_enabled,bootstrap_required,status,last_error,repair_requested_at,collector_state,collector_attempt_count,collector_last_error,collector_reported_at,collector_next_retry_at,source_latest_bar_time,last_upload_status,last_success_at')
     .eq('terminal_id', state.activeTerminalId)
     .eq('desired_enabled', true);
   if (error) {
@@ -2629,11 +2629,33 @@ function priceFeedPresentation(symbol, timeframe) {
   );
   if (!row) return { available: false, label: 'Missing', detail: 'No feed manifest exists yet.', row: null };
   if (row.bootstrap_required || ['pending', 'bootstrapping', 'incomplete', 'error'].includes(row.status)) {
-    const repairing = row.status === 'pending' || row.status === 'bootstrapping';
+    const now = Date.now();
+    const reportedAt = row.collector_reported_at ? new Date(row.collector_reported_at).getTime() : 0;
+    const requestedAt = row.repair_requested_at ? new Date(row.repair_requested_at).getTime() : 0;
+    const collectorRecent = Number.isFinite(reportedAt) && reportedAt > 0 && now - reportedAt < 90_000;
+    const requestRecent = Number.isFinite(requestedAt) && requestedAt > 0 && now - requestedAt < 90_000;
+    const collectorState = row.collector_state || 'idle';
+    const collectorLabels = {
+      sync_requested: 'Queued',
+      waiting_history: 'Waiting on MT5',
+      ready: 'History ready',
+      uploading: 'Uploading',
+      retry_backoff: 'Retry scheduled',
+      error: 'Repair failed',
+    };
+    const repairing = collectorState !== 'error' && (collectorRecent || requestRecent);
+    const label = collectorState === 'error'
+      ? 'Repair failed'
+      : repairing
+        ? (collectorLabels[collectorState] || 'Queued')
+        : 'Repair stalled';
+    const error = row.collector_last_error || row.last_error;
+    const retry = row.collector_next_retry_at ? ' · retry scheduled' : '';
     return {
       available: false,
-      label: repairing ? 'Refreshing' : 'Incomplete',
-      detail: `${Number(row.history_bar_count) || 0} candles stored${row.last_error ? ` · ${row.last_error}` : ''}`,
+      repairing,
+      label,
+      detail: `${Number(row.history_bar_count) || 0} candles stored · ${label}${retry}${error ? ` · ${error}` : ''}`,
       row,
     };
   }
@@ -2749,12 +2771,12 @@ function renderPairsView() {
       const timeframeButtons = PRICE_TIMEFRAMES.map((timeframe) => {
         const feed = priceFeedPresentation(s.symbol, timeframe);
         const key = `${s.symbol}:${timeframe}`;
-        const loading = pairRepairsInFlight.has(key) || Boolean(feed.row?.bootstrap_required);
+        const loading = pairRepairsInFlight.has(key) || Boolean(feed.repairing);
         const feedDetail = escapeHtml(feed.detail);
         return `<button type="button"
           class="pair-timeframe-status ${feed.available ? 'is-available' : 'is-unavailable'}${loading ? ' is-loading' : ''}"
           data-repair-symbol="${s.symbol}" data-repair-timeframe="${timeframe}"
-          aria-label="${s.symbol} ${timeframe}: ${loading ? 'refreshing' : feed.label}. ${feedDetail}"
+          aria-label="${s.symbol} ${timeframe}: ${feed.label}. ${feedDetail}"
           title="${feedDetail}${feed.available ? '' : ' · Tap to refresh'}"
           ${feed.available || loading ? 'disabled' : ''}>${timeframe}</button>`;
       }).join('');

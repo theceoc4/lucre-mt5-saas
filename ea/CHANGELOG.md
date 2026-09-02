@@ -1,5 +1,16 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.36 — Resilient per-series history synchronization (2026-09-01)
+
+- Replaces immediate stale-cache rereads with a timer-driven MT5 history
+  synchronization state machine and bounded exponential retry.
+- Keeps healthy all-series freshness scans at one minute while retaining a
+  five-second lane only for explicitly pending repair work.
+- Sends one 1,000-candle repair snapshot per request with a larger HTTP timeout,
+  preventing historical uploads from crowding out incremental candles.
+- Reports compact per-series collector diagnostics so the dashboard can
+  distinguish queued, waiting-for-MT5, retry, and stalled repair states.
+
 ## v1.0.35 — Fast bootstrap and stale-cache repair (2026-09-01)
 
 - Runs missing/forced 1,000-candle snapshots in bounded five-second batches

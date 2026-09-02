@@ -7,6 +7,15 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.43 — Visible, idempotent candle repairs (2026-09-01)
+
+- Keeps an active repair generation stable across repeated manual and automatic
+  requests, so an in-flight clean snapshot cannot be invalidated mid-upload.
+- Shows queued, waiting-for-MT5, retry, failed, and stalled states on pair
+  timeframe controls instead of allowing an endless loading animation.
+- Records EA source-candle and synchronization diagnostics separately from the
+  durable Supabase candle checkpoint for faster feed troubleshooting.
+
 ## v1.0.42 — Reliable strategy toggles (2026-09-01)
 
 - Routes both Overview and Strategies-tab toggles through one authenticated,
