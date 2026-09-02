@@ -392,6 +392,7 @@
 
       <nav class="nav-pills" id="nav-pills" aria-label="Primary">
         <a class="nav-pill active" href="#" data-view="dashboard" data-testid="link-dashboard">Dashboard</a>
+        <a class="nav-pill" href="#" data-view="strategies" data-testid="link-strategies">Strategies</a>
         <a class="nav-pill" href="#" data-view="pairs" data-testid="link-pairs">Pairs</a>
       </nav>
 
@@ -525,7 +526,6 @@
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="risk-score" data-testid="tab-risk-score">Risk Score</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="win-rate" data-testid="tab-win-rate">Win Rate</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="news-events" data-testid="tab-news-events">News</a>
-        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="strategy-status" data-testid="tab-strategy-status">Strategies</a>
       </nav>
     </div>
 
@@ -714,20 +714,67 @@
       </section>
     </div>
 
-    <div class="tab-panel" data-tab-panel="strategy-status" role="tabpanel" hidden>
-      <section aria-label="Strategies">
-        <div class="card-title-row">
-          <h3>Strategies</h3>
-          <button class="expand-btn" aria-label="Add strategy" id="button-add-strategy-tab">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-          </button>
-        </div>
-        <div class="strategy-management-list" id="tab-strategy-status-list">
-          <p class="empty-state-text">No strategies yet. Add your first one to get started.</p>
-        </div>
-      </section>
     </div>
 
+    <div class="view strategies-view" id="view-strategies" hidden>
+      <section class="strategies-view-head" aria-labelledby="strategies-page-title">
+        <div>
+          <h2 id="strategies-page-title">Strategy Performance</h2>
+          <p class="desc">One strategy, one clean scorecard. Every module below follows the selection.</p>
+        </div>
+        <div class="strategy-page-controls">
+          <label for="strategy-page-select">Strategy</label>
+          <select id="strategy-page-select" aria-label="Select a strategy"></select>
+          <button class="strategy-page-edit" type="button" id="strategy-page-edit" aria-label="Edit selected strategy">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.64 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.64a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.36 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15z"/></svg>
+          </button>
+        </div>
+      </section>
+
+      <div class="strategy-page-empty card card-pad" id="strategy-page-empty" hidden>
+        <h3>No strategies yet</h3>
+        <p class="desc">Create a strategy from the Dashboard to begin tracking its signals and performance.</p>
+        <button class="btn-accent" type="button" id="strategy-page-add">Add strategy</button>
+      </div>
+
+      <div id="strategy-page-content">
+        <div class="main-row strategy-page-main-row">
+          <section class="card card-pad stat-card" aria-label="Selected strategy signals summary">
+            <div class="card-title-row"><span class="icon-badge" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg></span></div>
+            <h3 class="strategy-page-card-title">All Signals</h3>
+            <p class="desc" id="strategy-page-signal-description">Signals produced by the selected strategy.</p>
+            <div class="big-number" id="strategy-page-signal-total">0</div>
+            <div class="legend-list">
+              <div class="legend-row"><span class="legend-dot lime"></span><strong>Executed</strong>&nbsp;<span id="strategy-page-executed">0</span> signals</div>
+              <div class="legend-row"><span class="legend-dot light"></span><strong>Blocked</strong>&nbsp;<span id="strategy-page-blocked">0</span> signals</div>
+              <div class="legend-row"><span class="legend-dot grey"></span><strong>Expired</strong>&nbsp;<span id="strategy-page-expired">0</span> signals</div>
+            </div>
+          </section>
+          <section class="card card-pad chart-card" aria-label="Selected strategy signal performance">
+            <div class="card-title-row"><div><div class="chart-month" id="strategy-page-chart-month">—</div><div class="week-labels"><span>W1</span><span>W2</span><span>W3</span><span>W4</span><span>W5</span></div></div></div>
+            <div class="chart-wrap"><div class="chart-empty-overlay" id="strategy-page-chart-empty"><p>No signals from this strategy yet.</p></div><canvas id="strategyVolumeChart" role="img" aria-label="Daily signals for selected strategy"></canvas></div>
+          </section>
+        </div>
+
+        <div class="strategy-kpi-grid">
+          <section class="card card-pad strategy-pl-card" aria-label="Selected strategy profit and loss">
+            <div class="card-title-row"><h3>P/L</h3><span class="strategy-kpi-period">Verified closed trades</span></div>
+            <div class="strategy-pl-total" id="strategy-page-pl-total">—</div>
+            <div class="strategy-pl-detail" id="strategy-page-pl-detail">No closed trades yet</div>
+            <div class="mini-chart-wrap"><canvas id="strategyPlChart" role="img" aria-label="Cumulative profit and loss for selected strategy"></canvas></div>
+          </section>
+          <section class="card card-pad strategy-kpi-card"><span>Top Performing Pair</span><strong id="strategy-page-top-pair">—</strong><small id="strategy-page-top-pair-detail">No closed trades</small></section>
+          <section class="card card-pad strategy-kpi-card"><span>Best Session</span><strong id="strategy-page-best-session">—</strong><small id="strategy-page-best-session-detail">No session data</small></section>
+          <section class="card card-pad strategy-kpi-card"><span>Total Blocked Signals</span><strong id="strategy-page-blocked-total">0</strong><small id="strategy-page-blocked-detail">0% of signals</small></section>
+          <section class="card card-pad strategy-kpi-card"><span>Win %</span><strong id="strategy-page-win-rate">—</strong><small id="strategy-page-win-detail">No closed trades</small></section>
+          <section class="card card-pad strategy-kpi-card"><span>Average R:R</span><strong id="strategy-page-average-r">—</strong><small id="strategy-page-average-r-detail">Verified outcomes</small></section>
+        </div>
+
+        <section class="strategy-page-policy-section" aria-label="Selected strategy directional news policy">
+          <div class="strategy-page-section-head"><div><h3>Directional News Policy</h3><p class="desc">These controls update the selected strategy directly.</p></div></div>
+          <div id="strategy-page-news-policy"></div>
+        </section>
+      </div>
     </div>
 
     <div class="view" id="view-pairs" hidden>

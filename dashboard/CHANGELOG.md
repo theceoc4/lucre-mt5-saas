@@ -7,6 +7,19 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.46 — Dedicated strategy performance workspace (2026-09-02)
+
+- Adds Strategies to the primary navigation with a strategy-scoped signals
+  summary, monthly activity chart, P/L chart, performance cards, editor, and
+  directional news-policy controls.
+- Normalizes broker symbols through terminal mappings before calculating pair
+  win rate, best session, and daily P/L, so suffixed symbols are attributed to
+  their canonical pair cards.
+- Removes the Health and Trading corner buttons from pair cards while keeping
+  the whole non-interactive card surface available for front/back flipping.
+- Keeps raw broker P/L and derived net-after-costs clearly separated in the
+  strategy scorecard.
+
 ## v1.0.45 — Broker-session-aware candle health (2026-09-02)
 
 - Shows broker maintenance windows as a waiting state instead of a broken

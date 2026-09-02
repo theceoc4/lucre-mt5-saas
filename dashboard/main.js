@@ -35,7 +35,9 @@ const state = {
   portfolioRisk: null,
   recentCommands: [],
   notifications: [],
+  activeView: 'dashboard',
   activeTab: 'overview',
+  selectedStrategyId: null,
   signalFilter: { pair: 'all', period: '30d' },
   // v1.0.14 — item 3: P/L Over Time card filters (timeframe + manual/auto/all).
   plFilter: { timeframe: '30d', source: 'all' },
@@ -43,6 +45,8 @@ const state = {
 
 let volumeChartInstance = null;
 let plChartInstance = null;
+let strategyVolumeChartInstance = null;
+let strategyPlChartInstance = null;
 // Realtime keeps positions/signal queue live while a terminal is active;
 // polling remains as a reduced-frequency safety net for missed events.
 // v1.0.23 -- a healthy Realtime channel is the primary update path, with a
@@ -113,6 +117,7 @@ const riskGaugeArc = document.getElementById('risk-gauge-arc');
 const textRiskTrend = document.getElementById('text-risk-trend');
 
 const viewDashboard = document.getElementById('view-dashboard');
+const viewStrategies = document.getElementById('view-strategies');
 const viewPairs = document.getElementById('view-pairs');
 const pairGrid = document.getElementById('pair-grid');
 const buttonRescanSymbols = document.getElementById('button-rescan-symbols');
@@ -133,6 +138,8 @@ const notificationPanel = document.getElementById('notification-panel');
 const notificationList = document.getElementById('notification-list');
 const notificationDot = document.getElementById('notification-dot');
 const notificationCount = document.getElementById('notification-count');
+const strategyPageSelect = document.getElementById('strategy-page-select');
+const strategyPageEdit = document.getElementById('strategy-page-edit');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -321,22 +328,25 @@ document.getElementById('button-confirm-account-action')?.addEventListener('clic
 });
 
 // ---------------------------------------------------------------------------
-// View switching (nav pills) — only two real views exist: dashboard (behind
-// Analytics) and pairs (behind Pairs). Every other decorative pill falls
-// back to the dashboard view.
+// Primary workspaces: account dashboard, strategy analytics, and pairs.
 // ---------------------------------------------------------------------------
 function setActiveView(view) {
+  const nextView = ['dashboard', 'strategies', 'pairs'].includes(view) ? view : 'dashboard';
+  state.activeView = nextView;
   const isPairs = view === 'pairs';
-  viewPairs.hidden = !isPairs;
-  viewDashboard.hidden = isPairs;
+  viewPairs.hidden = nextView !== 'pairs';
+  viewStrategies.hidden = nextView !== 'strategies';
+  viewDashboard.hidden = nextView !== 'dashboard';
   document.querySelectorAll('.nav-pill').forEach((pill) => {
     const pillView = pill.dataset.view || 'dashboard';
-    pill.classList.toggle('active', pillView === view);
+    pill.classList.toggle('active', pillView === nextView);
   });
   if (isPairs) {
     renderPairsView();
     renderSymbolMappingPanel();
     loadPriceFeedStates();
+  } else if (nextView === 'strategies') {
+    renderStrategyPage();
   }
 }
 
@@ -2059,6 +2069,7 @@ async function loadStrategies() {
     state.strategies = [];
     renderStrategies();
     renderStrategyStatusTab();
+    renderStrategyPage();
     renderNotifications();
     return;
   }
@@ -2093,6 +2104,7 @@ async function loadStrategies() {
   renderStrategies();
   renderStrategyWinRates();
   renderStrategyStatusTab();
+  renderStrategyPage();
   renderNotifications();
 }
 
@@ -2138,16 +2150,43 @@ function strategyHealthAge(checked) {
   return `${Math.floor(seconds / 3600)}h ago`;
 }
 
+function canonicalSymbolForTrade(tradeOrSymbol) {
+  const trade = typeof tradeOrSymbol === 'object' && tradeOrSymbol !== null ? tradeOrSymbol : null;
+  const raw = String(trade?.entry_context?.canonical_symbol || trade?.symbol || tradeOrSymbol || '').trim().toUpperCase();
+  if (!raw) return '';
+  const mapping = state.symbolMappings.find((item) =>
+    String(item.canonical_symbol || '').toUpperCase() === raw ||
+    String(item.broker_symbol || '').toUpperCase() === raw
+  );
+  return String(mapping?.canonical_symbol || raw).toUpperCase();
+}
+
+function tradeSessionKey(trade) {
+  if (trade?.session && trade.session !== 'unknown') return trade.session;
+  const capturedAt = trade?.entry_context?.captured_at || trade?.open_time;
+  const date = capturedAt ? new Date(capturedAt) : null;
+  if (!date || Number.isNaN(date.getTime())) return null;
+  const hour = date.getUTCHours();
+  if (hour < 7 || hour >= 21) return 'asia';
+  if (hour < 12) return 'london';
+  if (hour < 16) return 'overlap';
+  return 'ny';
+}
+
+function isWinningTrade(trade) {
+  return trade?.outcome ? trade.outcome === 'win' : Number(trade?.profit ?? 0) > 0;
+}
+
 function strategyPerformanceSummary(strategyId) {
   const trades = getVerifiedTradeHistory().filter((trade) => trade.strategy_id === strategyId);
   if (trades.length === 0) return { winRate: null, count: 0, bestSession: null };
-  const wins = trades.filter((trade) => (trade.profit ?? 0) > 0).length;
+  const wins = trades.filter(isWinningTrade).length;
   const sessions = new Map();
   trades.forEach((trade) => {
-    const key = trade.session || 'unknown';
+    const key = tradeSessionKey(trade) || 'unknown';
     const current = sessions.get(key) || { count: 0, wins: 0 };
     current.count += 1;
-    if ((trade.profit ?? 0) > 0) current.wins += 1;
+    if (isWinningTrade(trade)) current.wins += 1;
     sessions.set(key, current);
   });
   const bestSession = [...sessions.entries()]
@@ -2201,12 +2240,14 @@ async function handleStrategyToggle(input, strategyId) {
     renderStrategies();
     renderStrategyWinRates();
     renderStrategyStatusTab();
+    renderStrategyPage();
     renderNotifications();
   } catch (error) {
     if (strategy) strategy.enabled = previous;
     renderStrategies();
     renderStrategyWinRates();
     renderStrategyStatusTab();
+    renderStrategyPage();
     console.error('toggle strategy error', error);
     const message = isTransientStrategyToggleError(error)
       ? 'The browser could not reach Supabase after three attempts. Check the connection and try again.'
@@ -2263,6 +2304,7 @@ async function loadSignals() {
     renderVolumeChart();
     renderRiskEngine();
     renderSignalsTab();
+    renderStrategyPage();
     renderNotifications();
     return;
   }
@@ -2271,7 +2313,7 @@ async function loadSignals() {
     supabase
       .from('signals')
       .select(
-        'id, symbol, side, timeframe, policy_decision, generated_at, expires_at, suggested_volume, near_news_event, htf_regime, ' +
+        'id, strategy_id, symbol, side, timeframe, policy_decision, generated_at, expires_at, suggested_volume, near_news_event, htf_regime, ' +
           'news_event_id, calendar_events(title, currency, impact)'
       )
       .eq('terminal_id', state.activeTerminalId),
@@ -2290,6 +2332,7 @@ async function loadSignals() {
   renderVolumeChart();
   renderRiskEngine();
   renderSignalsTab();
+  renderStrategyPage();
   renderNotifications();
 }
 
@@ -2579,7 +2622,10 @@ function renderSymbolSettingsList() {
 }
 
 function computeSymbolPerformance(symbol) {
-  const trades = getVerifiedTradeHistory().filter((t) => t.symbol === symbol && t.close_time);
+  const canonicalSymbol = canonicalSymbolForTrade(symbol);
+  const trades = getVerifiedTradeHistory().filter((trade) =>
+    canonicalSymbolForTrade(trade) === canonicalSymbol && trade.close_time
+  );
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const startOfTomorrow = new Date(startOfToday);
@@ -2594,16 +2640,16 @@ function computeSymbolPerformance(symbol) {
     return { count: 0, winRate: null, totalPl: 0, bestSession: null, dailyPl, dailyCount: 0 };
   }
 
-  const isWin = (trade) => trade.outcome ? trade.outcome === 'win' : Number(trade.profit ?? 0) > 0;
-  const wins = trades.filter(isWin).length;
+  const wins = trades.filter(isWinningTrade).length;
   const totalPl = trades.reduce((sum, trade) => sum + Number(trade.profit ?? 0), 0);
   const sessions = new Map();
   trades.forEach((trade) => {
-    if (!trade.session || trade.session === 'unknown') return;
-    const current = sessions.get(trade.session) || { count: 0, wins: 0 };
+    const session = tradeSessionKey(trade);
+    if (!session) return;
+    const current = sessions.get(session) || { count: 0, wins: 0 };
     current.count += 1;
-    if (isWin(trade)) current.wins += 1;
-    sessions.set(trade.session, current);
+    if (isWinningTrade(trade)) current.wins += 1;
+    sessions.set(session, current);
   });
   const bestSession = [...sessions.entries()]
     .sort((left, right) =>
@@ -2853,7 +2899,6 @@ function renderPairsView() {
             <div class="pair-card-header">
               <span class="pair-card-name">${s.symbol}</span>
               <div class="pair-card-head-actions">
-                <button type="button" class="pair-flip-button" data-pair-flip="${s.symbol}" aria-label="View ${s.symbol} feed health">Health ↻</button>
                 <label class="strategy-toggle">
                   <input type="checkbox" class="strategy-toggle-input" data-pair-enable="${s.symbol}" checked />
                   <span>On</span>
@@ -2917,7 +2962,6 @@ function renderPairsView() {
                 <span class="pair-card-name">${s.symbol}</span>
                 <p class="pair-card-back-subtitle">Price-history health</p>
               </div>
-              <button type="button" class="pair-flip-button" data-pair-flip="${s.symbol}" aria-label="Return to ${s.symbol} trading controls">Trading ↻</button>
             </div>
 
             <div class="pair-feed-section">
@@ -3310,13 +3354,14 @@ async function loadTradeHistory() {
     renderSessionsTab();
     renderWinRateTab();
     renderDurationTab();
+    renderStrategyPage();
     renderNotifications();
     return;
   }
   const { data, error } = await supabase
     .from('trade_history')
     .select(
-      'id, symbol, side, volume, profit, net_profit, r_multiple, open_time, close_time, strategy_id, session, htf_regime, near_news_event, news_event_id, outcome, source, profit_verified'
+      'id, symbol, side, volume, profit, net_profit, r_multiple, open_time, close_time, strategy_id, session, htf_regime, near_news_event, news_event_id, outcome, source, profit_verified, entry_context'
     )
     .eq('terminal_id', state.activeTerminalId)
     .order('close_time', { ascending: true });
@@ -3333,6 +3378,7 @@ async function loadTradeHistory() {
   renderWinRateTab();
   renderDurationTab();
   renderStrategyStatusTab();
+  renderStrategyPage();
   renderNotifications();
   if (!viewPairs.hidden) renderPairsView();
 }
@@ -4174,6 +4220,241 @@ function renderStrategyStatusTab() {
   });
 }
 
+function selectedStrategy() {
+  return state.strategies.find((strategy) => strategy.id === state.selectedStrategyId) || null;
+}
+
+function strategyScopedData(strategyId) {
+  const signals = state.signals.filter((signal) => signal.strategy_id === strategyId);
+  const signalIds = new Set(signals.map((signal) => signal.id));
+  const deliveries = state.signalDeliveries.filter((delivery) => signalIds.has(delivery.signal_id));
+  const trades = getVerifiedTradeHistory().filter((trade) => trade.strategy_id === strategyId && trade.close_time);
+  const executedSignalIds = new Set(
+    deliveries
+      .filter((delivery) => ['tapped', 'auto_executed'].includes(delivery.status))
+      .map((delivery) => delivery.signal_id)
+  );
+  const expiredSignalIds = new Set(
+    deliveries.filter((delivery) => delivery.status === 'expired').map((delivery) => delivery.signal_id)
+  );
+  return {
+    signals,
+    deliveries,
+    trades,
+    executed: executedSignalIds.size,
+    blocked: signals.filter((signal) => signal.policy_decision === 'block').length,
+    expired: expiredSignalIds.size,
+    executedSignalIds,
+  };
+}
+
+function renderStrategyVolumeChart(scoped) {
+  const canvas = document.getElementById('strategyVolumeChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  if (strategyVolumeChartInstance) strategyVolumeChartInstance.destroy();
+
+  const now = new Date();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const labels = Array.from({ length: daysInMonth }, (_, index) => String(index + 1));
+  const executed = new Array(daysInMonth).fill(0);
+  const blocked = new Array(daysInMonth).fill(0);
+  scoped.signals.forEach((signal) => {
+    const generated = signal.generated_at ? new Date(signal.generated_at) : null;
+    if (!generated || generated.getMonth() !== now.getMonth() || generated.getFullYear() !== now.getFullYear()) return;
+    const index = generated.getDate() - 1;
+    if (signal.policy_decision === 'block') blocked[index] += 1;
+    else if (scoped.executedSignalIds.has(signal.id)) executed[index] += 1;
+  });
+
+  const accent = cssVar('--color-accent') || '#d7e64e';
+  const textFaint = cssVar('--color-text-faint') || '#99a496';
+  const surfaceSunken = cssVar('--color-surface-sunken') || '#eef1e9';
+  const ctx = canvas.getContext('2d');
+  const gradient = ctx.createLinearGradient(0, 0, 0, 220);
+  gradient.addColorStop(0, hexToRgba(accent, 0.35));
+  gradient.addColorStop(1, hexToRgba(accent, 0.02));
+
+  strategyVolumeChartInstance = new Chart(ctx, {
+    data: {
+      labels,
+      datasets: [
+        { type: 'bar', label: 'Blocked', data: blocked, backgroundColor: surfaceSunken, borderRadius: 3, barPercentage: 0.55, categoryPercentage: 0.9, order: 2 },
+        { type: 'line', label: 'Executed', data: executed, borderColor: accent, borderWidth: 2.5, pointRadius: 0, tension: 0.45, fill: true, backgroundColor: gradient, order: 1 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, interaction: { intersect: false },
+      plugins: { legend: { display: false }, tooltip: { enabled: true } },
+      scales: {
+        x: { display: false },
+        y: { position: 'right', beginAtZero: true, suggestedMax: Math.max(...executed, ...blocked, 0) === 0 ? 10 : undefined, ticks: { color: textFaint, font: { size: 11 }, precision: 0 }, grid: { display: false }, border: { display: false } },
+      },
+    },
+  });
+}
+
+function renderStrategyPlChart(trades) {
+  const canvas = document.getElementById('strategyPlChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  if (strategyPlChartInstance) strategyPlChartInstance.destroy();
+  const positive = cssVar('--color-positive') || '#4c8a5e';
+  const negative = cssVar('--color-negative') || '#c3583f';
+  const textFaint = cssVar('--color-text-faint') || '#99a496';
+  const byDate = new Map();
+  trades.slice().sort((a, b) => new Date(a.close_time) - new Date(b.close_time)).forEach((trade) => {
+    const label = new Date(trade.close_time).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    byDate.set(label, (byDate.get(label) || 0) + Number(trade.profit ?? 0));
+  });
+  let running = 0;
+  const values = [...byDate.values()].map((value) => (running += value));
+  const labels = byDate.size ? [...byDate.keys()] : ['No closed trades'];
+  const data = byDate.size ? values : [0];
+  const color = byDate.size ? (running >= 0 ? positive : negative) : textFaint;
+  strategyPlChartInstance = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: { labels, datasets: [{ label: 'Broker P/L', data, borderColor: color, backgroundColor: hexToRgba(color, 0.14), fill: true, tension: 0.3, pointRadius: 0, pointHoverRadius: 4, borderWidth: 2 }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } },
+  });
+}
+
+function renderStrategyNewsPolicy(strategy) {
+  const container = document.getElementById('strategy-page-news-policy');
+  if (!container || !strategy) return;
+  const posture = strategy.news_posture || 'avoid';
+  const isExploit = posture === 'exploit';
+  container.innerHTML = `
+    <div class="news-policy-panel strategy-page-news-card">
+      <div class="news-policy-head">
+        <span class="news-policy-title">${escapeHtml(strategy.name)}</span>
+        <span class="tag-badge ${NEWS_POSTURE_TAG_CLASS[posture] || 'tag-neutral'}">${NEWS_POSTURE_LABEL[posture] || posture}</span>
+      </div>
+      <div class="news-policy-fields">
+        <label class="news-policy-field"><span>Policy</span><select data-strategy-page-news-field="news_posture"><option value="avoid" ${posture === 'avoid' ? 'selected' : ''}>Avoid</option><option value="neutral" ${posture === 'neutral' ? 'selected' : ''}>Neutral</option><option value="exploit" ${posture === 'exploit' ? 'selected' : ''}>Exploit</option></select></label>
+        <label class="news-policy-field"><span>Min impact</span><select data-strategy-page-news-field="news_min_impact"><option value="low" ${strategy.news_min_impact === 'low' ? 'selected' : ''}>Low</option><option value="medium" ${strategy.news_min_impact === 'medium' || !strategy.news_min_impact ? 'selected' : ''}>Medium</option><option value="high" ${strategy.news_min_impact === 'high' ? 'selected' : ''}>High</option></select></label>
+        <label class="news-policy-field"><span>Window (min)</span><input type="number" min="1" max="240" step="1" value="${strategy.news_window_minutes ?? 30}" data-strategy-page-news-field="news_window_minutes" /></label>
+        <label class="news-policy-field ${isExploit ? '' : 'is-disabled'}"><span>Exploit size ×</span><input type="number" min="0.1" max="3" step="0.1" value="${strategy.news_exploit_size_multiplier ?? 1.5}" data-strategy-page-news-field="news_exploit_size_multiplier" ${isExploit ? '' : 'disabled'} /></label>
+      </div>
+      <p class="news-policy-hint">${NEWS_POSTURE_HINTS[posture] || ''}</p>
+    </div>`;
+
+  container.querySelectorAll('[data-strategy-page-news-field]').forEach((control) => {
+    control.addEventListener('change', async (event) => {
+      const field = event.target.dataset.strategyPageNewsField;
+      let value = event.target.value;
+      if (field === 'news_window_minutes') value = Math.max(1, Math.min(240, parseInt(value, 10) || 30));
+      if (field === 'news_exploit_size_multiplier') value = Math.max(0.1, Math.min(3, parseFloat(value) || 1.5));
+      event.target.disabled = true;
+      const { error } = await supabase.from('strategies').update({ [field]: value }).eq('id', strategy.id);
+      if (error) {
+        console.error('update strategy page news policy error', error);
+        alert(`Couldn't save that change: ${error.message}`);
+        await loadStrategies();
+        return;
+      }
+      strategy[field] = value;
+      renderStrategyPage();
+      renderStrategyStatusTab();
+    });
+  });
+}
+
+function renderStrategyPage() {
+  if (!viewStrategies || !strategyPageSelect) return;
+  const empty = document.getElementById('strategy-page-empty');
+  const content = document.getElementById('strategy-page-content');
+  if (state.strategies.length === 0) {
+    state.selectedStrategyId = null;
+    strategyPageSelect.innerHTML = '<option>No strategies</option>';
+    strategyPageSelect.disabled = true;
+    strategyPageEdit.disabled = true;
+    empty.hidden = false;
+    content.hidden = true;
+    return;
+  }
+
+  if (!state.strategies.some((strategy) => strategy.id === state.selectedStrategyId)) {
+    state.selectedStrategyId = state.strategies.find((strategy) => strategy.enabled)?.id || state.strategies[0].id;
+  }
+  const strategy = selectedStrategy();
+  const scoped = strategyScopedData(strategy.id);
+  strategyPageSelect.disabled = false;
+  strategyPageEdit.disabled = false;
+  strategyPageSelect.innerHTML = state.strategies.map((item) =>
+    `<option value="${item.id}" ${item.id === strategy.id ? 'selected' : ''}>${escapeHtml(item.name)}${item.enabled ? '' : ' (disabled)'}</option>`
+  ).join('');
+  empty.hidden = true;
+  content.hidden = false;
+
+  document.getElementById('strategy-page-signal-description').textContent = `${strategy.name} · ${strategy.timeframe || 'M5'} · ${(strategy.symbols || []).length} pair${(strategy.symbols || []).length === 1 ? '' : 's'}`;
+  document.getElementById('strategy-page-signal-total').textContent = scoped.signals.length.toLocaleString();
+  document.getElementById('strategy-page-executed').textContent = scoped.executed.toLocaleString();
+  document.getElementById('strategy-page-blocked').textContent = scoped.blocked.toLocaleString();
+  document.getElementById('strategy-page-expired').textContent = scoped.expired.toLocaleString();
+  document.getElementById('strategy-page-chart-month').textContent = new Date().toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  document.getElementById('strategy-page-chart-empty').style.display = scoped.signals.length === 0 ? 'flex' : 'none';
+
+  const brokerPl = scoped.trades.reduce((sum, trade) => sum + Number(trade.profit ?? 0), 0);
+  const netPl = scoped.trades.reduce((sum, trade) => sum + Number(trade.net_profit ?? trade.profit ?? 0), 0);
+  const costs = netPl - brokerPl;
+  const plTotal = document.getElementById('strategy-page-pl-total');
+  plTotal.textContent = scoped.trades.length ? `${brokerPl >= 0 ? '+' : '−'}$${Math.abs(brokerPl).toFixed(2)}` : '—';
+  plTotal.style.color = scoped.trades.length ? (brokerPl >= 0 ? 'var(--color-positive)' : 'var(--color-negative)') : '';
+  document.getElementById('strategy-page-pl-detail').textContent = scoped.trades.length
+    ? `Broker P/L · Net after costs ${netPl >= 0 ? '+' : '−'}$${Math.abs(netPl).toFixed(2)} · Costs ${costs >= 0 ? '+' : '−'}$${Math.abs(costs).toFixed(2)}`
+    : 'No verified closed trades yet';
+
+  const pairStats = new Map();
+  const sessionStats = new Map();
+  scoped.trades.forEach((trade) => {
+    const symbol = canonicalSymbolForTrade(trade) || 'Unknown';
+    const pair = pairStats.get(symbol) || { count: 0, wins: 0, net: 0 };
+    pair.count += 1;
+    if (isWinningTrade(trade)) pair.wins += 1;
+    pair.net += Number(trade.net_profit ?? trade.profit ?? 0);
+    pairStats.set(symbol, pair);
+    const session = tradeSessionKey(trade);
+    if (session) {
+      const stats = sessionStats.get(session) || { count: 0, wins: 0 };
+      stats.count += 1;
+      if (isWinningTrade(trade)) stats.wins += 1;
+      sessionStats.set(session, stats);
+    }
+  });
+  const topPair = [...pairStats.entries()].sort((a, b) => b[1].net - a[1].net || b[1].count - a[1].count)[0];
+  const bestSession = [...sessionStats.entries()].sort((a, b) => (b[1].wins / b[1].count) - (a[1].wins / a[1].count) || b[1].count - a[1].count)[0];
+  const wins = scoped.trades.filter(isWinningTrade).length;
+  const winRate = scoped.trades.length ? Math.round((wins / scoped.trades.length) * 100) : null;
+  const tradesWithR = scoped.trades.filter((trade) => trade.r_multiple != null && Number.isFinite(Number(trade.r_multiple)));
+  const averageR = tradesWithR.length ? tradesWithR.reduce((sum, trade) => sum + Number(trade.r_multiple), 0) / tradesWithR.length : null;
+  const blockedPct = scoped.signals.length ? Math.round((scoped.blocked / scoped.signals.length) * 100) : 0;
+
+  document.getElementById('strategy-page-top-pair').textContent = topPair?.[0] || '—';
+  document.getElementById('strategy-page-top-pair-detail').textContent = topPair ? `${topPair[1].net >= 0 ? '+' : '−'}$${Math.abs(topPair[1].net).toFixed(2)} net · ${topPair[1].count} trades` : 'No closed trades';
+  document.getElementById('strategy-page-best-session').textContent = bestSession ? SESSION_LABELS[bestSession[0]] || bestSession[0] : '—';
+  document.getElementById('strategy-page-best-session-detail').textContent = bestSession ? `${Math.round((bestSession[1].wins / bestSession[1].count) * 100)}% win · ${bestSession[1].count} trades` : 'No session data';
+  document.getElementById('strategy-page-blocked-total').textContent = scoped.blocked.toLocaleString();
+  document.getElementById('strategy-page-blocked-detail').textContent = `${blockedPct}% of ${scoped.signals.length.toLocaleString()} signals`;
+  document.getElementById('strategy-page-win-rate').textContent = winRate == null ? '—' : `${winRate}%`;
+  document.getElementById('strategy-page-win-detail').textContent = scoped.trades.length ? `${wins} wins · ${scoped.trades.length} trades` : 'No closed trades';
+  document.getElementById('strategy-page-average-r').textContent = averageR == null ? '—' : `${averageR.toFixed(2)}R`;
+  document.getElementById('strategy-page-average-r-detail').textContent = tradesWithR.length ? `${tradesWithR.length} risk-defined trades` : 'No risk-defined outcomes';
+
+  renderStrategyVolumeChart(scoped);
+  renderStrategyPlChart(scoped.trades);
+  renderStrategyNewsPolicy(strategy);
+}
+
+strategyPageSelect?.addEventListener('change', (event) => {
+  state.selectedStrategyId = event.target.value;
+  renderStrategyPage();
+});
+strategyPageEdit?.addEventListener('click', () => {
+  if (state.selectedStrategyId) openEditStrategyModal(state.selectedStrategyId);
+});
+document.getElementById('strategy-page-add')?.addEventListener('click', () => {
+  openAddStrategyModal();
+});
+
 // ---------------------------------------------------------------------------
 // Charts (empty-safe — Chart.js renders a flat/blank series until real data exists)
 // ---------------------------------------------------------------------------
@@ -4390,6 +4671,7 @@ plSourceSelect?.addEventListener('change', (e) => {
 window.addEventListener('lucre:theme-changed', () => {
   renderVolumeChart();
   renderPlChart();
+  if (state.activeView === 'strategies') renderStrategyPage();
 });
 
 // ---------------------------------------------------------------------------
@@ -4411,6 +4693,8 @@ function resetDashboardState() {
   state.tradeHistory = [];
   state.recentCommands = [];
   state.notifications = [];
+  state.activeView = 'dashboard';
+  state.selectedStrategyId = null;
   state.agentPolicies = [];
   state.positions = [];
   state.symbolSettings = [];
@@ -4422,6 +4706,7 @@ function resetDashboardState() {
   if (signalsPeriodFilter) signalsPeriodFilter.value = '30d';
   if (notificationPanel) notificationPanel.hidden = true;
   renderNotifications();
+  setActiveView('dashboard');
   setActiveTab('overview');
   stopPositionPolling();
   stopRealtime();
