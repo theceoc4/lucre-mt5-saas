@@ -7,6 +7,14 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.51 — Strategy blocked-signal audit list (2026-09-02)
+
+- Adds a full-width Blocked Signals card to the bottom of the Strategies page.
+- Follows the selected strategy and lists symbol, side, localized date/time,
+  and the persisted backend block reason newest-first.
+- Holds ten 56px rows in a fixed-height viewport and scrolls vertically when
+  more blocked signals exist.
+
 ## v1.0.50 — Immediate position execution controls (2026-09-02)
 
 - Removes the typed confirmation modal from Lock In and both Close all buttons.

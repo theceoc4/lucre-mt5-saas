@@ -3159,6 +3159,79 @@ body {
   margin-top: var(--space-3);
 }
 
+.strategy-blocked-signals-card {
+  width: 100%;
+  margin-top: var(--space-5);
+}
+
+.strategy-blocked-signals-card .card-title-row { align-items: flex-start; }
+.strategy-blocked-signals-card .desc { margin: 3px 0 0; }
+.strategy-blocked-count {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.strategy-blocked-table-wrap {
+  margin-top: var(--space-4);
+  overflow-x: auto;
+  border: 1px solid var(--color-border-primary);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-sunken);
+}
+
+.strategy-blocked-table-head,
+.strategy-blocked-row {
+  min-width: 680px;
+  display: grid;
+  grid-template-columns: 100px 80px 190px minmax(260px, 1fr);
+  align-items: center;
+  column-gap: var(--space-3);
+  padding: 0 var(--space-4);
+}
+
+.strategy-blocked-table-head {
+  height: 38px;
+  color: var(--color-text-faint);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--color-border-primary);
+}
+
+.strategy-blocked-list {
+  height: 560px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.strategy-blocked-list > .empty-state-text {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  margin: 0;
+}
+
+.strategy-blocked-row {
+  height: 56px;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  border-bottom: 1px solid var(--color-border-primary);
+}
+
+.strategy-blocked-row:last-child { border-bottom: 0; }
+.strategy-blocked-row strong { color: var(--color-text); }
+.strategy-blocked-row .side-badge { width: fit-content; margin-left: 0; }
+.strategy-blocked-row time { font-variant-numeric: tabular-nums; }
+.strategy-blocked-reason { color: var(--color-text); line-height: 1.35; }
+
+@media (max-width: 640px) {
+  .strategy-blocked-signals-card { padding: var(--space-4); }
+  .strategy-blocked-table-head,
+  .strategy-blocked-row { padding-inline: var(--space-3); }
+}
+
 .strategy-management-card {
   overflow: hidden;
   border: 1px solid var(--glass-border);

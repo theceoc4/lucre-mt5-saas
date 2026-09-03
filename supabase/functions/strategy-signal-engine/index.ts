@@ -824,10 +824,10 @@ async function policyForCell(
   session: Session,
   regime: Regime,
   nearNews: boolean,
-): Promise<{ decision: PolicyDecision; factor: number; error?: string }> {
+): Promise<{ decision: PolicyDecision; factor: number; reason?: string; error?: string }> {
   const { data, error } = await admin
     .from("agent_policies")
-    .select("decision, downweight_factor")
+    .select("decision, downweight_factor, reason")
     .eq("terminal_id", terminalId)
     .eq("strategy_id", strategyId)
     .eq("symbol", symbol)
@@ -839,7 +839,7 @@ async function policyForCell(
 
   const decision: PolicyDecision = data?.decision === "block" || data?.decision === "downweight" ? data.decision : "ok";
   const factor = clamp01(numberValue(data?.downweight_factor, 1));
-  return { decision, factor };
+  return { decision, factor, reason: data?.reason ?? undefined };
 }
 
 async function reservePositionSlot(
@@ -1417,21 +1417,43 @@ Deno.serve(async (req: Request) => {
           continue;
         }
 
+        // INSERT triggers apply the directional-news and adaptive throttle
+        // policies before this worker continues. Re-read their durable result
+        // so a trigger-level block is never accidentally downgraded by the
+        // worker's following policy pass, and retain its exact block reason.
+        const { data: persistedSignal } = await admin.from("signals")
+          .select("policy_decision, near_news_event, block_reason")
+          .eq("id", signal.id)
+          .single();
+        const persistedDecision: PolicyDecision = persistedSignal?.policy_decision === "block" ||
+            persistedSignal?.policy_decision === "downweight"
+          ? persistedSignal.policy_decision
+          : candidate.policyDecision;
+
         const policy = await policyForCell(admin, strategy.terminal_id, strategy.id, symbol, session, regime, news.near);
         if (policy.error) {
-          await admin.from("signals").update({ policy_decision: "block" }).eq("id", signal.id);
+          await admin.from("signals").update({
+            policy_decision: "block",
+            block_reason: "Adaptive policy lookup failed",
+          }).eq("id", signal.id);
           await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
           console.error(`strategy-signal-engine: policy lookup failed for ${strategy.id}/${symbol}: ${policy.error}`);
           recordEvaluation(strategy, symbol, "policy_blocked", sourceBarTime, candleAgeSeconds, { reason: "policy_lookup_failed", error: policy.error });
           continue;
         }
 
-        const finalDecision: PolicyDecision = policy.decision === "block" || candidate.policyDecision === "block"
+        const finalDecision: PolicyDecision = policy.decision === "block" || persistedDecision === "block"
           ? "block"
-          : policy.decision === "downweight" || candidate.policyDecision === "downweight"
+          : policy.decision === "downweight" || persistedDecision === "downweight"
           ? "downweight"
           : "ok";
-        await admin.from("signals").update({ policy_decision: finalDecision }).eq("id", signal.id);
+        await admin.from("signals").update({
+          policy_decision: finalDecision,
+          block_reason: finalDecision === "block"
+            ? (persistedSignal?.block_reason ?? policy.reason ??
+              (persistedSignal?.near_news_event ? "Directional news policy" : "Adaptive policy blocked this market context"))
+            : null,
+        }).eq("id", signal.id);
 
         if (finalDecision === "block") {
           await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
@@ -1448,7 +1470,10 @@ Deno.serve(async (req: Request) => {
         const effectiveRiskPercent = baseRiskPercent *
           (policy.decision === "downweight" ? policy.factor : 1) * avoidNewsFactor * exploitNewsFactor;
         if (!Number.isFinite(effectiveRiskPercent) || effectiveRiskPercent <= 0) {
-          await admin.from("signals").update({ policy_decision: "block" }).eq("id", signal.id);
+          await admin.from("signals").update({
+            policy_decision: "block",
+            block_reason: "Calculated risk was not positive",
+          }).eq("id", signal.id);
           await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
           recordEvaluation(strategy, symbol, "risk_blocked", sourceBarTime, candleAgeSeconds, { reason: "non_positive_effective_risk" });
           continue;
@@ -1461,7 +1486,10 @@ Deno.serve(async (req: Request) => {
           p_proposed_risk_percent: effectiveRiskPercent,
         });
         if (riskGateError || !riskGate?.[0]?.allowed) {
-          await admin.from("signals").update({ policy_decision: "block" }).eq("id", signal.id);
+          await admin.from("signals").update({
+            policy_decision: "block",
+            block_reason: riskGate?.[0]?.reason ?? "Portfolio risk guardrail",
+          }).eq("id", signal.id);
           await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
           if (riskGateError) console.error(`strategy-signal-engine: portfolio risk gate failed: ${riskGateError.message}`);
           recordEvaluation(strategy, symbol, "risk_blocked", sourceBarTime, candleAgeSeconds, { reason: "portfolio_risk_gate", error: riskGateError?.message ?? null });

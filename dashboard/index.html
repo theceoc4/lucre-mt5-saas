@@ -802,6 +802,24 @@
           <div class="strategy-page-section-head"><div><h3>Directional News Policy</h3><p class="desc">These controls update the selected strategy directly.</p></div></div>
           <div id="strategy-page-news-policy"></div>
         </section>
+
+        <section class="card card-pad strategy-blocked-signals-card" aria-label="Blocked signals for selected strategy">
+          <div class="card-title-row">
+            <div>
+              <h3>Blocked Signals</h3>
+              <p class="desc">Newest first · selected strategy only</p>
+            </div>
+            <span class="strategy-blocked-count" id="strategy-page-blocked-list-count">0 blocked</span>
+          </div>
+          <div class="strategy-blocked-table-wrap">
+            <div class="strategy-blocked-table-head" aria-hidden="true">
+              <span>Symbol</span><span>Side</span><span>Date &amp; time</span><span>Reason</span>
+            </div>
+            <div class="strategy-blocked-list" id="strategy-page-blocked-list">
+              <p class="empty-state-text">No blocked signals for this strategy.</p>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
 

@@ -2470,7 +2470,7 @@ async function loadSignals() {
       .from('signals')
       .select(
         'id, strategy_id, symbol, side, timeframe, policy_decision, generated_at, expires_at, suggested_volume, near_news_event, htf_regime, ' +
-          'news_event_id, calendar_events(title, currency, impact)'
+          'block_reason, news_event_id, calendar_events(title, currency, impact)'
       )
       .eq('terminal_id', state.activeTerminalId),
     supabase
@@ -4759,6 +4759,27 @@ function renderStrategyPage() {
   document.getElementById('strategy-page-average-r-detail').textContent = tradesWithR.length ? `${tradesWithR.length} risk-defined trades` : 'No risk-defined outcomes';
   document.getElementById('strategy-page-average-duration').textContent = averageDurationMs == null ? '—' : formatTradeDuration(averageDurationMs);
   document.getElementById('strategy-page-average-duration-detail').textContent = tradesWithDuration.length ? `${tradesWithDuration.length} completed trades` : 'No closed trades';
+
+  const blockedSignals = scoped.signals
+    .filter((signal) => signal.policy_decision === 'block')
+    .sort((left, right) => new Date(right.generated_at) - new Date(left.generated_at));
+  const blockedList = document.getElementById('strategy-page-blocked-list');
+  document.getElementById('strategy-page-blocked-list-count').textContent =
+    `${blockedSignals.length.toLocaleString()} blocked`;
+  blockedList.innerHTML = blockedSignals.length
+    ? blockedSignals.map((signal) => {
+        const side = signal.side === 'sell' ? 'sell' : 'buy';
+        const fallbackReason = signal.near_news_event
+          ? 'Directional news policy'
+          : 'Adaptive policy or risk guardrail';
+        return `<div class="strategy-blocked-row">
+          <strong>${escapeHtml(signal.symbol)}</strong>
+          <span class="side-badge side-${side}">${side.toUpperCase()}</span>
+          <time datetime="${escapeHtml(signal.generated_at)}">${formatDateTime(signal.generated_at)}</time>
+          <span class="strategy-blocked-reason">${escapeHtml(signal.block_reason || fallbackReason)}</span>
+        </div>`;
+      }).join('')
+    : '<p class="empty-state-text">No blocked signals for this strategy.</p>';
 
   renderStrategyVolumeChart(scoped);
   renderStrategyPlChart(scoped.trades);

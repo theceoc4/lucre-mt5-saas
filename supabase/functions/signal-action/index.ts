@@ -170,6 +170,9 @@ Deno.serve(async (req: Request) => {
       .from("signal_deliveries")
       .update({ status: "blocked", acted_at: now.toISOString() })
       .eq("id", delivery.id);
+    await admin.from("signals")
+      .update({ policy_decision: "block", block_reason: throttlePolicy.reason ?? "Adaptive risk policy" })
+      .eq("id", signal.id);
     return jsonResponse(
       { error: "blocked_by_risk_engine", reason: throttlePolicy.reason ?? null },
       423,
