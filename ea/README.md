@@ -1,11 +1,13 @@
-# LucreHubEA — v1.0.44 (single-file build)
+# LucreHubEA — v1.0.45 (single-file build)
 
 ## What changed in this build
 
-Version 1.0.44 accepts the dashboard's single `close_all` command and executes
-it through the existing terminal-wide close routine. This is one queued command,
-not one backend command per position; the following EA sync reconciles every
-broker-confirmed close and its deal history.
+Version 1.0.45 separates latency-sensitive trade commands from the heavier
+account, history, candle-manifest, and symbol reconciliation path. Realtime
+wakes are checked on a 250ms control-plane timer, commands use a compact
+authenticated exchange, and broker results are returned immediately. If the
+Realtime channel drops, a one-second command-only poll protects execution
+latency while the normal durable sync keeps its lower-frequency cadence.
 
 Every prior release shipped as `LucreHubEA.mq5` plus five sibling include
 files that had to be copied separately into `MQL5/Include`:

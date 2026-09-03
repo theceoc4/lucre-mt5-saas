@@ -1,5 +1,12 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.46 — Broker-confirmed trade transition polish (2026-09-03)
+
+- Hides closing positions as soon as the terminal's immediate post-trade
+  position broadcast confirms they are absent, while durable ledger
+  reconciliation continues in the background.
+- Removes the artificial 700ms delay after submitting a position modification.
+
 All notable changes to the dashboard frontend are documented here. Follows the
 same `vMAJOR.MINOR.PATCH` convention as the backend
 (`/home/user/workspace/mt5_backend/CHANGELOG.md`) — the two repos version

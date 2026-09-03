@@ -1,5 +1,19 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.45 — Low-latency trading control plane (2026-09-03)
+
+- Adds a compact command-only exchange so opening, modifying, and closing no
+  longer waits behind account history, position reconciliation, symbol state,
+  or candle-feed manifest work.
+- Pumps the terminal-scoped Realtime channel first on a 250ms timer and uses a
+  one-second command-only fallback while that channel is unavailable.
+- Returns broker execution results immediately in a second compact exchange
+  instead of waiting for the next full reconciliation cycle.
+- Defers trade-event account/history reconciliation off the `OrderSend` path
+  and broadcasts a fresh ephemeral position snapshot after execution.
+- Keeps the durable command queue, active-EA lease, idempotency controls, and
+  full reconciliation loop as recovery backstops.
+
 ## v1.0.44 — Atomic dashboard close-all (2026-09-03)
 
 - Accepts one `close_all` command from the dashboard and closes every active

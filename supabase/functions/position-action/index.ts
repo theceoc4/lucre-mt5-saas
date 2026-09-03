@@ -46,25 +46,6 @@ function sessionForNow(date: Date): "asia" | "london" | "ny" | "overlap" {
   return "asia";
 }
 
-async function nearNewsCheck(
-  admin: ReturnType<typeof createClient>,
-  at: Date,
-  windowMinutes = 30,
-): Promise<{ near: boolean; news_event_id: string | null }> {
-  const from = new Date(at.getTime() - windowMinutes * 60_000).toISOString();
-  const to = new Date(at.getTime() + windowMinutes * 60_000).toISOString();
-  const { data } = await admin
-    .from("calendar_events")
-    .select("id")
-    .in("impact", ["medium", "high"])
-    .gte("event_time", from)
-    .lte("event_time", to)
-    .order("event_time", { ascending: true })
-    .limit(1);
-  if (data && data.length > 0) return { near: true, news_event_id: data[0].id };
-  return { near: false, news_event_id: null };
-}
-
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: CORS_HEADERS });
   if (req.method !== "POST") return jsonResponse({ error: "method_not_allowed" }, 405);
@@ -203,28 +184,13 @@ Deno.serve(async (req: Request) => {
   // action === "close"
   const idempotencyKey = `close:${position.id}`;
 
-  // Inherit context from the position's originating open command, if we can find it.
-  const { data: openCommand } = await admin
-    .from("ea_commands")
-    .select("session, htf_regime, near_news_event, news_event_id")
-    .eq("terminal_id", terminal.id)
-    .eq("mt5_ticket", position.mt5_ticket)
-    .eq("command_type", "open")
-    .order("requested_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  let session = openCommand?.session ?? null;
-  let htfRegime = openCommand?.htf_regime ?? null;
-  let nearNews = openCommand?.near_news_event ?? false;
-  let newsEventId = openCommand?.news_event_id ?? null;
-
-  if (!openCommand) {
-    session = sessionForNow(now);
-    const newsCheck = await nearNewsCheck(admin, now);
-    nearNews = newsCheck.near;
-    newsEventId = newsCheck.news_event_id;
-  }
+  // Position rows already preserve immutable entry context. Copy it directly
+  // instead of adding an ea_commands lookup (and sometimes a calendar query)
+  // to the latency-sensitive close path.
+  const session = position.session ?? sessionForNow(now);
+  const htfRegime = position.htf_regime ?? null;
+  const nearNews = position.near_news_event ?? false;
+  const newsEventId = position.news_event_id ?? null;
 
   const { data: command, error: insertError } = await admin
     .from("ea_commands")
@@ -252,7 +218,13 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "insert_failed", detail: insertError.message }, 500);
   }
 
-  await admin.from("positions").update({ status: "closing", updated_at: now.toISOString() }).eq("id", position.id);
+  // The insert broadcasts immediately and the fast EA lane can finish before
+  // this function resumes. Never overwrite a broker-confirmed `closed` row
+  // with the optimistic `closing` state in that race.
+  await admin.from("positions")
+    .update({ status: "closing", updated_at: now.toISOString() })
+    .eq("id", position.id)
+    .eq("status", "open");
 
   return jsonResponse({ ea_command_id: command.id, status: command.status });
 });

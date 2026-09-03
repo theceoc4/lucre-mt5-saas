@@ -1,4 +1,4 @@
-// v1.0.35 — verified candle bootstrap lifecycle and freshness manifest.
+// v1.0.45 — low-latency command-only exchange plus durable reconciliation.
 // v1.0.2 — ea-sync
 //
 // The MQL5 EA polls this every 1-2s. It is the ONLY function EAs talk to and the
@@ -176,6 +176,7 @@ Deno.serve(async (req: Request) => {
   if (!terminal) return jsonResponse({ error: "invalid_api_key" }, 401);
 
   let body: {
+    mode?: "full" | "commands";
     instance_id?: string;
     is_vps?: boolean;
     account?: {
@@ -224,7 +225,11 @@ Deno.serve(async (req: Request) => {
 
   const nowIso = new Date().toISOString();
 
-  // 1. Heartbeat + account state.
+  const commandOnly = body.mode === "commands";
+
+  // 1. Heartbeat + account state. The command-only lane deliberately skips
+  // this durable snapshot work; claim_terminal_ea_instance above still renews
+  // the active-EA lease on every authenticated command exchange.
   const accountUpdate: Record<string, unknown> = {
     last_heartbeat_at: nowIso,
     status: "connected",
@@ -254,12 +259,14 @@ Deno.serve(async (req: Request) => {
       body.account.account_expert_trade_allowed,
     ].some((value) => value !== undefined)) accountUpdate.trade_capability_reported_at = nowIso;
   }
-  const { error: heartbeatError } = await admin
-    .from("mt5_terminals")
-    .update(accountUpdate)
-    .eq("id", terminal.id);
-  if (heartbeatError) {
-    return jsonResponse({ error: "heartbeat_update_failed", detail: heartbeatError.message }, 500);
+  if (!commandOnly) {
+    const { error: heartbeatError } = await admin
+      .from("mt5_terminals")
+      .update(accountUpdate)
+      .eq("id", terminal.id);
+    if (heartbeatError) {
+      return jsonResponse({ error: "heartbeat_update_failed", detail: heartbeatError.message }, 500);
+    }
   }
 
   // 2. Process command execution results (acks, executions, failures).
@@ -288,7 +295,10 @@ Deno.serve(async (req: Request) => {
       continue;
     }
 
-    const commandUpdate: Record<string, unknown> = { status: result.status };
+    const commandUpdate: Record<string, unknown> = {
+      status: result.status,
+      result_received_at: nowIso,
+    };
     if (result.mt5_ticket !== undefined) commandUpdate.mt5_ticket = result.mt5_ticket;
     if (result.status === "executed") commandUpdate.error_message = null;
     else if (result.error_message !== undefined) commandUpdate.error_message = result.error_message;
@@ -379,8 +389,11 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    if (result.status === "executed" && command.command_type === "modify_sl_tp" && command.mt5_ticket) {
+    if (result.status === "executed" &&
+      (command.command_type === "modify" || command.command_type === "modify_sl_tp") && command.mt5_ticket) {
       await admin.from("positions").update({
+        sl: command.sl,
+        tp: command.tp,
         management_stage: command.management_stage ?? 0,
         last_management_bar_time: command.management_source_bar_time ?? nowIso,
         updated_at: nowIso,
@@ -388,6 +401,39 @@ Deno.serve(async (req: Request) => {
     }
 
     processedResults.push({ ea_command_id: result.ea_command_id, ok: true });
+  }
+
+  // The command lane stops here. It does not reconcile positions, import deal
+  // history, inspect strategy feed manifests, or build symbol configuration.
+  // One request fetches work; the EA executes it and immediately makes a
+  // second small request carrying the result.
+  if (commandOnly) {
+    const { data: queuedCommands, error: queuedError } = await admin
+      .from("ea_commands")
+      .select("*")
+      .eq("terminal_id", terminal.id)
+      .eq("status", "queued")
+      .order("requested_at", { ascending: true });
+
+    if (queuedError) return jsonResponse({ error: "queued_fetch_failed", detail: queuedError.message }, 500);
+
+    if (queuedCommands && queuedCommands.length > 0) {
+      const { error: dispatchError } = await admin
+        .from("ea_commands")
+        .update({ status: "sent", dispatched_at: nowIso })
+        .in("id", queuedCommands.map((command) => command.id));
+      if (dispatchError) {
+        return jsonResponse({ error: "queued_dispatch_failed", detail: dispatchError.message }, 500);
+      }
+    }
+
+    return jsonResponse({
+      terminal_id: terminal.id,
+      server_time: nowIso,
+      mode: "commands",
+      command_results_processed: processedResults,
+      pending_commands: queuedCommands ?? [],
+    });
   }
 
   // 2.25. Lossless MT5 account-history import. This is separate from
@@ -970,7 +1016,7 @@ Deno.serve(async (req: Request) => {
   if (queuedCommands && queuedCommands.length > 0) {
     await admin
       .from("ea_commands")
-      .update({ status: "sent" })
+      .update({ status: "sent", dispatched_at: nowIso })
       .in("id", queuedCommands.map((c) => c.id));
   }
 

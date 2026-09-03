@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.44 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.45 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -41,7 +41,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.44"
+#property version   "1.45"
 #property strict
 
 
@@ -130,6 +130,9 @@ string   g_es_base_url         = "";   // e.g. https://qxlfnscmrhwfcpattqxa.supa
 string   g_es_api_key          = "";   // mtk_live_... from provision-terminal-key
 int      g_es_poll_seconds     = 10;   // adaptive: slower while Realtime is healthy
 datetime g_es_last_poll        = 0;
+datetime g_es_last_command_poll = 0;
+bool     g_es_force_full_sync  = false;
+bool     g_es_command_lane_running = false;
 datetime g_es_last_history_scan = 0; // v1.0.14: rolling window start for closed-deal detection
 ulong    g_es_account_history_last_ticket = 0;
 bool     g_es_account_history_initial_sync = true;
@@ -174,6 +177,9 @@ void EASync_Init(const string base_url, const string api_key, const int poll_sec
    g_es_api_key      = api_key;
    g_es_poll_seconds = poll_seconds;
    g_es_last_poll    = 0; // force an immediate first poll on the next OnTimer() tick
+   g_es_last_command_poll = 0;
+   g_es_force_full_sync = false;
+   g_es_command_lane_running = false;
    ArrayResize(g_es_pending_results, 0);
    g_es_pending_results_count = 0;
    ArrayResize(g_es_strategy_tickets, 0);
@@ -300,28 +306,24 @@ void EASync_OnTimer()
    if(g_es_base_url == "" || g_es_api_key == "")
       return; // EASync_Init() was never called — nothing to do.
 
-   if(TimeCurrent() - g_es_last_poll < g_es_poll_seconds)
+   if(!g_es_force_full_sync && TimeCurrent() - g_es_last_poll < g_es_poll_seconds)
       return;
 
+   g_es_force_full_sync = false;
    EASync_Run();
 }
 
 //+------------------------------------------------------------------+
-//| Public: call from OnTradeTransaction() the instant a position    |
-//| opens, modifies, or closes. Previously every trade event waited  |
-//| out the full g_es_poll_seconds gate before its effect reached    |
-//| the dashboard at all, on top of whatever delay                   |
-//| the dashboard's own poll/Realtime layer added on the way out —   |
-//| together explaining the ~1 minute lag reported live. This runs   |
-//| EASync_Run() immediately, bypassing the gate, so a trade event   |
-//| reaches Supabase on this exact tick instead of the next timer.   |
+//| Public: schedule a durable full reconciliation after an MT5 trade|
+//| event. Command results use the small command lane immediately;   |
+//| account/history work is deferred off the broker execution path.  |
 //+------------------------------------------------------------------+
 void EASync_ForceSync()
 {
    if(g_es_base_url == "" || g_es_api_key == "")
       return; // EASync_Init() was never called — nothing to do.
 
-   EASync_Run();
+   g_es_force_full_sync = true;
 }
 
 //+------------------------------------------------------------------+
@@ -1260,7 +1262,7 @@ string EASync_BuildRequestBody()
       "\"account_login\":\"" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)) + "\","
       "\"server\":\"" + EASync_JsonEscape(AccountInfoString(ACCOUNT_SERVER)) + "\","
       "\"is_live\":" + (AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_REAL ? "true" : "false") + ","
-      "\"ea_version\":\"1.0.43\","
+      "\"ea_version\":\"1.0.45\","
       "\"terminal_trade_allowed\":" + (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
       "\"mql_trade_allowed\":" + (MQLInfoInteger(MQL_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
       "\"account_trade_allowed\":" + (AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) != 0 ? "true" : "false") + ","
@@ -1311,6 +1313,26 @@ string EASync_BuildRequestBody()
    return "{\"instance_id\":\"" + EASync_JsonEscape(g_es_instance_id) + "\"," +
           "\"is_vps\":" + (TerminalInfoInteger(TERMINAL_VPS) != 0 ? "true" : "false") + "," +
           account_json + "," + positions_json + "," + results_json + "," + closed_deals_json + "," + account_history_json + "}";
+}
+
+//+------------------------------------------------------------------+
+//| Compact command-plane body. Account snapshots, positions, history|
+//| and market-data configuration remain on the durable full lane.    |
+//+------------------------------------------------------------------+
+string EASync_BuildCommandRequestBody()
+{
+   string results_json = "\"command_results\":[";
+   for(int i = 0; i < g_es_pending_results_count; i++)
+   {
+      if(i > 0) results_json += ",";
+      results_json += g_es_pending_results[i];
+   }
+   results_json += "]";
+
+   return "{\"mode\":\"commands\"," +
+          "\"instance_id\":\"" + EASync_JsonEscape(g_es_instance_id) + "\"," +
+          "\"is_vps\":" + (TerminalInfoInteger(TERMINAL_VPS) != 0 ? "true" : "false") + "," +
+          results_json + "}";
 }
 
 //+------------------------------------------------------------------+
@@ -1462,6 +1484,74 @@ string EASync_BuildClosedDealsJson()
 }
 
 //+------------------------------------------------------------------+
+//| One compact command exchange. A 200 response confirms receipt of  |
+//| all included results and may carry newly queued commands.          |
+//+------------------------------------------------------------------+
+bool EASync_CommandExchange()
+{
+   string body = EASync_BuildCommandRequestBody();
+   string url = g_es_base_url + "/functions/v1/ea-sync";
+   string headers = "Content-Type: application/json\r\nx-api-key: " + g_es_api_key + "\r\n";
+
+   uchar data[];
+   int data_len = StringToCharArray(body, data, 0, StringLen(body), CP_UTF8);
+   ArrayResize(data, data_len);
+
+   uchar result[];
+   string result_headers;
+   ResetLastError();
+   ulong started_at = GetTickCount64();
+   int status = WebRequest("POST", url, headers, 2500, data, result, result_headers);
+   ulong elapsed_ms = GetTickCount64() - started_at;
+
+   if(status == -1)
+   {
+      PrintFormat("EASync: command lane WebRequest failed, error=%d elapsed=%I64u ms", GetLastError(), elapsed_ms);
+      return false;
+   }
+
+   string response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+   if(status != 200)
+   {
+      PrintFormat("EASync: command lane HTTP %d in %I64u ms: %s", status, elapsed_ms, response);
+      return false;
+   }
+
+   ArrayResize(g_es_pending_results, 0);
+   g_es_pending_results_count = 0;
+   EASync_ProcessPendingCommands(response);
+   PrintFormat("EASync: command lane completed in %I64u ms, pending_results=%d", elapsed_ms, g_es_pending_results_count);
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Fetch, execute, and return results without entering the heavyweight|
+//| account/history reconciliation route. Three bounded exchanges cover|
+//| the normal fetch -> execute -> report sequence plus one small burst.|
+//+------------------------------------------------------------------+
+void EASync_RunCommandLane()
+{
+   if(g_es_base_url == "" || g_es_api_key == "" || g_es_command_lane_running)
+      return;
+
+   g_es_command_lane_running = true;
+   g_es_last_command_poll = TimeLocal();
+   for(int exchange = 0; exchange < 3; exchange++)
+   {
+      if(!EASync_CommandExchange()) break;
+      if(g_es_pending_results_count == 0) break;
+   }
+   g_es_command_lane_running = false;
+}
+
+// One-second command safety net while the Realtime wake channel is offline.
+void EASync_CommandFallbackOnTimer()
+{
+   if(TimeLocal() - g_es_last_command_poll < 1) return;
+   EASync_RunCommandLane();
+}
+
+//+------------------------------------------------------------------+
 //| Public: runs one full poll+execute cycle immediately (bypasses    |
 //| the interval check). EASync_OnTimer() gates normal periodic calls.|
 //+------------------------------------------------------------------+
@@ -1507,6 +1597,8 @@ void EASync_Run()
    g_es_pending_results_count = 0;
 
    EASync_ProcessPendingCommands(response);
+   if(g_es_pending_results_count > 0)
+      EASync_RunCommandLane();
 }
 //+------------------------------------------------------------------+
 //============================================================================
@@ -2054,16 +2146,16 @@ string EAStream_BuildPositionState()
 //| aggregate position state changed. One message covers every open   |
 //| position, so usage does not multiply with position count.         |
 //+------------------------------------------------------------------+
-void EAStream_MaybeBroadcastPositionState()
+void EAStream_BroadcastPositionState(const bool force)
 {
    if(!g_ews_joined) return;
    datetime now = TimeCurrent();
-   if(now > g_ews_position_stream_requested_until) return;
-   if(now - g_ews_last_position_stream_check < g_ews_position_stream_seconds) return;
+   if(!force && now > g_ews_position_stream_requested_until) return;
+   if(!force && now - g_ews_last_position_stream_check < g_ews_position_stream_seconds) return;
    g_ews_last_position_stream_check = now;
 
    string state_json = EAStream_BuildPositionState();
-   if(state_json == g_ews_last_position_state) return;
+   if(!force && state_json == g_ews_last_position_state) return;
 
    string ref = IntegerToString(g_ews_ref++);
    string topic = "realtime:" + g_ews_topic;
@@ -2075,6 +2167,16 @@ void EAStream_MaybeBroadcastPositionState()
       "\"ref\":\"" + ref + "\",\"join_ref\":\"" + g_ews_join_ref + "\"}";
    EAStream_SendText(message);
    g_ews_last_position_state = state_json;
+}
+
+void EAStream_MaybeBroadcastPositionState()
+{
+   EAStream_BroadcastPositionState(false);
+}
+
+void EAStream_BroadcastPositionStateNow()
+{
+   EAStream_BroadcastPositionState(true);
 }
 
 //+------------------------------------------------------------------+
@@ -2287,7 +2389,7 @@ void EAStream_SendText(const string text)
 
 //+------------------------------------------------------------------+
 //| 8. Dispatches one decoded frame. "wake" is the entire point of      |
-//|    this module: it calls EASync_Run() directly, so a freshly        |
+//|    this module: it calls the compact command lane, so a freshly     |
 //|    queued command executes immediately instead of waiting for the   |
 //|    next poll interval.                                               |
 //+------------------------------------------------------------------+
@@ -2312,8 +2414,9 @@ void EAStream_HandleFrame(int opcode, const uchar &payload[], int payload_len)
       else if(StringFind(text, "\"event\":\"broadcast\"") >= 0 &&
          StringFind(text, "command_available") >= 0)
       {
-         Print("EAStream: command broadcast received — reconciling immediately");
-         EASync_Run();
+         Print("EAStream: command broadcast received — entering command fast lane");
+         EASync_RunCommandLane();
+         EAStream_BroadcastPositionStateNow();
       }
       else if(StringFind(text, "\"event\":\"phx_reply\"") >= 0 &&
               StringFind(text, "\"status\":\"ok\"") >= 0 && !g_ews_joined)
@@ -2653,6 +2756,11 @@ void EAStream_OnTimer()
       EAStream_MaybeBroadcastPositionState();
 
    }
+}
+
+bool EAStream_IsJoined()
+{
+   return g_ews_enabled && g_ews_state == EWS_STATE_OPEN && g_ews_joined;
 }
 //+------------------------------------------------------------------+
 //============================================================================
@@ -4220,9 +4328,10 @@ int OnInit()
 
    PriceReporter_Init(SupabaseProjectUrl, TerminalApiKey, PriceScanSeconds);
 
-   // 1s base tick; each module's OnTimer self-gates on its own configured
-   // interval, so a single fast timer serves all of them.
-   EventSetTimer(1);
+   // A 250ms control-plane tick keeps Realtime command pickup sub-second.
+   // Candle, account, calendar, and symbol modules retain their own slower
+   // gates, so this does not multiply their HTTP or database traffic.
+   EventSetMillisecondTimer(250);
 
    Print("LucreHubEA: initialized. Watch the Experts tab for 'EASync:' log lines to confirm the "
          "first poll succeeds.");
@@ -4247,15 +4356,22 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-   // Capture broker candles before any synchronous network work. MT5 drops a
-   // Timer event when the prior handler is still running, so account/calendar
-   // WebRequests must not make the market-data deadline miss its turn.
+   // Trading control plane always goes first. MT5 serializes timer work, so a
+   // candle/history WebRequest must never sit in front of a waiting close.
+   if(EnableWebSocketPush)
+      EAStream_OnTimer();
+
+   // The socket normally wakes commands immediately. While it is unavailable,
+   // use a compact one-second command poll rather than speeding up the heavy
+   // durable reconciliation route.
+   if(!EnableWebSocketPush || !EAStream_IsJoined())
+      EASync_CommandFallbackOnTimer();
+
+   // Data-plane modules self-gate even though the base timer is now 250ms.
    PriceReporter_OnTimer();
    EASync_OnTimer();
    if(EnableCalendarSync)
       CalendarSync_OnTimer();
-   if(EnableWebSocketPush)
-      EAStream_OnTimer();
 
    SymbolMap_OnTimer();
 

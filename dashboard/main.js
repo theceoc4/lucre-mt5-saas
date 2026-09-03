@@ -1463,11 +1463,9 @@ document.getElementById('form-modify-position')?.addEventListener('submit', asyn
 
   try {
     await modifyPosition(positionId, payload);
-    msg.textContent = 'Position updated.';
-    setTimeout(() => {
-      window.LucreUI.closeModal(document.getElementById('modal-modify-position'));
-      msg.textContent = '';
-    }, 700);
+    msg.textContent = 'Position update queued.';
+    window.LucreUI.closeModal(document.getElementById('modal-modify-position'));
+    msg.textContent = '';
     await loadPositions();
   } catch (err) {
     msg.style.color = 'var(--color-negative)';
@@ -1607,7 +1605,12 @@ function applyStreamedPositionState(terminalId, eventPayload) {
     });
   });
   streamedPositionFields = next;
-  state.positions = mergeStreamedPositionFields(state.positions);
+  // MT5 is the live source of truth. Hide a position already marked `closing`
+  // as soon as the broker-confirmed stream omits it; durable reconciliation
+  // can finish its trade-history bookkeeping in the background.
+  state.positions = mergeStreamedPositionFields(state.positions.filter((position) => (
+    position.status !== 'closing' || next.has(String(position.mt5_ticket))
+  )));
   renderPositions();
   renderPositionsTab();
 }
