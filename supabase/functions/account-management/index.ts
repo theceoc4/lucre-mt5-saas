@@ -3,6 +3,16 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 const headers = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type", "Access-Control-Allow-Methods": "POST, OPTIONS", "Content-Type": "application/json" };
 const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers });
 const text = (value: unknown, max: number) => typeof value === "string" ? value.trim().slice(0, max) || null : null;
+const validTimezone = (value: unknown) => {
+  const timezone = text(value, 100);
+  if (!timezone) return null;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date());
+    return timezone;
+  } catch {
+    return null;
+  }
+};
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers });
@@ -27,6 +37,13 @@ Deno.serve(async (req) => {
     }).eq("id", userId);
     if (error) return reply({ error: "profile_update_failed", detail: error.message }, 500);
     return reply({ ok: true });
+  }
+  if (body.action === "update_timezone") {
+    const timezone = validTimezone(body.timezone);
+    if (!timezone) return reply({ error: "invalid_timezone" }, 422);
+    const { error } = await admin.from("profiles").update({ timezone }).eq("id", userId);
+    if (error) return reply({ error: "timezone_update_failed", detail: error.message }, 500);
+    return reply({ ok: true, timezone });
   }
   if (body.action === "reset_account_data") {
     if (body.confirmation !== "RESET MY DATA") return reply({ error: "confirmation_required" }, 422);

@@ -7,6 +7,17 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.48 — Account timezone and session chart bands (2026-09-02)
+
+- Adds a persistent IANA timezone preference to Settings and applies it to all
+  displayed activity timestamps, Today filters, daily P/L, and chart buckets.
+- Adds optional Asia, London, overlap, and New York background bands to both
+  signal charts using subtle palette-matched colors and labels.
+- Automatically uses the hourly Today view while session bands are enabled so
+  intraday market sessions are never painted over misleading daily/weekly data.
+- Refreshes chart and activity surfaces immediately after a timezone change and
+  keeps the preference consistent across devices.
+
 ## v1.0.47 — Range-aware signal charts and strategy metric layout (2026-09-02)
 
 - Replaces the decorative month/week chart headers on Dashboard and Strategies

@@ -40,6 +40,8 @@ const state = {
   selectedStrategyId: null,
   signalChartRange: '30d',
   strategyChartRange: '30d',
+  signalSessionBands: false,
+  strategySessionBands: false,
   signalFilter: { pair: 'all', period: '30d' },
   // v1.0.14 — item 3: P/L Over Time card filters (timeframe + manual/auto/all).
   plFilter: { timeframe: '30d', source: 'all' },
@@ -143,6 +145,9 @@ const notificationCount = document.getElementById('notification-count');
 const strategyPageSelect = document.getElementById('strategy-page-select');
 const strategyPageEdit = document.getElementById('strategy-page-edit');
 const strategyChartRange = document.getElementById('strategy-chart-range');
+const signalSessionBands = document.getElementById('signal-session-bands');
+const strategySessionBands = document.getElementById('strategy-session-bands');
+const timezoneSelect = document.getElementById('timezone-select');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -170,6 +175,51 @@ function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (character) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   })[character]);
+}
+
+function deviceTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+}
+
+function displayTimezone() {
+  return state.profile?.timezone || deviceTimezone();
+}
+
+function formatDateTime(value, options = {}) {
+  if (!value) return '—';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: displayTimezone(),
+    ...options,
+  }).format(date);
+}
+
+function formatDate(value, options = {}) {
+  if (!value) return '—';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat(undefined, { timeZone: displayTimezone(), ...options }).format(date);
+}
+
+function zonedDateParts(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: displayTimezone(), year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date).reduce((result, part) => {
+    if (part.type !== 'literal') result[part.type] = Number(part.value);
+    return result;
+  }, {});
+  return { year: parts.year, month: parts.month, day: parts.day, hour: parts.hour };
+}
+
+function zonedDateKey(value) {
+  const parts = zonedDateParts(value);
+  return parts ? `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}` : null;
 }
 
 function setAuthMessage(text, isError = true) {
@@ -258,6 +308,38 @@ async function accountManagement(action, body = {}) {
 document.getElementById('button-account-settings')?.addEventListener('click', () => {
   window.LucreUI?.openModal('modal-account-settings');
 });
+
+function renderTimezoneSettings() {
+  if (!timezoneSelect) return;
+  const detected = deviceTimezone();
+  const selected = displayTimezone();
+  const fallback = [
+    'UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+    'America/Toronto', 'America/Vancouver', 'Europe/London', 'Europe/Paris', 'Europe/Berlin',
+    'Africa/Johannesburg', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Singapore', 'Asia/Hong_Kong',
+    'Asia/Tokyo', 'Australia/Sydney', 'Pacific/Auckland',
+  ];
+  const supported = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : fallback;
+  const zones = [...new Set([detected, selected, 'UTC', ...supported])];
+  timezoneSelect.innerHTML = zones.map((zone) =>
+    `<option value="${escapeHtml(zone)}" ${zone === selected ? 'selected' : ''}>${escapeHtml(zone)}${zone === detected ? ' · device' : ''}</option>`
+  ).join('');
+}
+
+function rerenderTimezoneSurfaces() {
+  renderPositions();
+  renderPositionsTab();
+  renderSignalsTab();
+  renderAccountHistoryList();
+  renderNewsEventsTab();
+  renderVolumeChart();
+  renderPlChart();
+  renderStrategyPage();
+  renderPairsView();
+  renderSymbolMappingPanel();
+  renderNotifications();
+}
+
 document.getElementById('button-settings')?.addEventListener('click', () => {
   if (symbolSearchInput) symbolSearchInput.value = '';
   if (symbolSettingsStatus) {
@@ -266,8 +348,27 @@ document.getElementById('button-settings')?.addEventListener('click', () => {
   }
   renderSymbolSettingsList();
   renderSymbolMappingPanel();
+  renderTimezoneSettings();
   loadPortfolioRiskSettings();
   window.LucreUI?.openModal('modal-platform-settings');
+});
+
+document.getElementById('form-timezone-settings')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const message = document.getElementById('timezone-settings-message');
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  const timezone = timezoneSelect?.value || deviceTimezone();
+  if (button) button.disabled = true;
+  try {
+    await accountManagement('update_timezone', { timezone });
+    state.profile = { ...(state.profile || {}), timezone };
+    if (message) { message.style.color = 'var(--color-accent)'; message.textContent = `Timezone saved as ${timezone}.`; }
+    rerenderTimezoneSurfaces();
+  } catch (error) {
+    if (message) { message.style.color = 'var(--color-negative)'; message.textContent = error.message; }
+  } finally {
+    if (button) button.disabled = false;
+  }
 });
 
 async function loadPortfolioRiskSettings() {
@@ -1095,7 +1196,7 @@ function openTerminalKeyModal() {
 
   if (active?.api_key_last_four) {
     const rotated = active.api_key_last_rotated_at
-      ? new Date(active.api_key_last_rotated_at).toLocaleString()
+      ? formatDateTime(active.api_key_last_rotated_at)
       : 'unknown time';
     meta.textContent = `Current key ends in •••• ${active.api_key_last_four} — rotated ${rotated}.`;
   } else {
@@ -1124,7 +1225,7 @@ document.getElementById('button-generate-key')?.addEventListener('click', async 
     display.hidden = false;
     warning.hidden = false;
     msg.textContent = 'New key generated.';
-    meta.textContent = `Current key ends in •••• ${result.api_key_last_four} — rotated ${new Date(result.rotated_at).toLocaleString()}.`;
+    meta.textContent = `Current key ends in •••• ${result.api_key_last_four} — rotated ${formatDateTime(result.rotated_at)}.`;
     await loadTerminals();
   } catch (err) {
     msg.style.color = 'var(--color-negative)';
@@ -1758,7 +1859,9 @@ function applySignalDeliveryChange(payload) {
   } else if (index >= 0) state.signalDeliveries[index] = { ...state.signalDeliveries[index], ...row };
   else state.signalDeliveries.push(row);
   renderSignalSummary();
+  renderVolumeChart();
   renderSignalsTab();
+  renderStrategyPage();
   renderNotifications();
 }
 
@@ -1774,6 +1877,7 @@ function applySignalChange(payload) {
   renderVolumeChart();
   renderRiskEngine();
   renderSignalsTab();
+  renderStrategyPage();
   renderNotifications();
 }
 
@@ -1943,7 +2047,7 @@ function stopRealtime() {
 async function loadProfile() {
   const { data, error } = await supabase
     .from('profiles')
-    .select('display_name, bio, location, website, trading_style')
+    .select('display_name, bio, location, website, trading_style, timezone')
     .eq('id', state.session.user.id)
     .maybeSingle();
 
@@ -1952,6 +2056,7 @@ async function loadProfile() {
     return;
   }
   state.profile = data;
+  renderTimezoneSettings();
 
   const displayName = data?.display_name || state.session.user.email?.split('@')[0] || 'there';
   textGreeting.textContent = `Hey, ${displayName}`;
@@ -2409,7 +2514,7 @@ function renderPositionRows(list, emptyMessage) {
         <div class="mini-table-row${isClosing ? ' is-reconciling' : ''}">
           <div class="mini-table-meta">
             <div class="strategy-name">${p.symbol}<span class="side-badge ${sideClass}">${p.side}</span></div>
-            <div class="strategy-sub">${p.volume} lots · opened ${new Date(p.open_time).toLocaleString()}</div>
+            <div class="strategy-sub">${p.volume} lots · opened ${formatDateTime(p.open_time)}</div>
           </div>
           <div class="mini-table-stats">
             <div class="pct" style="color:${plColor}">${plValue >= 0 ? '+' : ''}${plValue.toFixed(2)}</div>
@@ -2628,14 +2733,8 @@ function computeSymbolPerformance(symbol) {
   const trades = getVerifiedTradeHistory().filter((trade) =>
     canonicalSymbolForTrade(trade) === canonicalSymbol && trade.close_time
   );
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-  const startOfTomorrow = new Date(startOfToday);
-  startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
-  const todayTrades = trades.filter((trade) => {
-    const closedAt = new Date(trade.close_time);
-    return closedAt >= startOfToday && closedAt < startOfTomorrow;
-  });
+  const todayKey = zonedDateKey(new Date());
+  const todayTrades = trades.filter((trade) => zonedDateKey(trade.close_time) === todayKey);
   const dailyPl = todayTrades.reduce((sum, trade) => sum + Number(trade.profit ?? 0), 0);
 
   if (trades.length === 0) {
@@ -3154,7 +3253,7 @@ function renderSymbolMappingPanel() {
     symbolMappingStatus.textContent = 'Rescan requested — waiting for the EA to report back (usually under a minute).';
   } else if (terminal?.last_symbol_scan_at) {
     const when = new Date(terminal.last_symbol_scan_at);
-    symbolMappingStatus.textContent = `Last scanned ${when.toLocaleString()}.`;
+    symbolMappingStatus.textContent = `Last scanned ${formatDateTime(when)}.`;
   } else {
     symbolMappingStatus.textContent = 'No scan yet — scan the terminal once your EA is connected.';
   }
@@ -3602,10 +3701,8 @@ function renderSignalsTab() {
   }
 
   const now = Date.now();
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
   const cutoffs = {
-    today: startOfToday.getTime(),
+    today: 0,
     '7d': now - 7 * 86400000,
     '30d': now - 30 * 86400000,
     all: 0,
@@ -3613,7 +3710,10 @@ function renderSignalsTab() {
   const filtered = state.signals.filter((signal) => {
     const pairMatches = state.signalFilter.pair === 'all' || signal.symbol === state.signalFilter.pair;
     const generatedAt = new Date(signal.generated_at || 0).getTime();
-    return pairMatches && generatedAt >= (cutoffs[state.signalFilter.period] ?? cutoffs['30d']);
+    const periodMatches = state.signalFilter.period === 'today'
+      ? zonedDateKey(signal.generated_at) === zonedDateKey(new Date())
+      : generatedAt >= (cutoffs[state.signalFilter.period] ?? cutoffs['30d']);
+    return pairMatches && periodMatches;
   });
 
   if (filtered.length === 0) {
@@ -3641,7 +3741,7 @@ function renderSignalsTab() {
         <div class="mini-table-row">
           <div class="mini-table-meta">
             <div class="strategy-name">${s.symbol || 'Unknown'}<span class="side-badge ${sideClass}">${s.side || '—'}</span></div>
-            <div class="strategy-sub">${s.timeframe || '—'} · ${s.generated_at ? new Date(s.generated_at).toLocaleString() : '—'}</div>
+            <div class="strategy-sub">${s.timeframe || '—'} · ${formatDateTime(s.generated_at)}</div>
             ${signalNewsDetail(s)}
           </div>
           <div class="mini-table-stats signal-row-actions">
@@ -3859,7 +3959,7 @@ function renderAccountHistoryList() {
 
   list.innerHTML = rows
     .map((t) => {
-      const dateLabel = t.occurred_at ? new Date(t.occurred_at).toLocaleString() : '—';
+      const dateLabel = formatDateTime(t.occurred_at);
       const profit = Number(t.profit || 0);
       const net = profit + Number(t.commission || 0) + Number(t.swap || 0) + Number(t.fee || 0);
       const profitCell = `<span class="hist-pl ${profit > 0 ? 'positive' : profit < 0 ? 'negative' : ''}">${profit >= 0 ? '+' : ''}${profit.toFixed(2)} <small>MT5 profit</small></span>`;
@@ -3976,7 +4076,7 @@ function renderNewsEventsTab() {
         IMPACT_LABELS[ev.impact] || ev.impact || '—'
       }</span>${currencyTag}${biasTag}</div>
             <div class="strategy-sub">${ev.country || '—'} · ${symbols} · ${
-        ev.event_time ? new Date(ev.event_time).toLocaleString() : '—'
+        formatDateTime(ev.event_time)
       }</div>
             ${figuresLine}
           </div>
@@ -4252,48 +4352,66 @@ function strategyScopedData(strategyId) {
   };
 }
 
-function startOfChartWeek(date) {
-  const result = new Date(date);
-  result.setHours(0, 0, 0, 0);
-  const day = result.getDay();
-  result.setDate(result.getDate() - (day === 0 ? 6 : day - 1));
-  return result;
+function dateOrdinal(parts) {
+  return Date.UTC(parts.year, parts.month - 1, parts.day);
+}
+
+function chartDateLabel(ordinal) {
+  return new Intl.DateTimeFormat(undefined, { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(new Date(ordinal));
+}
+
+function sessionForUtcHour(hour) {
+  if (hour < 7 || hour >= 21) return 'asia';
+  if (hour < 12) return 'london';
+  if (hour < 16) return 'overlap';
+  return 'ny';
+}
+
+function sessionForZonedHour(localDateParts, localHour) {
+  const targetKey = `${localDateParts.year}-${localDateParts.month}-${localDateParts.day}`;
+  const anchor = Date.UTC(localDateParts.year, localDateParts.month - 1, localDateParts.day, 12);
+  for (let offset = -36; offset <= 36; offset += 1) {
+    const candidate = new Date(anchor + offset * 3600000);
+    const parts = zonedDateParts(candidate);
+    if (parts && `${parts.year}-${parts.month}-${parts.day}` === targetKey && parts.hour === localHour) {
+      return sessionForUtcHour(candidate.getUTCHours());
+    }
+  }
+  return null;
 }
 
 function buildSignalChartBuckets(range) {
-  const now = new Date();
+  const nowParts = zonedDateParts(new Date());
+  const todayOrdinal = dateOrdinal(nowParts);
   if (range === 'today') {
-    const dayStart = new Date(now);
-    dayStart.setHours(0, 0, 0, 0);
     return Array.from({ length: 24 }, (_, hour) => {
-      const start = new Date(dayStart);
-      start.setHours(hour);
-      const end = new Date(start);
-      end.setHours(end.getHours() + 1);
-      return { start: start.getTime(), end: end.getTime(), label: start.toLocaleTimeString(undefined, { hour: 'numeric' }) };
+      const hourLabel = new Intl.DateTimeFormat(undefined, { timeZone: 'UTC', hour: 'numeric' })
+        .format(new Date(Date.UTC(2000, 0, 1, hour)));
+      return {
+        key: `${nowParts.year}-${nowParts.month}-${nowParts.day}-${hour}`,
+        label: hourLabel,
+        session: sessionForZonedHour(nowParts, hour),
+      };
     });
   }
 
   if (range === 'year') {
-    const currentWeek = startOfChartWeek(now);
+    const todayDay = new Date(todayOrdinal).getUTCDay();
+    const currentWeek = todayOrdinal - (todayDay === 0 ? 6 : todayDay - 1) * 86400000;
     return Array.from({ length: 52 }, (_, index) => {
-      const start = new Date(currentWeek);
-      start.setDate(start.getDate() - (51 - index) * 7);
-      const end = new Date(start);
-      end.setDate(end.getDate() + 7);
-      return { start: start.getTime(), end: end.getTime(), label: start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) };
+      const startOrdinal = currentWeek - (51 - index) * 7 * 86400000;
+      return { startOrdinal, endOrdinal: startOrdinal + 7 * 86400000, label: chartDateLabel(startOrdinal) };
     });
   }
 
   const dayCount = range === '7d' ? 7 : 30;
-  const today = new Date(now);
-  today.setHours(0, 0, 0, 0);
   return Array.from({ length: dayCount }, (_, index) => {
-    const start = new Date(today);
-    start.setDate(start.getDate() - (dayCount - 1 - index));
-    const end = new Date(start);
-    end.setDate(end.getDate() + 1);
-    return { start: start.getTime(), end: end.getTime(), label: start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) };
+    const ordinal = todayOrdinal - (dayCount - 1 - index) * 86400000;
+    const date = new Date(ordinal);
+    return {
+      key: `${date.getUTCFullYear()}-${date.getUTCMonth() + 1}-${date.getUTCDate()}`,
+      label: chartDateLabel(ordinal),
+    };
   });
 }
 
@@ -4303,15 +4421,55 @@ function buildSignalChartSeries(signals, executedSignalIds, range) {
   const blocked = new Array(buckets.length).fill(0);
   let signalCount = 0;
   signals.forEach((signal) => {
-    const timestamp = signal.generated_at ? new Date(signal.generated_at).getTime() : NaN;
-    if (!Number.isFinite(timestamp)) return;
-    const index = buckets.findIndex((bucket) => timestamp >= bucket.start && timestamp < bucket.end);
+    const parts = zonedDateParts(signal.generated_at);
+    if (!parts) return;
+    const index = range === 'today'
+      ? buckets.findIndex((bucket) => bucket.key === `${parts.year}-${parts.month}-${parts.day}-${parts.hour}`)
+      : range === 'year'
+        ? buckets.findIndex((bucket) => dateOrdinal(parts) >= bucket.startOrdinal && dateOrdinal(parts) < bucket.endOrdinal)
+        : buckets.findIndex((bucket) => bucket.key === `${parts.year}-${parts.month}-${parts.day}`);
     if (index < 0) return;
     signalCount += 1;
     if (signal.policy_decision === 'block') blocked[index] += 1;
     else if (executedSignalIds.has(signal.id)) executed[index] += 1;
   });
-  return { labels: buckets.map((bucket) => bucket.label), executed, blocked, signalCount };
+  return { labels: buckets.map((bucket) => bucket.label), sessions: buckets.map((bucket) => bucket.session || null), executed, blocked, signalCount };
+}
+
+function sessionBandsPlugin(sessions, enabled) {
+  const colors = {
+    asia: 'rgba(74, 115, 148, 0.10)',
+    london: 'rgba(215, 230, 78, 0.075)',
+    overlap: 'rgba(195, 88, 63, 0.075)',
+    ny: 'rgba(76, 138, 94, 0.085)',
+  };
+  return {
+    id: `session-bands-${Math.random().toString(36).slice(2)}`,
+    beforeDatasetsDraw(chart) {
+      if (!enabled || !sessions?.length || !chart.chartArea) return;
+      const { ctx, chartArea } = chart;
+      const width = chartArea.width / sessions.length;
+      const groups = [];
+      sessions.forEach((session, index) => {
+        const previous = groups[groups.length - 1];
+        if (previous?.session === session) previous.end = index + 1;
+        else groups.push({ session, start: index, end: index + 1 });
+      });
+      ctx.save();
+      groups.filter((group) => group.session).forEach((group) => {
+        const left = chartArea.left + group.start * width;
+        const bandWidth = (group.end - group.start) * width;
+        ctx.fillStyle = colors[group.session] || 'rgba(255,255,255,0.04)';
+        ctx.fillRect(left, chartArea.top, bandWidth, chartArea.height);
+        ctx.fillStyle = cssVar('--color-text-faint') || '#99a496';
+        ctx.font = '600 9px Inter, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText(SESSION_LABELS[group.session] || group.session, left + bandWidth / 2, chartArea.top + 5);
+      });
+      ctx.restore();
+    },
+  };
 }
 
 function signalChartOptions(series, textFaint) {
@@ -4357,6 +4515,7 @@ function renderStrategyVolumeChart(scoped) {
   gradient.addColorStop(1, hexToRgba(accent, 0.02));
 
   strategyVolumeChartInstance = new Chart(ctx, {
+    plugins: [sessionBandsPlugin(series.sessions, state.strategySessionBands && state.strategyChartRange === 'today')],
     data: {
       labels: series.labels,
       datasets: [
@@ -4377,7 +4536,7 @@ function renderStrategyPlChart(trades) {
   const textFaint = cssVar('--color-text-faint') || '#99a496';
   const byDate = new Map();
   trades.slice().sort((a, b) => new Date(a.close_time) - new Date(b.close_time)).forEach((trade) => {
-    const label = new Date(trade.close_time).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const label = formatDate(trade.close_time, { month: 'short', day: 'numeric' });
     byDate.set(label, (byDate.get(label) || 0) + Number(trade.profit ?? 0));
   });
   let running = 0;
@@ -4466,6 +4625,7 @@ function renderStrategyPage() {
   document.getElementById('strategy-page-blocked').textContent = scoped.blocked.toLocaleString();
   document.getElementById('strategy-page-expired').textContent = scoped.expired.toLocaleString();
   if (strategyChartRange) strategyChartRange.value = state.strategyChartRange;
+  if (strategySessionBands) strategySessionBands.checked = state.strategySessionBands;
 
   const brokerPl = scoped.trades.reduce((sum, trade) => sum + Number(trade.profit ?? 0), 0);
   const netPl = scoped.trades.reduce((sum, trade) => sum + Number(trade.net_profit ?? trade.profit ?? 0), 0);
@@ -4534,10 +4694,35 @@ strategyPageSelect?.addEventListener('change', (event) => {
 });
 signalChartRange?.addEventListener('change', (event) => {
   state.signalChartRange = event.target.value;
+  if (state.signalChartRange !== 'today') {
+    state.signalSessionBands = false;
+    if (signalSessionBands) signalSessionBands.checked = false;
+  }
   renderVolumeChart();
 });
 strategyChartRange?.addEventListener('change', (event) => {
   state.strategyChartRange = event.target.value;
+  if (state.strategyChartRange !== 'today') {
+    state.strategySessionBands = false;
+    if (strategySessionBands) strategySessionBands.checked = false;
+  }
+  const strategy = selectedStrategy();
+  if (strategy) renderStrategyVolumeChart(strategyScopedData(strategy.id));
+});
+signalSessionBands?.addEventListener('change', (event) => {
+  state.signalSessionBands = event.target.checked;
+  if (state.signalSessionBands) {
+    state.signalChartRange = 'today';
+    if (signalChartRange) signalChartRange.value = 'today';
+  }
+  renderVolumeChart();
+});
+strategySessionBands?.addEventListener('change', (event) => {
+  state.strategySessionBands = event.target.checked;
+  if (state.strategySessionBands) {
+    state.strategyChartRange = 'today';
+    if (strategyChartRange) strategyChartRange.value = 'today';
+  }
   const strategy = selectedStrategy();
   if (strategy) renderStrategyVolumeChart(strategyScopedData(strategy.id));
 });
@@ -4574,6 +4759,7 @@ function renderVolumeChart() {
   gradient.addColorStop(1, hexToRgba(accent, 0.02));
 
   volumeChartInstance = new Chart(ctx, {
+    plugins: [sessionBandsPlugin(series.sessions, state.signalSessionBands && state.signalChartRange === 'today')],
     data: {
       labels: series.labels,
       datasets: [
@@ -4646,7 +4832,7 @@ function renderPlChart() {
   // the line reflects manual trades too, not just auto signals.
   const byDate = new Map();
   trades.forEach((t) => {
-    const key = new Date(t.close_time).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const key = formatDate(t.close_time, { month: 'short', day: 'numeric' });
     byDate.set(key, (byDate.get(key) || 0) + Number(t.profit ?? 0));
   });
 
@@ -4769,6 +4955,8 @@ function resetDashboardState() {
   state.selectedStrategyId = null;
   state.signalChartRange = '30d';
   state.strategyChartRange = '30d';
+  state.signalSessionBands = false;
+  state.strategySessionBands = false;
   state.agentPolicies = [];
   state.positions = [];
   state.symbolSettings = [];
@@ -4780,6 +4968,8 @@ function resetDashboardState() {
   if (signalsPeriodFilter) signalsPeriodFilter.value = '30d';
   if (signalChartRange) signalChartRange.value = '30d';
   if (strategyChartRange) strategyChartRange.value = '30d';
+  if (signalSessionBands) signalSessionBands.checked = false;
+  if (strategySessionBands) strategySessionBands.checked = false;
   if (notificationPanel) notificationPanel.hidden = true;
   renderNotifications();
   setActiveView('dashboard');

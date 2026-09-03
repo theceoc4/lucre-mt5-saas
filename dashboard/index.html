@@ -318,7 +318,16 @@
       <h3>Settings</h3>
       <button class="icon-btn" type="button" data-modal-close aria-label="Close">×</button>
     </div>
-    <p class="modal-sub">Choose which symbols are visible across this terminal. Hidden symbols stay mapped and can be turned back on here at any time.</p>
+    <p class="modal-sub">Manage display preferences, visible symbols, and account-wide trading guardrails.</p>
+
+    <section class="symbol-settings-section" aria-labelledby="display-settings-title">
+      <div class="symbol-settings-heading"><div><h4 id="display-settings-title">Display</h4><p class="desc">Times, chart buckets, news, and activity are shown in this timezone across every device.</p></div></div>
+      <form id="form-timezone-settings" class="timezone-settings-form">
+        <label class="field" for="timezone-select"><span>Local timezone</span><select id="timezone-select" name="timezone" aria-label="Local timezone"></select></label>
+        <button class="btn-accent btn-xs" type="submit">Save timezone</button>
+        <p class="auth-message" id="timezone-settings-message" role="status"></p>
+      </form>
+    </section>
 
     <section class="symbol-settings-section" aria-labelledby="symbol-settings-title">
       <div class="symbol-settings-heading">
@@ -499,12 +508,10 @@
       <section class="card card-pad chart-card" aria-label="Signal volume and P/L chart">
         <div class="card-title-row">
           <h3>Signal Activity</h3>
-          <select class="chart-range-select" id="signal-chart-range" aria-label="Dashboard signal chart range">
-            <option value="today">Today</option>
-            <option value="7d">7 Days</option>
-            <option value="30d" selected>30 Days</option>
-            <option value="year">Year</option>
-          </select>
+          <div class="chart-controls">
+            <label class="chart-session-toggle" title="Show market-session bands (hourly Today view)"><input type="checkbox" id="signal-session-bands" /><span class="chart-session-switch" aria-hidden="true"></span><span>Sessions</span></label>
+            <select class="chart-range-select" id="signal-chart-range" aria-label="Dashboard signal chart range"><option value="today">Today</option><option value="7d">7 Days</option><option value="30d" selected>30 Days</option><option value="year">Year</option></select>
+          </div>
         </div>
         <div class="chart-wrap">
           <div class="chart-empty-overlay" id="chart-empty-overlay">
@@ -756,12 +763,10 @@
           <section class="card card-pad chart-card" aria-label="Selected strategy signal performance">
             <div class="card-title-row">
               <h3>Signal Activity</h3>
-              <select class="chart-range-select" id="strategy-chart-range" aria-label="Strategy signal chart range">
-                <option value="today">Today</option>
-                <option value="7d">7 Days</option>
-                <option value="30d" selected>30 Days</option>
-                <option value="year">Year</option>
-              </select>
+              <div class="chart-controls">
+                <label class="chart-session-toggle" title="Show market-session bands (hourly Today view)"><input type="checkbox" id="strategy-session-bands" /><span class="chart-session-switch" aria-hidden="true"></span><span>Sessions</span></label>
+                <select class="chart-range-select" id="strategy-chart-range" aria-label="Strategy signal chart range"><option value="today">Today</option><option value="7d">7 Days</option><option value="30d" selected>30 Days</option><option value="year">Year</option></select>
+              </div>
             </div>
             <div class="chart-wrap"><div class="chart-empty-overlay" id="strategy-page-chart-empty"><p>No signals from this strategy in this range yet.</p></div><canvas id="strategyVolumeChart" role="img" aria-label="Selected strategy signals over the selected range"></canvas></div>
           </section>
