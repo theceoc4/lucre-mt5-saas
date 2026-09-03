@@ -448,7 +448,10 @@ function setActiveView(view) {
   if (isPairs) {
     renderPairsView();
     renderSymbolMappingPanel();
-    loadPriceFeedStates();
+    // Refresh both halves of the Pairs view together. Realtime keeps the
+    // values moving afterward, but a tab opened after an M30 close must not
+    // reuse the trend snapshot cached when the dashboard first booted.
+    Promise.all([loadPriceFeedStates(), loadTrendStates()]);
   } else if (nextView === 'strategies') {
     renderStrategyPage();
   }

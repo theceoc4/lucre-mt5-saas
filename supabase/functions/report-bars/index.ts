@@ -22,8 +22,6 @@ import {
   type TrendV3Bar,
 } from "../_shared/trend-strength-v3.ts";
 
-declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
-
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "x-api-key, content-type",
@@ -421,14 +419,19 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "atomic_ingest_failed", detail: ingestError.message }, 500);
   }
 
-  // Reuse this authenticated minute-level ingestion request instead of adding
-  // a cron sweep or browser poll. Only affected series are recalculated, then
-  // one compact current-state row is upserted per affected symbol.
-  EdgeRuntime.waitUntil(
-    updateTrendStates(admin, terminal.id, rows).then((result) => {
-      if (result.warnings.length) console.warn("Trend update warnings", result.warnings);
-    }).catch((error) => console.error("Trend update failed", error)),
+  // M30/H1 closes are the source event for Trend Strength v3. Await those
+  // bounded updates so the EA only receives success after the new score is
+  // actually stored and available to Realtime. Background completion could
+  // otherwise be interrupted after the price-ingest response was returned.
+  const hasTrendSourceBars = rows.some((row) =>
+    row.timeframe === TREND_ANCHOR_TIMEFRAME || row.timeframe === TREND_CONTEXT_TIMEFRAME
   );
+  let trendUpdated = 0;
+  if (hasTrendSourceBars) {
+    const trendResult = await updateTrendStates(admin, terminal.id, rows);
+    trendUpdated = trendResult.updated;
+    warnings.push(...trendResult.warnings);
+  }
   return jsonResponse({
     accepted: rows.length,
     // Keep the old field during the EA rollout; it historically meant rows
@@ -441,7 +444,8 @@ Deno.serve(async (req: Request) => {
       broker_symbol, timeframe, accepted_through, bar_count,
       bootstrap_generation, snapshot_complete,
     })),
-    trend_update_scheduled: true,
+    trend_update_scheduled: false,
+    trend_updated: trendUpdated,
     diagnostics_recorded: collectorAttempts.length,
     pruned: Number((ingestResult as { pruned?: number } | null)?.pruned) || 0,
     warnings,
