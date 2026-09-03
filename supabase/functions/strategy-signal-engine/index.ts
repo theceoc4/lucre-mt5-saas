@@ -10,6 +10,7 @@
 // performs any work.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { dispatchPushInBackground } from "../_shared/push-notifications.ts";
 import { resolveBrokerSymbol } from "./_shared/symbol-resolver.ts";
 import { computeTrendStrengthV3, TREND_MIN_BARS } from "../_shared/trend-strength-v3.ts";
 
@@ -1070,6 +1071,15 @@ Deno.serve(async (req: Request) => {
   if (authorized !== true) return jsonResponse({ error: "unauthorized" }, 401);
 
   try {
+    // A stopped terminal cannot call us to announce its own absence. This
+    // scheduled server-side check detects the missing heartbeat, while the
+    // outbox dispatcher sends any pending notification work asynchronously.
+    const { error: disconnectError } = await admin.rpc("detect_disconnected_terminals_for_push", {
+      p_stale_after: "90 seconds",
+    });
+    if (disconnectError) console.error("strategy-signal-engine: disconnect detection failed", disconnectError.message);
+    dispatchPushInBackground(admin);
+
     const { data: strategies, error: strategiesError } = await admin
       .from("strategies")
       .select("id, terminal_id, name, kind, timeframe, symbols, delivery_mode, max_lot_size, risk_percent, signal_ttl_seconds, config, run_mode, bias_timeframe, rule_definition, exit_config, allowed_sessions, direction_mode, cooldown_minutes, max_concurrent_positions, max_spread_points, news_posture, news_window_minutes, news_min_impact, news_exploit_size_multiplier")

@@ -21,6 +21,7 @@ import {
   TREND_MODEL_VERSION,
   type TrendV3Bar,
 } from "../_shared/trend-strength-v3.ts";
+import { dispatchPushInBackground } from "../_shared/push-notifications.ts";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -161,7 +162,7 @@ Deno.serve(async (req: Request) => {
   const auth = await authenticateTerminal(
     req,
     admin,
-    "id,active_ea_instance_id,active_ea_instance_seen_at",
+    "id,user_id,active_ea_instance_id,active_ea_instance_seen_at",
   );
   if (auth.error) {
     const status = auth.error === "missing_api_key" || auth.error === "invalid_api_key" ? 401 : 500;
@@ -431,6 +432,7 @@ Deno.serve(async (req: Request) => {
     const trendResult = await updateTrendStates(admin, terminal.id, rows);
     trendUpdated = trendResult.updated;
     warnings.push(...trendResult.warnings);
+    if (trendUpdated > 0) dispatchPushInBackground(admin, [terminal.user_id]);
   }
   return jsonResponse({
     accepted: rows.length,

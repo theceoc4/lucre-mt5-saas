@@ -154,6 +154,12 @@ const strategyChartRange = document.getElementById('strategy-chart-range');
 const signalSessionBands = document.getElementById('signal-session-bands');
 const strategySessionBands = document.getElementById('strategy-session-bands');
 const timezoneSelect = document.getElementById('timezone-select');
+const pushNotificationsButton = document.getElementById('button-push-notifications');
+const pushSettingsStatus = document.getElementById('push-settings-status');
+const pushPreferenceList = document.getElementById('push-preference-list');
+const VAPID_PUBLIC_KEY = 'BJx7Y2wwbHI0Heyu_qooP7C2LYbUPgSd3chuPO_Rnc1PNXQqsldZ5wnkhhDoNyDBdQpA7Gz_eHLwYlTti4tdcaQ';
+let pushRegistration = null;
+let pushSubscription = null;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -295,6 +301,7 @@ window.addEventListener('lucre:auth-tab-changed', (e) => {
 });
 
 document.getElementById('button-sign-out')?.addEventListener('click', async () => {
+  await disablePushNotifications({ quiet: true });
   await supabase.auth.signOut();
 });
 
@@ -356,7 +363,159 @@ document.getElementById('button-settings')?.addEventListener('click', () => {
   renderSymbolMappingPanel();
   renderTimezoneSettings();
   loadPortfolioRiskSettings();
+  loadPushNotificationSettings();
   window.LucreUI?.openModal('modal-platform-settings');
+});
+
+function base64UrlToUint8Array(value) {
+  const padding = '='.repeat((4 - value.length % 4) % 4);
+  const bytes = atob((value + padding).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(bytes, (char) => char.charCodeAt(0));
+}
+
+function pushSupported() {
+  return window.isSecureContext && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+
+function isIosBrowserOutsideHomeScreen() {
+  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  return ios && !window.navigator.standalone && !window.matchMedia('(display-mode: standalone)').matches;
+}
+
+function setPushStatus(message, tone = 'muted') {
+  if (!pushSettingsStatus) return;
+  pushSettingsStatus.textContent = message;
+  pushSettingsStatus.style.color = tone === 'error' ? 'var(--color-negative)'
+    : tone === 'success' ? 'var(--color-positive)' : 'var(--color-text-muted)';
+}
+
+function renderPushControls() {
+  if (!pushNotificationsButton || !pushPreferenceList) return;
+  const enabled = Boolean(pushSubscription);
+  pushNotificationsButton.textContent = enabled ? 'Disable' : 'Enable';
+  pushNotificationsButton.classList.toggle('btn-accent', !enabled);
+  pushNotificationsButton.classList.toggle('btn-secondary', enabled);
+  pushPreferenceList.querySelectorAll('input').forEach((input) => { input.disabled = !enabled; });
+  pushPreferenceList.style.opacity = enabled ? '1' : '0.68';
+}
+
+async function registerPushServiceWorker() {
+  if (!pushSupported()) return null;
+  if (!pushRegistration) {
+    pushRegistration = await navigator.serviceWorker.register('/service-worker.js', { scope: '/' });
+    await navigator.serviceWorker.ready;
+  }
+  return pushRegistration;
+}
+
+async function savePushSubscription(subscription) {
+  const userId = state.session?.user?.id;
+  if (!userId || !subscription) return;
+  const json = subscription.toJSON();
+  const { error } = await supabase.from('push_subscriptions').upsert({
+    user_id: userId,
+    endpoint: subscription.endpoint,
+    p256dh: json.keys?.p256dh,
+    auth: json.keys?.auth,
+    user_agent: navigator.userAgent.slice(0, 500),
+    last_seen_at: new Date().toISOString(),
+  }, { onConflict: 'user_id,endpoint' });
+  if (error) throw error;
+}
+
+async function loadPushNotificationSettings() {
+  if (!pushNotificationsButton || !pushPreferenceList) return;
+  if (!pushSupported()) {
+    pushNotificationsButton.disabled = true;
+    setPushStatus(isIosBrowserOutsideHomeScreen()
+      ? 'Add Lucre Hub to your iPhone/iPad Home Screen, then open it there to enable notifications.'
+      : 'Web push is not supported by this browser or connection.', 'error');
+    renderPushControls();
+    return;
+  }
+  try {
+    const registration = await registerPushServiceWorker();
+    pushSubscription = await registration.pushManager.getSubscription();
+    if (pushSubscription) await savePushSubscription(pushSubscription);
+    const { data: preferences, error } = await supabase.from('push_notification_preferences')
+      .select('terminal_disconnected,position_opened,position_closed,trend_extreme,floating_pl_target')
+      .eq('user_id', state.session.user.id).maybeSingle();
+    if (error) throw error;
+    if (preferences) {
+      pushPreferenceList.querySelectorAll('input[name]').forEach((input) => {
+        input.checked = preferences[input.name] !== false;
+      });
+    }
+    pushNotificationsButton.disabled = Notification.permission === 'denied';
+    setPushStatus(Notification.permission === 'denied'
+      ? 'Notifications are blocked in this device’s browser settings.'
+      : pushSubscription ? 'Notifications are active on this device.' : 'Notifications are off on this device.',
+      pushSubscription ? 'success' : Notification.permission === 'denied' ? 'error' : 'muted');
+  } catch (error) {
+    console.error('push settings load error', error);
+    setPushStatus(`Could not load notification settings: ${error.message}`, 'error');
+  }
+  renderPushControls();
+}
+
+async function enablePushNotifications() {
+  if (!pushSupported()) throw new Error('Push notifications are not supported here.');
+  if (isIosBrowserOutsideHomeScreen()) throw new Error('On iPhone/iPad, add Lucre Hub to your Home Screen and open it there first.');
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') throw new Error(permission === 'denied'
+    ? 'Notifications were blocked. Re-enable them in your browser/device settings.'
+    : 'Notification permission was not granted.');
+  const registration = await registerPushServiceWorker();
+  pushSubscription = await registration.pushManager.getSubscription() || await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: base64UrlToUint8Array(VAPID_PUBLIC_KEY),
+  });
+  await savePushSubscription(pushSubscription);
+  const values = { user_id: state.session.user.id };
+  pushPreferenceList.querySelectorAll('input[name]').forEach((input) => { values[input.name] = input.checked; });
+  const { error } = await supabase.from('push_notification_preferences').upsert(values, { onConflict: 'user_id' });
+  if (error) throw error;
+  setPushStatus('Notifications are active on this device.', 'success');
+  renderPushControls();
+}
+
+async function disablePushNotifications({ quiet = false } = {}) {
+  try {
+    const registration = pushRegistration || (pushSupported() ? await navigator.serviceWorker.getRegistration('/') : null);
+    const subscription = pushSubscription || await registration?.pushManager.getSubscription();
+    if (subscription && state.session?.user?.id) {
+      await supabase.from('push_subscriptions').delete()
+        .eq('user_id', state.session.user.id).eq('endpoint', subscription.endpoint);
+      await subscription.unsubscribe();
+    }
+    pushSubscription = null;
+    if (!quiet) setPushStatus('Notifications are off on this device.');
+  } catch (error) {
+    if (!quiet) throw error;
+  } finally {
+    renderPushControls();
+  }
+}
+
+pushNotificationsButton?.addEventListener('click', async () => {
+  pushNotificationsButton.disabled = true;
+  try {
+    if (pushSubscription) await disablePushNotifications();
+    else await enablePushNotifications();
+  } catch (error) {
+    setPushStatus(error.message, 'error');
+  } finally {
+    pushNotificationsButton.disabled = Notification.permission === 'denied';
+  }
+});
+
+pushPreferenceList?.addEventListener('change', async () => {
+  if (!pushSubscription || !state.session?.user?.id) return;
+  const values = { user_id: state.session.user.id };
+  pushPreferenceList.querySelectorAll('input[name]').forEach((input) => { values[input.name] = input.checked; });
+  const { error } = await supabase.from('push_notification_preferences').upsert(values, { onConflict: 'user_id' });
+  setPushStatus(error ? `Could not save preferences: ${error.message}` : 'Notification preferences saved.', error ? 'error' : 'success');
 });
 
 document.getElementById('form-timezone-settings')?.addEventListener('submit', async (event) => {
@@ -5127,6 +5286,12 @@ window.addEventListener('lucre:theme-changed', () => {
 async function bootDashboard() {
   await loadProfile();
   await Promise.all([loadTerminals(), loadCalendarEvents()]);
+  await loadPushNotificationSettings();
+  const launch = new URLSearchParams(window.location.search);
+  const launchView = launch.get('view');
+  const launchTab = launch.get('tab');
+  if (['dashboard', 'strategies', 'pairs'].includes(launchView)) setActiveView(launchView);
+  if (launchView === 'dashboard' && launchTab) setActiveTab(launchTab);
   startPositionPolling();
 }
 
@@ -5166,6 +5331,8 @@ function resetDashboardState() {
   stopPositionPolling();
   stopRealtime();
   stopSymbolRescanPoll();
+  pushSubscription = null;
+  renderPushControls();
 }
 
 // v1.0.11 -- iOS was showing its native "Save Password?" alert at

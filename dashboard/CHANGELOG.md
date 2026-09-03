@@ -1,5 +1,17 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.53 — Private PWA push notifications (2026-09-03)
+
+- Adds installable PWA metadata and a push-capable service worker for desktop,
+  Android, and iOS/iPadOS Home Screen web apps.
+- Adds device-level enable/disable controls and five narrowly scoped preference
+  toggles in Settings: terminal disconnects, position opens, position closes,
+  Trend Strength extremes, and the +$1 floating-P/L crossing.
+- Routes notification taps back to the relevant Dashboard, Positions, or Pairs
+  view without caching authenticated API data in the service worker.
+- Signs the device out by removing its private push subscription first, which
+  prevents account alerts from leaking to a later user on the same browser.
+
 ## v1.0.46 — Broker-confirmed trade transition polish (2026-09-03)
 
 - Hides closing positions as soon as the terminal's immediate post-trade

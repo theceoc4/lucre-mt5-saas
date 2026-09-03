@@ -10,6 +10,8 @@
 <link rel="icon" type="image/png" sizes="32x32" href="./assets/favicon-32.png" />
 <link rel="icon" type="image/png" sizes="16x16" href="./assets/favicon-16.png" />
 <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png" />
+<link rel="manifest" href="./manifest.webmanifest" />
+<meta name="theme-color" content="#17251a" />
 
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -327,6 +329,24 @@
         <button class="btn-accent btn-xs" type="submit">Save timezone</button>
         <p class="auth-message" id="timezone-settings-message" role="status"></p>
       </form>
+    </section>
+
+    <section class="symbol-settings-section" aria-labelledby="push-settings-title">
+      <div class="symbol-settings-heading">
+        <div>
+          <h4 id="push-settings-title">Device notifications</h4>
+          <p class="desc">Fast alerts from the backend, even when Lucre Hub is closed. On iPhone or iPad, first add Lucre Hub to your Home Screen.</p>
+        </div>
+        <button type="button" class="btn-accent btn-xs" id="button-push-notifications">Enable</button>
+      </div>
+      <p class="field-hint push-settings-status" id="push-settings-status" role="status">Checking this device…</p>
+      <div class="push-preference-list" id="push-preference-list">
+        <label class="push-preference-row"><span><strong>Terminal disconnections</strong><small>When an MT5 heartbeat is missing for more than 90 seconds.</small></span><input type="checkbox" name="terminal_disconnected" checked /></label>
+        <label class="push-preference-row"><span><strong>Opened positions</strong><small>One alert for each broker-confirmed MT5 ticket.</small></span><input type="checkbox" name="position_opened" checked /></label>
+        <label class="push-preference-row"><span><strong>Closed positions</strong><small>Includes the broker-reported realized P/L when available.</small></span><input type="checkbox" name="position_closed" checked /></label>
+        <label class="push-preference-row"><span><strong>Trend Strength extremes</strong><small>When a pair enters 100% bullish or 100% bearish.</small></span><input type="checkbox" name="trend_extreme" checked /></label>
+        <label class="push-preference-row"><span><strong>Floating P/L crosses +$1.00</strong><small>Once per continuous cluster of open trades; resets after all positions close.</small></span><input type="checkbox" name="floating_pl_target" checked /></label>
+      </div>
     </section>
 
     <section class="symbol-settings-section" aria-labelledby="symbol-settings-title">
@@ -843,6 +863,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="./app.js"></script>
-<script type="module" src="./main.js?v=1.0.46"></script>
+<script type="module" src="./main.js?v=1.0.53"></script>
 </body>
 </html>

@@ -59,6 +59,7 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { captureMarketContext } from "../_shared/market-context.ts";
+import { dispatchPushInBackground } from "../_shared/push-notifications.ts";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -168,7 +169,7 @@ Deno.serve(async (req: Request) => {
   const keyHash = await sha256Hex(apiKey);
   const { data: terminal, error: terminalError } = await admin
     .from("mt5_terminals")
-    .select("id, max_open_positions, force_symbol_rescan, active_ea_instance_id, active_ea_instance_seen_at, active_ea_is_vps")
+    .select("id, user_id, max_open_positions, force_symbol_rescan, active_ea_instance_id, active_ea_instance_seen_at, active_ea_is_vps")
     .eq("api_key_hash", keyHash)
     .maybeSingle();
 
@@ -1019,6 +1020,18 @@ Deno.serve(async (req: Request) => {
       .update({ status: "sent", dispatched_at: nowIso })
       .in("id", queuedCommands.map((c) => c.id));
   }
+
+  // The full MT5 snapshot is authoritative for the cluster's open count and
+  // floating P/L. SQL owns the crossing latch; this call can therefore run on
+  // every durable sync without duplicate +$1 notifications.
+  const reportedPositions = body.positions ?? [];
+  await admin.rpc("evaluate_floating_pl_push", {
+    p_terminal_id: terminal.id,
+    p_open_position_count: reportedPositions.length,
+    p_total_pl: reportedPositions.reduce((sum, position) => sum + Number(position.unrealized_pl || 0), 0),
+    p_threshold: 1,
+  });
+  dispatchPushInBackground(admin, [terminal.user_id]);
 
   return jsonResponse({
     terminal_id: terminal.id,
