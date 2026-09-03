@@ -7,14 +7,23 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.50 — Immediate position execution controls (2026-09-02)
+
+- Removes the typed confirmation modal from Lock In and both Close all buttons.
+  One tap now queues the existing terminal-wide `close_all` command immediately.
+- Removes Safari's native confirmation dialog from individual position closes.
+  One tap now queues the close directly and temporarily disables that row's
+  button to prevent accidental duplicate submissions.
+- Displays request failures in the dashboard status banner instead of blocking
+  execution controls with native browser alerts.
+
 ## v1.0.49 — Atomic close-all and live floating P/L (2026-09-02)
 
 - Adds a full-height Floating P/L control beside Balance, Equity, and Margin
   Level. It sums the same streamed open-position snapshots used by the
   position cards, so it updates at the same cadence without adding database
   writes.
-- Adds Close all controls to both Open Positions cards and protects the
-  terminal-wide action with an exact `CLOSE ALL` confirmation phrase.
+- Adds Close all controls to both Open Positions cards.
 - Queues one `close_all` EA command instead of sending a separate request for
   every position. The updated EA executes that one command across all active
   positions in the connected MT5 account.

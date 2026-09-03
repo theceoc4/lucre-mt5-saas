@@ -1477,68 +1477,59 @@ document.getElementById('form-modify-position')?.addEventListener('submit', asyn
   }
 });
 
-async function handleClosePosition(positionId) {
+function showPositionCommandError(message) {
+  if (!bannerCommandStatus) return;
+  bannerCommandStatus.textContent = message;
+  bannerCommandStatus.hidden = false;
+}
+
+async function handleClosePosition(positionId, button) {
   const position = state.positions.find((p) => p.id === positionId);
-  if (!position) return;
-  if (!confirm(`Close ${position.symbol} (${position.volume} lots)? This sends a close command to the EA.`)) return;
+  if (!position || position.status !== 'open' || button?.disabled) return;
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Closing…';
+  }
+  if (bannerCommandStatus) bannerCommandStatus.hidden = true;
 
   try {
-    await closePosition(positionId, { client_request_id: crypto.randomUUID() });
+    const result = await closePosition(positionId, { client_request_id: crypto.randomUUID() });
+    state.pendingCommandId = result.ea_command_id;
     await loadPositions();
   } catch (err) {
-    alert(err.message);
+    showPositionCommandError(`Position was not queued to close: ${err.message}`);
+    renderPositions();
+    renderPositionsTab();
   }
 }
 
 let closeAllSubmitting = false;
 
-function openCloseAllPositionsModal() {
-  if (!state.activeTerminalId || !state.positions.some((position) => position.status === 'open')) return;
-  const total = state.positions.reduce((sum, position) => sum + (Number(position.unrealized_pl) || 0), 0);
-  document.getElementById('close-all-position-copy').textContent =
-    `This sends one terminal-wide command to close every active MT5 position, including trades opened outside Lucre Hub. Current displayed floating P/L: ${fmtUsd(total)}.`;
-  const input = document.getElementById('close-all-confirmation-input');
-  input.value = '';
-  document.getElementById('close-all-position-message').textContent = '';
-  document.getElementById('button-confirm-close-all').disabled = true;
-  window.LucreUI.openModal('modal-close-all-positions');
-  setTimeout(() => input.focus(), 0);
-}
-
-document.getElementById('close-all-confirmation-input')?.addEventListener('input', (event) => {
-  document.getElementById('button-confirm-close-all').disabled = event.target.value !== 'CLOSE ALL' || closeAllSubmitting;
-});
-
-document.getElementById('button-confirm-close-all')?.addEventListener('click', async () => {
-  const input = document.getElementById('close-all-confirmation-input');
-  const button = document.getElementById('button-confirm-close-all');
-  const message = document.getElementById('close-all-position-message');
-  if (input.value !== 'CLOSE ALL' || closeAllSubmitting || !state.activeTerminalId) return;
+async function handleCloseAllPositions() {
+  if (closeAllSubmitting || !state.activeTerminalId
+    || !state.positions.some((position) => position.status === 'open')) return;
 
   closeAllSubmitting = true;
-  button.disabled = true;
-  message.style.color = 'var(--color-accent)';
-  message.textContent = 'Sending one close-all command to MT5…';
+  if (bannerCommandStatus) bannerCommandStatus.hidden = true;
   renderFloatingPl();
   renderCloseAllControls();
   try {
-    await closeAllPositions(state.activeTerminalId, { client_request_id: crypto.randomUUID() });
-    message.textContent = 'Close-all queued. Waiting for terminal confirmation…';
+    const result = await closeAllPositions(state.activeTerminalId, { client_request_id: crypto.randomUUID() });
+    state.pendingCommandId = result.ea_command_id;
     await loadPositions();
-    setTimeout(() => window.LucreUI.closeModal(document.getElementById('modal-close-all-positions')), 700);
   } catch (error) {
-    message.style.color = 'var(--color-negative)';
-    message.textContent = error.message;
+    showPositionCommandError(`Positions were not queued to close: ${error.message}`);
   } finally {
     closeAllSubmitting = false;
     renderFloatingPl();
     renderCloseAllControls();
   }
-});
+}
 
-floatingPlButton?.addEventListener('click', openCloseAllPositionsModal);
+floatingPlButton?.addEventListener('click', handleCloseAllPositions);
 document.querySelectorAll('[data-close-all-positions]').forEach((button) => {
-  button.addEventListener('click', openCloseAllPositionsModal);
+  button.addEventListener('click', handleCloseAllPositions);
 });
 
 // ---------------------------------------------------------------------------
@@ -2586,7 +2577,7 @@ function renderPositionRows(list, emptyMessage) {
     btn.addEventListener('click', () => openModifyModal(btn.dataset.modifyPosition));
   });
   list.querySelectorAll('[data-close-position]').forEach((btn) => {
-    btn.addEventListener('click', () => handleClosePosition(btn.dataset.closePosition));
+    btn.addEventListener('click', () => handleClosePosition(btn.dataset.closePosition, btn));
   });
 }
 
