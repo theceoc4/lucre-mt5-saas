@@ -15,6 +15,15 @@ begin
   ) then
     raise exception 'privacy audit failed: a public table does not have RLS enabled';
   end if;
+  if exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and (coalesce(qual, '') = 'true' or coalesce(with_check, '') = 'true')
+      and tablename not in ('calendar_events', 'market_feed_health', 'symbol_correlations')
+  ) then
+    raise exception 'privacy audit failed: tenant data has an unrestricted RLS policy';
+  end if;
   select relrowsecurity into reservation_rls
   from pg_class
   where oid = 'public.open_command_reservations'::regclass;
