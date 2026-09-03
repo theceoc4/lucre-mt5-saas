@@ -1,4 +1,4 @@
-// v1.0.45 — low-latency command-only exchange plus durable reconciliation.
+// v1.0.47 — authoritative account floating P/L plus durable reconciliation.
 // v1.0.2 — ea-sync
 //
 // The MQL5 EA polls this every 1-2s. It is the ONLY function EAs talk to and the
@@ -103,6 +103,7 @@ interface PositionReport {
   sl?: number | null;
   tp?: number | null;
   unrealized_pl: number;
+  swap?: number;
   open_time: string;
   strategy_id?: string | null;
 }
@@ -188,6 +189,10 @@ Deno.serve(async (req: Request) => {
       server?: string;
       is_live?: boolean;
       ea_version?: string;
+      floating_pl?: number;
+      credit?: number;
+      positions_profit?: number;
+      positions_swap?: number;
       terminal_trade_allowed?: boolean;
       mql_trade_allowed?: boolean;
       account_trade_allowed?: boolean;
@@ -243,6 +248,13 @@ Deno.serve(async (req: Request) => {
     if (body.account.server !== undefined) accountUpdate.server = body.account.server;
     if (body.account.is_live !== undefined) accountUpdate.is_live = body.account.is_live;
     if (body.account.ea_version !== undefined) accountUpdate.ea_version = body.account.ea_version;
+    if (body.account.floating_pl !== undefined) {
+      accountUpdate.floating_pl = body.account.floating_pl;
+      accountUpdate.floating_pl_reported_at = nowIso;
+    }
+    if (body.account.credit !== undefined) accountUpdate.account_credit = body.account.credit;
+    if (body.account.positions_profit !== undefined) accountUpdate.positions_profit = body.account.positions_profit;
+    if (body.account.positions_swap !== undefined) accountUpdate.positions_swap = body.account.positions_swap;
     if (body.account.terminal_trade_allowed !== undefined) {
       accountUpdate.terminal_trade_allowed = body.account.terminal_trade_allowed;
     }
@@ -610,6 +622,7 @@ Deno.serve(async (req: Request) => {
           sl: p.sl ?? null,
           tp: p.tp ?? null,
           unrealized_pl: p.unrealized_pl,
+          swap: p.swap ?? 0,
           initial_risk_distance: riskDistance || null,
           mfe_price_distance: mfeDistance,
           mae_price_distance: maeDistance,
@@ -727,6 +740,7 @@ Deno.serve(async (req: Request) => {
         sl: p.sl ?? null,
         tp: p.tp ?? null,
         unrealized_pl: p.unrealized_pl,
+        swap: p.swap ?? 0,
         source: openContext.source,
         status: "open",
         open_time: p.open_time,
@@ -1028,7 +1042,12 @@ Deno.serve(async (req: Request) => {
   await admin.rpc("evaluate_floating_pl_push", {
     p_terminal_id: terminal.id,
     p_open_position_count: reportedPositions.length,
-    p_total_pl: reportedPositions.reduce((sum, position) => sum + Number(position.unrealized_pl || 0), 0),
+    p_total_pl: Number.isFinite(body.account?.floating_pl)
+      ? Number(body.account?.floating_pl)
+      : reportedPositions.reduce(
+        (sum, position) => sum + Number(position.unrealized_pl || 0) + Number(position.swap || 0),
+        0,
+      ),
     p_threshold: 1,
   });
   dispatchPushInBackground(admin, [terminal.user_id]);

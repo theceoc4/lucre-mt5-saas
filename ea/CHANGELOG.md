@@ -1,5 +1,16 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.47 — Broker-authoritative live floating P/L (2026-09-03)
+
+- Reports MT5 `ACCOUNT_PROFIT` as the authoritative account floating P/L in
+  both the private two-second stream and durable account snapshots.
+- Reports `ACCOUNT_CREDIT`, per-position swap, aggregate position profit, and
+  aggregate position swap so broker/account differences can be reconciled.
+- Immediately sends a private snapshot when the dashboard first leases the
+  stream, while retaining changed-state suppression between updates.
+- Corrects the runtime `ea_version` payload and ships named
+  `LucreHubEA-v1.47.mq5` and `LucreHubEA-v1.47.zip` artifacts.
+
 ## v1.0.46 — Private live position transport (2026-09-03)
 
 - Moves ephemeral mark-to-market position snapshots off the public command

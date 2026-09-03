@@ -1,4 +1,4 @@
-// v1.0.46 -- EA-key-authenticated relay for private live position snapshots.
+// v1.0.47 -- EA-key-authenticated relay for private live position snapshots.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { authenticateTerminal } from "./_shared/auth.ts";
@@ -19,8 +19,17 @@ interface PositionState {
   volume: number;
   current_price: number;
   unrealized_pl: number;
+  swap?: number;
   sl: number | null;
   tp: number | null;
+}
+
+interface PositionStateBody {
+  positions: PositionState[];
+  account_floating_pl?: number;
+  account_credit?: number;
+  positions_profit?: number;
+  positions_swap?: number;
 }
 
 function finite(value: unknown): value is number {
@@ -34,6 +43,7 @@ function validPosition(value: unknown): value is PositionState {
     finite(row.volume) && row.volume >= 0 &&
     finite(row.current_price) && row.current_price >= 0 &&
     finite(row.unrealized_pl) &&
+    (row.swap === undefined || finite(row.swap)) &&
     (row.sl === null || finite(row.sl)) &&
     (row.tp === null || finite(row.tp));
 }
@@ -62,14 +72,29 @@ Deno.serve(async (req: Request) => {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return reply({ error: "invalid_position_state" }, 400);
   }
-  const positions = (body as Record<string, unknown>).positions;
+  const payload = body as Record<string, unknown>;
+  const positions = payload.positions;
   if (!Array.isArray(positions) || positions.length > 100 || !positions.every(validPosition)) {
     return reply({ error: "invalid_position_state" }, 400);
   }
+  for (const key of ["account_floating_pl", "account_credit", "positions_profit", "positions_swap"]) {
+    if (payload[key] !== undefined && !finite(payload[key])) {
+      return reply({ error: "invalid_position_state", field: key }, 400);
+    }
+  }
+
+  const broadcastPayload: PositionStateBody & { server_reported_at: string } = {
+    positions,
+    server_reported_at: new Date().toISOString(),
+  };
+  if (finite(payload.account_floating_pl)) broadcastPayload.account_floating_pl = payload.account_floating_pl;
+  if (finite(payload.account_credit)) broadcastPayload.account_credit = payload.account_credit;
+  if (finite(payload.positions_profit)) broadcastPayload.positions_profit = payload.positions_profit;
+  if (finite(payload.positions_swap)) broadcastPayload.positions_swap = payload.positions_swap;
 
   const { error } = await admin.rpc("broadcast_private_position_state", {
     p_terminal_id: auth.terminal!.id,
-    p_payload: { positions },
+    p_payload: broadcastPayload,
   });
   if (error) return reply({ error: "broadcast_failed", detail: error.message }, 500);
   return reply({ accepted: true });

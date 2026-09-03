@@ -1,5 +1,15 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.54 — Broker-authoritative floating P/L (2026-09-03)
+
+- Uses the private MT5 `ACCOUNT_PROFIT` snapshot for the Lock In total instead
+  of reconstructing the account total from position rows.
+- Shows whether the displayed value is the live two-second feed, durable
+  30-second backup, or a legacy derived fallback.
+- Warns when the connected EA is too old for the private account-level stream,
+  or when a v1.0.47 stream has stopped while positions remain open.
+- Retains every modify, close, and atomic close-all control unchanged.
+
 ## v1.0.53 — Private PWA push notifications (2026-09-03)
 
 - Adds installable PWA metadata and a push-capable service worker for desktop,

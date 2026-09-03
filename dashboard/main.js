@@ -67,7 +67,10 @@ let realtimeCommandSubscribed = false;
 let realtimePositionSubscribed = false;
 let realtimeReconnectTimer = null;
 let positionStreamRequestIntervalId = null;
+let positionStreamUiIntervalId = null;
 let streamedPositionFields = new Map();
+let streamedAccountState = null;
+let positionStreamStartedAt = 0;
 const POSITION_STREAM_TTL_MS = 10000;
 // Rescan-in-flight poll — checks mt5_terminals.last_symbol_scan_at every 5s
 // (up to 60s) after "Rescan Symbols" is clicked, since report-symbols runs
@@ -103,9 +106,11 @@ const balanceWidgetBalance = document.getElementById('balance-widget-balance');
 const balanceWidgetEquity = document.getElementById('balance-widget-equity');
 const balanceWidgetMargin = document.getElementById('balance-widget-margin');
 const balanceWidgetFloatingPl = document.getElementById('balance-widget-floating-pl');
+const floatingPlSource = document.getElementById('floating-pl-source');
 const floatingPlButton = document.getElementById('button-floating-pl');
 const bannerAutotrading = document.getElementById('banner-autotrading');
 const bannerCommandStatus = document.getElementById('banner-command-status');
+const bannerPositionStream = document.getElementById('banner-position-stream');
 
 const textSignalTotal = document.getElementById('text-signal-total');
 const countExecuted = document.getElementById('count-executed');
@@ -1734,6 +1739,7 @@ function mergeStreamedPositionFields(positions) {
       volume: streamed.volume,
       current_price: streamed.current_price,
       unrealized_pl: streamed.unrealized_pl,
+      swap: streamed.swap,
       sl: streamed.sl,
       tp: streamed.tp,
     };
@@ -1754,8 +1760,10 @@ function applyStreamedPositionState(terminalId, eventPayload) {
     const volume = Number(position?.volume);
     const currentPrice = Number(position?.current_price);
     const unrealizedPl = Number(position?.unrealized_pl);
+    const swap = position?.swap === undefined ? 0 : Number(position.swap);
     if (!Number.isFinite(ticket) || !Number.isFinite(volume)
-      || !Number.isFinite(currentPrice) || !Number.isFinite(unrealizedPl)) return;
+      || !Number.isFinite(currentPrice) || !Number.isFinite(unrealizedPl)
+      || !Number.isFinite(swap)) return;
     const sl = position.sl === null ? null : Number(position.sl);
     const tp = position.tp === null ? null : Number(position.tp);
     next.set(String(ticket), {
@@ -1763,11 +1771,23 @@ function applyStreamedPositionState(terminalId, eventPayload) {
       volume,
       current_price: currentPrice,
       unrealized_pl: unrealizedPl,
+      swap,
       sl: sl === null || Number.isFinite(sl) ? sl : null,
       tp: tp === null || Number.isFinite(tp) ? tp : null,
     });
   });
   streamedPositionFields = next;
+  const accountFloatingPl = Number(message.account_floating_pl);
+  if (Number.isFinite(accountFloatingPl)) {
+    streamedAccountState = {
+      terminalId,
+      receivedAt,
+      floating_pl: accountFloatingPl,
+      account_credit: Number.isFinite(Number(message.account_credit)) ? Number(message.account_credit) : null,
+      positions_profit: Number.isFinite(Number(message.positions_profit)) ? Number(message.positions_profit) : null,
+      positions_swap: Number.isFinite(Number(message.positions_swap)) ? Number(message.positions_swap) : null,
+    };
+  }
   // MT5 is the live source of truth. Hide a position already marked `closing`
   // as soon as the broker-confirmed stream omits it; durable reconciliation
   // can finish its trade-history bookkeeping in the background.
@@ -1781,6 +1801,8 @@ function applyStreamedPositionState(terminalId, eventPayload) {
 function stopPositionStreamRequests() {
   if (positionStreamRequestIntervalId) clearInterval(positionStreamRequestIntervalId);
   positionStreamRequestIntervalId = null;
+  if (positionStreamUiIntervalId) clearInterval(positionStreamUiIntervalId);
+  positionStreamUiIntervalId = null;
 }
 
 function requestPositionStream() {
@@ -1797,6 +1819,10 @@ function startPositionStreamRequests() {
   stopPositionStreamRequests();
   requestPositionStream();
   positionStreamRequestIntervalId = setInterval(requestPositionStream, 15000);
+  // Re-evaluate stream freshness locally without adding any Supabase reads or
+  // writes. This prevents a dead stream from looking "Live" until the next
+  // durable reconciliation poll.
+  positionStreamUiIntervalId = setInterval(renderFloatingPl, 2000);
 }
 
 function maybeStartPositionStreamRequests() {
@@ -1826,7 +1852,7 @@ async function refreshActiveTerminalBalance() {
   if (!state.activeTerminalId) return;
   const { data, error } = await supabase
     .from('mt5_terminals')
-    .select('id, equity, balance, margin_level, status, terminal_trade_allowed, mql_trade_allowed, account_trade_allowed, account_expert_trade_allowed, trade_capability_reported_at')
+    .select('id, equity, balance, margin_level, floating_pl, account_credit, positions_profit, positions_swap, floating_pl_reported_at, status, terminal_trade_allowed, mql_trade_allowed, account_trade_allowed, account_expert_trade_allowed, trade_capability_reported_at')
     .eq('id', state.activeTerminalId)
     .maybeSingle();
   if (error || !data) return;
@@ -1846,6 +1872,8 @@ async function refreshActiveTerminalBalance() {
 function startRealtime(terminalId) {
   stopRealtime();
   streamedPositionFields = new Map();
+  streamedAccountState = null;
+  positionStreamStartedAt = Date.now();
   if (!terminalId) return;
   const terminal = state.terminals.find((item) => item.id === terminalId);
   const channelName = terminal?.realtime_topic_id
@@ -2286,6 +2314,8 @@ function stopRealtime() {
   stopPositionStreamRequests();
   realtimeCommandSubscribed = false;
   realtimePositionSubscribed = false;
+  streamedAccountState = null;
+  positionStreamStartedAt = 0;
   if (realtimeReconnectTimer) {
     clearTimeout(realtimeReconnectTimer);
     realtimeReconnectTimer = null;
@@ -2335,7 +2365,7 @@ async function loadTerminals() {
   const { data, error } = await supabase
     .from('mt5_terminals')
     .select(
-      'id, label, broker, account_login, server, is_live, status, equity, balance, margin_level, ea_version, api_key_last_four, api_key_last_rotated_at, max_manual_lot_size, max_daily_loss_usd, max_open_positions, force_symbol_rescan, last_symbol_scan_at, realtime_topic_id'
+      'id, label, broker, account_login, server, is_live, status, equity, balance, margin_level, floating_pl, account_credit, positions_profit, positions_swap, floating_pl_reported_at, ea_version, api_key_last_four, api_key_last_rotated_at, max_manual_lot_size, max_daily_loss_usd, max_open_positions, force_symbol_rescan, last_symbol_scan_at, realtime_topic_id'
       + ', terminal_trade_allowed, mql_trade_allowed, account_trade_allowed, account_expert_trade_allowed, trade_capability_reported_at'
     )
     .order('created_at', { ascending: true });
@@ -2730,7 +2760,7 @@ async function loadPositions() {
 
   const { data, error } = await supabase
     .from('positions')
-    .select('id, mt5_ticket, symbol, side, volume, open_price, current_price, sl, tp, unrealized_pl, status, open_time, source, strategy_id, strategy_name_at_entry, origin_detail')
+    .select('id, mt5_ticket, symbol, side, volume, open_price, current_price, sl, tp, unrealized_pl, swap, status, open_time, source, strategy_id, strategy_name_at_entry, origin_detail')
     .eq('terminal_id', state.activeTerminalId)
     .neq('status', 'closed')
     .order('open_time', { ascending: false });
@@ -2852,13 +2882,49 @@ function renderCloseAllControls() {
 
 function renderFloatingPl() {
   if (!floatingPlButton || !balanceWidgetFloatingPl) return;
-  const total = state.positions.reduce((sum, position) => sum + (Number(position.unrealized_pl) || 0), 0);
+  const active = state.terminals.find((terminal) => terminal.id === state.activeTerminalId);
+  const now = Date.now();
+  const streamIsCurrent = streamedAccountState?.terminalId === state.activeTerminalId
+    && now - streamedAccountState.receivedAt <= POSITION_STREAM_TTL_MS;
+  const durableAge = active?.floating_pl_reported_at
+    ? now - new Date(active.floating_pl_reported_at).getTime() : Infinity;
+  const durableIsCurrent = Number.isFinite(Number(active?.floating_pl)) && durableAge <= 90000;
+  const derivedTotal = state.positions.reduce(
+    (sum, position) => sum + (Number(position.unrealized_pl) || 0) + (Number(position.swap) || 0),
+    0
+  );
+  const total = streamIsCurrent
+    ? streamedAccountState.floating_pl
+    : durableIsCurrent ? Number(active.floating_pl) : derivedTotal;
+  const source = streamIsCurrent ? 'Live · 2s' : durableIsCurrent ? 'Backup · 30s' : 'Derived · waiting';
   balanceWidgetFloatingPl.textContent = `${total >= 0 ? '+' : ''}${fmtUsd(total)}`;
+  if (floatingPlSource) floatingPlSource.textContent = source;
   floatingPlButton.classList.toggle('is-positive', total > 0);
   floatingPlButton.classList.toggle('is-negative', total < 0);
   floatingPlButton.classList.toggle('is-flat', total === 0);
   floatingPlButton.disabled = closeAllSubmitting || !state.activeTerminalId
     || !state.positions.some((position) => position.status === 'open');
+
+  if (bannerPositionStream) {
+    const hasOpenPosition = state.positions.some((position) => position.status === 'open');
+    const versionParts = String(active?.ea_version || '').match(/\d+/g)?.map(Number) || [];
+    const normalizedVersion = versionParts.length === 2
+      ? [versionParts[0], 0, versionParts[1]] : versionParts.slice(0, 3);
+    const supportsAccountStream = normalizedVersion.length === 3
+      && (normalizedVersion[0] > 1
+        || (normalizedVersion[0] === 1 && normalizedVersion[1] > 0)
+        || (normalizedVersion[0] === 1 && normalizedVersion[1] === 0 && normalizedVersion[2] >= 47));
+    const streamGraceElapsed = positionStreamStartedAt > 0 && now - positionStreamStartedAt > 12000;
+    if (active?.status === 'connected' && !supportsAccountStream) {
+      bannerPositionStream.textContent = `EA ${active.ea_version || 'unknown'} does not provide broker-authoritative live P/L. Install LucreHubEA-v1.47.mq5 to enable it.`;
+      bannerPositionStream.hidden = false;
+    } else if (hasOpenPosition && supportsAccountStream && streamGraceElapsed && !streamIsCurrent) {
+      bannerPositionStream.textContent = 'The private MT5 P/L stream is unavailable. Displaying the durable 30-second account snapshot until it reconnects.';
+      bannerPositionStream.hidden = false;
+    } else {
+      bannerPositionStream.hidden = true;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -5313,6 +5379,8 @@ function resetDashboardState() {
   state.strategySessionBands = false;
   state.agentPolicies = [];
   state.positions = [];
+  streamedAccountState = null;
+  streamedPositionFields = new Map();
   state.symbolSettings = [];
   state.symbolMappings = [];
   state.trendStates = [];

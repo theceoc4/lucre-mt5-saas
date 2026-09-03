@@ -502,12 +502,14 @@
         <span class="balance-label">Floating P/L</span>
         <span class="balance-value" id="balance-widget-floating-pl">—</span>
         <span class="floating-pl-lock">Lock in</span>
+        <span class="floating-pl-source" id="floating-pl-source">Waiting for MT5</span>
       </button>
     </section>
     <div class="banner-warning" id="banner-autotrading" hidden role="alert">
       AutoTrading is OFF on the terminal — new orders and signal-driven trades will be rejected until it's enabled in MT5.
     </div>
     <div class="banner-warning" id="banner-command-status" hidden role="alert"></div>
+    <div class="banner-warning" id="banner-position-stream" hidden role="status"></div>
 
     <div class="view" id="view-dashboard">
 
@@ -863,6 +865,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="./app.js"></script>
-<script type="module" src="./main.js?v=1.0.53"></script>
+<script type="module" src="./main.js?v=1.0.54"></script>
 </body>
 </html>
