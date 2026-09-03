@@ -38,6 +38,8 @@ const state = {
   activeView: 'dashboard',
   activeTab: 'overview',
   selectedStrategyId: null,
+  signalChartRange: '30d',
+  strategyChartRange: '30d',
   signalFilter: { pair: 'all', period: '30d' },
   // v1.0.14 — item 3: P/L Over Time card filters (timeframe + manual/auto/all).
   plFilter: { timeframe: '30d', source: 'all' },
@@ -102,7 +104,7 @@ const countExecuted = document.getElementById('count-executed');
 const countBlocked = document.getElementById('count-blocked');
 const countExpired = document.getElementById('count-expired');
 const chartEmptyOverlay = document.getElementById('chart-empty-overlay');
-const textChartMonth = document.getElementById('text-chart-month');
+const signalChartRange = document.getElementById('signal-chart-range');
 
 const strategyList = document.getElementById('strategy-list');
 
@@ -140,6 +142,7 @@ const notificationDot = document.getElementById('notification-dot');
 const notificationCount = document.getElementById('notification-count');
 const strategyPageSelect = document.getElementById('strategy-page-select');
 const strategyPageEdit = document.getElementById('strategy-page-edit');
+const strategyChartRange = document.getElementById('strategy-chart-range');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2347,7 +2350,6 @@ function renderSignalSummary() {
   countBlocked.textContent = blocked.toLocaleString();
   countExpired.textContent = expired.toLocaleString();
 
-  textChartMonth.textContent = new Date().toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   chartEmptyOverlay.style.display = total === 0 ? 'flex' : 'none';
 }
 
@@ -3776,6 +3778,14 @@ function renderWinRateTab() {
   list.innerHTML = summaryHtml + rowsHtml;
 }
 
+function formatTradeDuration(durationMs) {
+  const minutes = Math.max(0, durationMs / 60000);
+  if (minutes < 1) return '<1m';
+  if (minutes < 60) return `${Math.round(minutes)}m`;
+  if (minutes < 1440) return `${(minutes / 60).toFixed(1)}h`;
+  return `${(minutes / 1440).toFixed(1)}d`;
+}
+
 function renderDurationTab() {
   const list = document.getElementById('tab-duration-list');
   if (!list) return;
@@ -3801,16 +3811,10 @@ function renderDurationTab() {
     { label: '4+ hours', test: (m) => m >= 240 },
   ];
 
-  const formatDuration = (min) => {
-    if (min < 60) return `${Math.round(min)}m`;
-    if (min < 1440) return `${(min / 60).toFixed(1)}h`;
-    return `${(min / 1440).toFixed(1)}d`;
-  };
-
   const summaryHtml = `
     <div class="stat-summary-row">
-      <div class="stat-summary-item"><div class="stat-value">${formatDuration(avgMin)}</div><div class="stat-label">Avg hold time</div></div>
-      <div class="stat-summary-item"><div class="stat-value">${formatDuration(medianMin)}</div><div class="stat-label">Median hold time</div></div>
+      <div class="stat-summary-item"><div class="stat-value">${formatTradeDuration(avgMin * 60000)}</div><div class="stat-label">Avg hold time</div></div>
+      <div class="stat-summary-item"><div class="stat-value">${formatTradeDuration(medianMin * 60000)}</div><div class="stat-label">Median hold time</div></div>
       <div class="stat-summary-item"><div class="stat-value">${closed.length}</div><div class="stat-label">Closed trades</div></div>
     </div>`;
 
@@ -4248,23 +4252,101 @@ function strategyScopedData(strategyId) {
   };
 }
 
+function startOfChartWeek(date) {
+  const result = new Date(date);
+  result.setHours(0, 0, 0, 0);
+  const day = result.getDay();
+  result.setDate(result.getDate() - (day === 0 ? 6 : day - 1));
+  return result;
+}
+
+function buildSignalChartBuckets(range) {
+  const now = new Date();
+  if (range === 'today') {
+    const dayStart = new Date(now);
+    dayStart.setHours(0, 0, 0, 0);
+    return Array.from({ length: 24 }, (_, hour) => {
+      const start = new Date(dayStart);
+      start.setHours(hour);
+      const end = new Date(start);
+      end.setHours(end.getHours() + 1);
+      return { start: start.getTime(), end: end.getTime(), label: start.toLocaleTimeString(undefined, { hour: 'numeric' }) };
+    });
+  }
+
+  if (range === 'year') {
+    const currentWeek = startOfChartWeek(now);
+    return Array.from({ length: 52 }, (_, index) => {
+      const start = new Date(currentWeek);
+      start.setDate(start.getDate() - (51 - index) * 7);
+      const end = new Date(start);
+      end.setDate(end.getDate() + 7);
+      return { start: start.getTime(), end: end.getTime(), label: start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) };
+    });
+  }
+
+  const dayCount = range === '7d' ? 7 : 30;
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  return Array.from({ length: dayCount }, (_, index) => {
+    const start = new Date(today);
+    start.setDate(start.getDate() - (dayCount - 1 - index));
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return { start: start.getTime(), end: end.getTime(), label: start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) };
+  });
+}
+
+function buildSignalChartSeries(signals, executedSignalIds, range) {
+  const buckets = buildSignalChartBuckets(range);
+  const executed = new Array(buckets.length).fill(0);
+  const blocked = new Array(buckets.length).fill(0);
+  let signalCount = 0;
+  signals.forEach((signal) => {
+    const timestamp = signal.generated_at ? new Date(signal.generated_at).getTime() : NaN;
+    if (!Number.isFinite(timestamp)) return;
+    const index = buckets.findIndex((bucket) => timestamp >= bucket.start && timestamp < bucket.end);
+    if (index < 0) return;
+    signalCount += 1;
+    if (signal.policy_decision === 'block') blocked[index] += 1;
+    else if (executedSignalIds.has(signal.id)) executed[index] += 1;
+  });
+  return { labels: buckets.map((bucket) => bucket.label), executed, blocked, signalCount };
+}
+
+function signalChartOptions(series, textFaint) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { intersect: false },
+    plugins: { legend: { display: false }, tooltip: { enabled: true } },
+    scales: {
+      x: {
+        display: true,
+        ticks: { color: textFaint, font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: series.labels.length <= 7 ? 7 : 9 },
+        grid: { display: false },
+        border: { display: false },
+      },
+      y: {
+        position: 'right',
+        beginAtZero: true,
+        suggestedMax: Math.max(...series.executed, ...series.blocked, 0) === 0 ? 10 : undefined,
+        ticks: { color: textFaint, font: { size: 11 }, precision: 0 },
+        grid: { display: false },
+        border: { display: false },
+      },
+    },
+  };
+}
+
 function renderStrategyVolumeChart(scoped) {
   const canvas = document.getElementById('strategyVolumeChart');
   if (!canvas || typeof Chart === 'undefined') return;
   if (strategyVolumeChartInstance) strategyVolumeChartInstance.destroy();
 
-  const now = new Date();
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const labels = Array.from({ length: daysInMonth }, (_, index) => String(index + 1));
-  const executed = new Array(daysInMonth).fill(0);
-  const blocked = new Array(daysInMonth).fill(0);
-  scoped.signals.forEach((signal) => {
-    const generated = signal.generated_at ? new Date(signal.generated_at) : null;
-    if (!generated || generated.getMonth() !== now.getMonth() || generated.getFullYear() !== now.getFullYear()) return;
-    const index = generated.getDate() - 1;
-    if (signal.policy_decision === 'block') blocked[index] += 1;
-    else if (scoped.executedSignalIds.has(signal.id)) executed[index] += 1;
-  });
+  const series = buildSignalChartSeries(scoped.signals, scoped.executedSignalIds, state.strategyChartRange);
+  const emptyOverlay = document.getElementById('strategy-page-chart-empty');
+  if (emptyOverlay) emptyOverlay.style.display = series.signalCount === 0 ? 'flex' : 'none';
 
   const accent = cssVar('--color-accent') || '#d7e64e';
   const textFaint = cssVar('--color-text-faint') || '#99a496';
@@ -4276,20 +4358,13 @@ function renderStrategyVolumeChart(scoped) {
 
   strategyVolumeChartInstance = new Chart(ctx, {
     data: {
-      labels,
+      labels: series.labels,
       datasets: [
-        { type: 'bar', label: 'Blocked', data: blocked, backgroundColor: surfaceSunken, borderRadius: 3, barPercentage: 0.55, categoryPercentage: 0.9, order: 2 },
-        { type: 'line', label: 'Executed', data: executed, borderColor: accent, borderWidth: 2.5, pointRadius: 0, tension: 0.45, fill: true, backgroundColor: gradient, order: 1 },
+        { type: 'bar', label: 'Blocked', data: series.blocked, backgroundColor: surfaceSunken, borderRadius: 3, barPercentage: 0.55, categoryPercentage: 0.9, order: 2 },
+        { type: 'line', label: 'Executed', data: series.executed, borderColor: accent, borderWidth: 2.5, pointRadius: 0, tension: 0.45, fill: true, backgroundColor: gradient, order: 1 },
       ],
     },
-    options: {
-      responsive: true, maintainAspectRatio: false, interaction: { intersect: false },
-      plugins: { legend: { display: false }, tooltip: { enabled: true } },
-      scales: {
-        x: { display: false },
-        y: { position: 'right', beginAtZero: true, suggestedMax: Math.max(...executed, ...blocked, 0) === 0 ? 10 : undefined, ticks: { color: textFaint, font: { size: 11 }, precision: 0 }, grid: { display: false }, border: { display: false } },
-      },
-    },
+    options: signalChartOptions(series, textFaint),
   });
 }
 
@@ -4390,8 +4465,7 @@ function renderStrategyPage() {
   document.getElementById('strategy-page-executed').textContent = scoped.executed.toLocaleString();
   document.getElementById('strategy-page-blocked').textContent = scoped.blocked.toLocaleString();
   document.getElementById('strategy-page-expired').textContent = scoped.expired.toLocaleString();
-  document.getElementById('strategy-page-chart-month').textContent = new Date().toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
-  document.getElementById('strategy-page-chart-empty').style.display = scoped.signals.length === 0 ? 'flex' : 'none';
+  if (strategyChartRange) strategyChartRange.value = state.strategyChartRange;
 
   const brokerPl = scoped.trades.reduce((sum, trade) => sum + Number(trade.profit ?? 0), 0);
   const netPl = scoped.trades.reduce((sum, trade) => sum + Number(trade.net_profit ?? trade.profit ?? 0), 0);
@@ -4426,6 +4500,14 @@ function renderStrategyPage() {
   const winRate = scoped.trades.length ? Math.round((wins / scoped.trades.length) * 100) : null;
   const tradesWithR = scoped.trades.filter((trade) => trade.r_multiple != null && Number.isFinite(Number(trade.r_multiple)));
   const averageR = tradesWithR.length ? tradesWithR.reduce((sum, trade) => sum + Number(trade.r_multiple), 0) / tradesWithR.length : null;
+  const tradesWithDuration = scoped.trades.filter((trade) => {
+    const opened = trade.open_time ? new Date(trade.open_time).getTime() : NaN;
+    const closed = trade.close_time ? new Date(trade.close_time).getTime() : NaN;
+    return Number.isFinite(opened) && Number.isFinite(closed) && closed >= opened;
+  });
+  const averageDurationMs = tradesWithDuration.length
+    ? tradesWithDuration.reduce((sum, trade) => sum + (new Date(trade.close_time).getTime() - new Date(trade.open_time).getTime()), 0) / tradesWithDuration.length
+    : null;
   const blockedPct = scoped.signals.length ? Math.round((scoped.blocked / scoped.signals.length) * 100) : 0;
 
   document.getElementById('strategy-page-top-pair').textContent = topPair?.[0] || '—';
@@ -4438,6 +4520,8 @@ function renderStrategyPage() {
   document.getElementById('strategy-page-win-detail').textContent = scoped.trades.length ? `${wins} wins · ${scoped.trades.length} trades` : 'No closed trades';
   document.getElementById('strategy-page-average-r').textContent = averageR == null ? '—' : `${averageR.toFixed(2)}R`;
   document.getElementById('strategy-page-average-r-detail').textContent = tradesWithR.length ? `${tradesWithR.length} risk-defined trades` : 'No risk-defined outcomes';
+  document.getElementById('strategy-page-average-duration').textContent = averageDurationMs == null ? '—' : formatTradeDuration(averageDurationMs);
+  document.getElementById('strategy-page-average-duration-detail').textContent = tradesWithDuration.length ? `${tradesWithDuration.length} completed trades` : 'No closed trades';
 
   renderStrategyVolumeChart(scoped);
   renderStrategyPlChart(scoped.trades);
@@ -4447,6 +4531,15 @@ function renderStrategyPage() {
 strategyPageSelect?.addEventListener('change', (event) => {
   state.selectedStrategyId = event.target.value;
   renderStrategyPage();
+});
+signalChartRange?.addEventListener('change', (event) => {
+  state.signalChartRange = event.target.value;
+  renderVolumeChart();
+});
+strategyChartRange?.addEventListener('change', (event) => {
+  state.strategyChartRange = event.target.value;
+  const strategy = selectedStrategy();
+  if (strategy) renderStrategyVolumeChart(strategyScopedData(strategy.id));
 });
 strategyPageEdit?.addEventListener('click', () => {
   if (state.selectedStrategyId) openEditStrategyModal(state.selectedStrategyId);
@@ -4467,18 +4560,13 @@ function renderVolumeChart() {
   const textFaint = cssVar('--color-text-faint') || '#99a496';
   const surfaceSunken = cssVar('--color-surface-sunken') || '#eef1e9';
 
-  const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
-  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
-
-  const executedByDay = new Array(daysInMonth).fill(0);
-  const blockedByDay = new Array(daysInMonth).fill(0);
-  state.signals.forEach((s) => {
-    if (!s.generated_at) return;
-    const day = new Date(s.generated_at).getDate() - 1;
-    if (day < 0 || day >= daysInMonth) return;
-    if (s.policy_decision === 'block') blockedByDay[day] += 1;
-    else executedByDay[day] += 1;
-  });
+  const executedSignalIds = new Set(
+    state.signalDeliveries
+      .filter((delivery) => ['tapped', 'auto_executed'].includes(delivery.status))
+      .map((delivery) => delivery.signal_id)
+  );
+  const series = buildSignalChartSeries(state.signals, executedSignalIds, state.signalChartRange);
+  if (chartEmptyOverlay) chartEmptyOverlay.style.display = series.signalCount === 0 ? 'flex' : 'none';
 
   const ctx = canvas.getContext('2d');
   const gradient = ctx.createLinearGradient(0, 0, 0, 220);
@@ -4487,12 +4575,12 @@ function renderVolumeChart() {
 
   volumeChartInstance = new Chart(ctx, {
     data: {
-      labels: days.map(String),
+      labels: series.labels,
       datasets: [
         {
           type: 'bar',
           label: 'Blocked',
-          data: blockedByDay,
+          data: series.blocked,
           backgroundColor: surfaceSunken,
           borderRadius: 3,
           barPercentage: 0.55,
@@ -4502,7 +4590,7 @@ function renderVolumeChart() {
         {
           type: 'line',
           label: 'Executed',
-          data: executedByDay,
+          data: series.executed,
           borderColor: accent,
           borderWidth: 2.5,
           pointRadius: 0,
@@ -4513,23 +4601,7 @@ function renderVolumeChart() {
         },
       ],
     },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { intersect: false },
-      plugins: { legend: { display: false }, tooltip: { enabled: true } },
-      scales: {
-        x: { display: false },
-        y: {
-          position: 'right',
-          beginAtZero: true,
-          suggestedMax: Math.max(...executedByDay, ...blockedByDay, 0) === 0 ? 10 : undefined,
-          ticks: { color: textFaint, font: { size: 11 }, precision: 0 },
-          grid: { display: false },
-          border: { display: false },
-        },
-      },
-    },
+    options: signalChartOptions(series, textFaint),
   });
 }
 
@@ -4695,6 +4767,8 @@ function resetDashboardState() {
   state.notifications = [];
   state.activeView = 'dashboard';
   state.selectedStrategyId = null;
+  state.signalChartRange = '30d';
+  state.strategyChartRange = '30d';
   state.agentPolicies = [];
   state.positions = [];
   state.symbolSettings = [];
@@ -4704,6 +4778,8 @@ function resetDashboardState() {
   state.scenarioStats = [];
   state.signalFilter = { pair: 'all', period: '30d' };
   if (signalsPeriodFilter) signalsPeriodFilter.value = '30d';
+  if (signalChartRange) signalChartRange.value = '30d';
+  if (strategyChartRange) strategyChartRange.value = '30d';
   if (notificationPanel) notificationPanel.hidden = true;
   renderNotifications();
   setActiveView('dashboard');

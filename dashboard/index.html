@@ -498,16 +498,19 @@
 
       <section class="card card-pad chart-card" aria-label="Signal volume and P/L chart">
         <div class="card-title-row">
-          <div>
-            <div class="chart-month" data-testid="text-chart-month" id="text-chart-month">August 2026</div>
-            <div class="week-labels"><span>W1</span><span>W2</span><span>W3</span><span>W4</span><span>W5</span></div>
-          </div>
+          <h3>Signal Activity</h3>
+          <select class="chart-range-select" id="signal-chart-range" aria-label="Dashboard signal chart range">
+            <option value="today">Today</option>
+            <option value="7d">7 Days</option>
+            <option value="30d" selected>30 Days</option>
+            <option value="year">Year</option>
+          </select>
         </div>
         <div class="chart-wrap">
           <div class="chart-empty-overlay" id="chart-empty-overlay">
-            <p>No signals yet. Once your EA is connected and generating signals, daily volume shows up here.</p>
+            <p>No signals in this range yet. Once your EA generates activity, it shows up here.</p>
           </div>
-          <canvas id="volumeChart" role="img" aria-label="Daily executed and blocked signals"></canvas>
+          <canvas id="volumeChart" role="img" aria-label="Executed and blocked signals over the selected range"></canvas>
         </div>
       </section>
     </div>
@@ -751,12 +754,20 @@
             </div>
           </section>
           <section class="card card-pad chart-card" aria-label="Selected strategy signal performance">
-            <div class="card-title-row"><div><div class="chart-month" id="strategy-page-chart-month">—</div><div class="week-labels"><span>W1</span><span>W2</span><span>W3</span><span>W4</span><span>W5</span></div></div></div>
-            <div class="chart-wrap"><div class="chart-empty-overlay" id="strategy-page-chart-empty"><p>No signals from this strategy yet.</p></div><canvas id="strategyVolumeChart" role="img" aria-label="Daily signals for selected strategy"></canvas></div>
+            <div class="card-title-row">
+              <h3>Signal Activity</h3>
+              <select class="chart-range-select" id="strategy-chart-range" aria-label="Strategy signal chart range">
+                <option value="today">Today</option>
+                <option value="7d">7 Days</option>
+                <option value="30d" selected>30 Days</option>
+                <option value="year">Year</option>
+              </select>
+            </div>
+            <div class="chart-wrap"><div class="chart-empty-overlay" id="strategy-page-chart-empty"><p>No signals from this strategy in this range yet.</p></div><canvas id="strategyVolumeChart" role="img" aria-label="Selected strategy signals over the selected range"></canvas></div>
           </section>
         </div>
 
-        <div class="strategy-kpi-grid">
+        <div class="strategy-primary-metrics">
           <section class="card card-pad strategy-pl-card" aria-label="Selected strategy profit and loss">
             <div class="card-title-row"><h3>P/L</h3><span class="strategy-kpi-period">Verified closed trades</span></div>
             <div class="strategy-pl-total" id="strategy-page-pl-total">—</div>
@@ -765,9 +776,12 @@
           </section>
           <section class="card card-pad strategy-kpi-card"><span>Top Performing Pair</span><strong id="strategy-page-top-pair">—</strong><small id="strategy-page-top-pair-detail">No closed trades</small></section>
           <section class="card card-pad strategy-kpi-card"><span>Best Session</span><strong id="strategy-page-best-session">—</strong><small id="strategy-page-best-session-detail">No session data</small></section>
+        </div>
+        <div class="strategy-secondary-metrics">
+          <section class="card card-pad strategy-kpi-card"><span>Average R:R</span><strong id="strategy-page-average-r">—</strong><small id="strategy-page-average-r-detail">Verified outcomes</small></section>
           <section class="card card-pad strategy-kpi-card"><span>Total Blocked Signals</span><strong id="strategy-page-blocked-total">0</strong><small id="strategy-page-blocked-detail">0% of signals</small></section>
           <section class="card card-pad strategy-kpi-card"><span>Win %</span><strong id="strategy-page-win-rate">—</strong><small id="strategy-page-win-detail">No closed trades</small></section>
-          <section class="card card-pad strategy-kpi-card"><span>Average R:R</span><strong id="strategy-page-average-r">—</strong><small id="strategy-page-average-r-detail">Verified outcomes</small></section>
+          <section class="card card-pad strategy-kpi-card"><span>Average Duration</span><strong id="strategy-page-average-duration">—</strong><small id="strategy-page-average-duration-detail">No closed trades</small></section>
         </div>
 
         <section class="strategy-page-policy-section" aria-label="Selected strategy directional news policy">

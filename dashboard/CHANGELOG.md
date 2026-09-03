@@ -7,6 +7,17 @@ independently but share the same numbering scheme for easy cross-reference.
 
 ---
 
+## v1.0.47 — Range-aware signal charts and strategy metric layout (2026-09-02)
+
+- Replaces the decorative month/week chart headers on Dashboard and Strategies
+  with Today, 7 Days, 30 Days, and Year selectors backed by hourly, daily, and
+  weekly signal buckets.
+- Reshapes the primary strategy metrics into a 50/25/25 row for P/L, top pair,
+  and best session, followed by four equal supporting metric cards.
+- Adds strategy-scoped average trade duration from verified open/close times.
+- Counts the neon chart line from confirmed signal deliveries while retaining
+  dark blocked-signal bars and the existing Lucre visual palette.
+
 ## v1.0.46 — Dedicated strategy performance workspace (2026-09-02)
 
 - Adds Strategies to the primary navigation with a strategy-scoped signals
