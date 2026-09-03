@@ -18,7 +18,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css" />
+<link rel="stylesheet" href="./style.css?v=1.0.55" />
 </head>
 <body>
 
@@ -315,71 +315,81 @@
 
 <!-- ============ Platform settings modal ============ -->
 <div class="modal-overlay" id="modal-platform-settings" aria-hidden="true">
-  <div class="modal-card modal-card-wide">
-    <div class="modal-head">
-      <h3>Settings</h3>
+  <div class="modal-card modal-card-wide settings-modal-card">
+    <div class="modal-head settings-modal-head">
+      <div class="settings-modal-title-row">
+        <button class="icon-btn settings-back-button" type="button" id="button-settings-back" aria-label="Back to settings categories" hidden>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
+        <h3 id="settings-modal-title">Settings</h3>
+      </div>
       <button class="icon-btn" type="button" data-modal-close aria-label="Close">×</button>
     </div>
-    <p class="modal-sub">Manage display preferences, visible symbols, and account-wide trading guardrails.</p>
+    <p class="modal-sub" id="settings-modal-subtitle">Choose a category to update your platform preferences.</p>
 
-    <section class="symbol-settings-section" aria-labelledby="display-settings-title">
-      <div class="symbol-settings-heading"><div><h4 id="display-settings-title">Display</h4><p class="desc">Times, chart buckets, news, and activity are shown in this timezone across every device.</p></div></div>
-      <form id="form-timezone-settings" class="timezone-settings-form">
-        <label class="field" for="timezone-select"><span>Local timezone</span><select id="timezone-select" name="timezone" aria-label="Local timezone"></select></label>
-        <button class="btn-accent btn-xs" type="submit">Save timezone</button>
-        <p class="auth-message" id="timezone-settings-message" role="status"></p>
-      </form>
-    </section>
-
-    <section class="symbol-settings-section" aria-labelledby="push-settings-title">
-      <div class="symbol-settings-heading">
-        <div>
-          <h4 id="push-settings-title">Device notifications</h4>
-          <p class="desc">Fast alerts from the backend, even when Lucre Hub is closed. On iPhone or iPad, first add Lucre Hub to your Home Screen.</p>
-        </div>
-        <button type="button" class="btn-accent btn-xs" id="button-push-notifications">Enable</button>
+    <div class="settings-page" data-settings-page="home">
+      <div class="settings-category-list">
+        <button class="settings-category-button" type="button" data-settings-page-target="timezone"><span class="settings-category-icon" aria-hidden="true">◷</span><span><strong>Timezone</strong><small>Localize charts, activity, news, and trade times.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
+        <button class="settings-category-button" type="button" data-settings-page-target="notifications"><span class="settings-category-icon" aria-hidden="true">⌁</span><span><strong>Notifications</strong><small>Choose which live alerts reach this device.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
+        <button class="settings-category-button" type="button" data-settings-page-target="risk"><span class="settings-category-icon" aria-hidden="true">◇</span><span><strong>Risk Management</strong><small>Set account-wide automatic trading guardrails.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
+        <button class="settings-category-button" type="button" data-settings-page-target="symbols"><span class="settings-category-icon" aria-hidden="true">⌕</span><span><strong>Symbols</strong><small>Control visible pairs and broker symbol mappings.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
       </div>
-      <p class="field-hint push-settings-status" id="push-settings-status" role="status">Checking this device…</p>
-      <div class="push-preference-list" id="push-preference-list">
-        <label class="push-preference-row"><span><strong>Terminal disconnections</strong><small>When an MT5 heartbeat is missing for more than 90 seconds.</small></span><input type="checkbox" name="terminal_disconnected" checked /></label>
-        <label class="push-preference-row"><span><strong>Opened positions</strong><small>One alert for each broker-confirmed MT5 ticket.</small></span><input type="checkbox" name="position_opened" checked /></label>
-        <label class="push-preference-row"><span><strong>Closed positions</strong><small>Includes the broker-reported realized P/L when available.</small></span><input type="checkbox" name="position_closed" checked /></label>
-        <label class="push-preference-row"><span><strong>Trend Strength extremes</strong><small>When a pair enters 100% bullish or 100% bearish.</small></span><input type="checkbox" name="trend_extreme" checked /></label>
-        <label class="push-preference-row"><span><strong>Floating P/L crosses +$1.00</strong><small>Once per continuous cluster of open trades; resets after all positions close.</small></span><input type="checkbox" name="floating_pl_target" checked /></label>
-      </div>
-    </section>
+    </div>
 
-    <section class="symbol-settings-section" aria-labelledby="symbol-settings-title">
-      <div class="symbol-settings-heading">
-        <div>
-          <h4 id="symbol-settings-title">Symbols</h4>
-          <p class="desc" id="symbol-mapping-status">Connect an account to see broker symbol mapping.</p>
-        </div>
-        <button type="button" class="btn-secondary btn-xs" id="button-rescan-symbols" data-testid="button-rescan-symbols" disabled>Scan terminal</button>
-      </div>
+    <div class="settings-page" data-settings-page="timezone" hidden>
+      <section class="symbol-settings-section" aria-labelledby="display-settings-title">
+        <div class="symbol-settings-heading"><div><h4 id="display-settings-title">Local display timezone</h4><p class="desc">Times, chart buckets, news, and activity are shown in this timezone across every device.</p></div></div>
+        <form id="form-timezone-settings" class="timezone-settings-form">
+          <label class="field" for="timezone-select"><span>Local timezone</span><select id="timezone-select" name="timezone" aria-label="Local timezone"></select></label>
+          <button class="btn-accent btn-xs" type="submit">Save timezone</button>
+          <p class="auth-message" id="timezone-settings-message" role="status"></p>
+        </form>
+      </section>
+    </div>
 
-      <form id="form-symbol-search" class="symbol-settings-search">
-        <input type="search" id="symbol-settings-search" data-testid="input-add-pair" placeholder="Search visible symbols or pair a new one" autocomplete="off" autocapitalize="characters" maxlength="20" />
-        <button type="submit" class="btn-primary btn-xs" id="button-pair-symbol" data-testid="button-submit-pair" hidden>Pair symbol</button>
-      </form>
-      <p class="field-hint symbol-settings-status" id="symbol-settings-status" role="status" hidden></p>
-      <div class="symbol-settings-list" id="symbol-settings-list"></div>
-      <div id="symbol-mapping-body"></div>
-    </section>
-    <section class="symbol-settings-section" aria-labelledby="portfolio-risk-title">
-      <div class="symbol-settings-heading"><div><h4 id="portfolio-risk-title">Portfolio risk guardrails</h4><p class="desc">These account-wide limits are checked immediately before an automatic strategy order is queued.</p></div></div>
-      <form id="form-portfolio-risk">
-        <label class="strategy-toggle"><input type="checkbox" name="enabled" checked /> Enforce portfolio limits</label>
-        <div class="field-row">
-          <div class="field"><label>Total open risk (%)</label><input name="max_total_open_risk_percent" type="number" min="0.1" max="25" step="0.1" value="3" /></div>
-          <div class="field"><label>Per-symbol risk (%)</label><input name="max_symbol_open_risk_percent" type="number" min="0.1" max="10" step="0.1" value="1.5" /></div>
-          <div class="field"><label>Positions per symbol</label><input name="max_positions_per_symbol" type="number" min="1" max="20" step="1" value="2" /></div>
-          <div class="field"><label>Daily realized loss (%)</label><input name="max_daily_realized_loss_percent" type="number" min="0.1" max="25" step="0.1" value="3" /></div>
+    <div class="settings-page" data-settings-page="notifications" hidden>
+      <section class="symbol-settings-section" aria-labelledby="push-settings-title">
+        <div class="symbol-settings-heading"><div><h4 id="push-settings-title">Device notifications</h4><p class="desc">Fast alerts from the backend, even when Lucre Hub is closed. On iPhone or iPad, first add Lucre Hub to your Home Screen.</p></div><button type="button" class="btn-accent btn-xs" id="button-push-notifications">Enable</button></div>
+        <p class="field-hint push-settings-status" id="push-settings-status" role="status">Checking this device…</p>
+        <div class="push-preference-list" id="push-preference-list">
+          <label class="push-preference-row"><span><strong>Terminal disconnections</strong><small>When an MT5 heartbeat is missing for more than 90 seconds.</small></span><input type="checkbox" name="terminal_disconnected" checked /></label>
+          <label class="push-preference-row"><span><strong>Opened positions</strong><small>One alert for each broker-confirmed MT5 ticket.</small></span><input type="checkbox" name="position_opened" checked /></label>
+          <label class="push-preference-row"><span><strong>Closed positions</strong><small>Includes the broker-reported realized P/L when available.</small></span><input type="checkbox" name="position_closed" checked /></label>
+          <label class="push-preference-row"><span><strong>Trend Strength extremes</strong><small>When a pair enters 100% bullish or 100% bearish.</small></span><input type="checkbox" name="trend_extreme" checked /></label>
+          <label class="push-preference-row"><span><strong>Floating P/L crosses +$1.00</strong><small>Once per continuous cluster of open trades; resets after all positions close.</small></span><input type="checkbox" name="floating_pl_target" checked /></label>
         </div>
-        <p class="auth-message" id="portfolio-risk-message" role="status"></p>
-        <button class="btn-accent btn-xs" type="submit">Save risk limits</button>
-      </form>
-    </section>
+      </section>
+    </div>
+
+    <div class="settings-page" data-settings-page="risk" hidden>
+      <section class="symbol-settings-section" aria-labelledby="portfolio-risk-title">
+        <div class="symbol-settings-heading"><div><h4 id="portfolio-risk-title">Portfolio risk guardrails</h4><p class="desc">These account-wide limits are checked immediately before an automatic strategy order is queued.</p></div></div>
+        <form id="form-portfolio-risk">
+          <label class="strategy-toggle"><input type="checkbox" name="enabled" checked /> Enforce portfolio limits</label>
+          <div class="field-row">
+            <div class="field"><label>Total open risk (%)</label><input name="max_total_open_risk_percent" type="number" min="0.1" max="25" step="0.1" value="3" /></div>
+            <div class="field"><label>Per-symbol risk (%)</label><input name="max_symbol_open_risk_percent" type="number" min="0.1" max="10" step="0.1" value="1.5" /></div>
+            <div class="field"><label>Positions per symbol</label><input name="max_positions_per_symbol" type="number" min="1" max="20" step="1" value="2" /></div>
+            <div class="field"><label>Daily realized loss (%)</label><input name="max_daily_realized_loss_percent" type="number" min="0.1" max="25" step="0.1" value="3" /></div>
+          </div>
+          <p class="auth-message" id="portfolio-risk-message" role="status"></p>
+          <button class="btn-accent btn-xs" type="submit">Save risk limits</button>
+        </form>
+      </section>
+    </div>
+
+    <div class="settings-page" data-settings-page="symbols" hidden>
+      <section class="symbol-settings-section" aria-labelledby="symbol-settings-title">
+        <div class="symbol-settings-heading"><div><h4 id="symbol-settings-title">Visible symbols</h4><p class="desc" id="symbol-mapping-status">Connect an account to see broker symbol mapping.</p></div><button type="button" class="btn-secondary btn-xs" id="button-rescan-symbols" data-testid="button-rescan-symbols" disabled>Scan terminal</button></div>
+        <form id="form-symbol-search" class="symbol-settings-search">
+          <input type="search" id="symbol-settings-search" data-testid="input-add-pair" placeholder="Search visible symbols or pair a new one" autocomplete="off" autocapitalize="characters" maxlength="20" />
+          <button type="submit" class="btn-primary btn-xs" id="button-pair-symbol" data-testid="button-submit-pair" hidden>Pair symbol</button>
+        </form>
+        <p class="field-hint symbol-settings-status" id="symbol-settings-status" role="status" hidden></p>
+        <div class="symbol-settings-list" id="symbol-settings-list"></div>
+        <div id="symbol-mapping-body"></div>
+      </section>
+    </div>
   </div>
 </div>
 
@@ -426,10 +436,6 @@
       </nav>
 
       <div class="nav-actions">
-        <button class="icon-btn nav-menu-toggle" id="nav-menu-toggle" aria-label="Open navigation menu" aria-expanded="false" aria-controls="nav-pills" data-testid="button-nav-menu-toggle">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" class="nav-menu-icon-open"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" class="nav-menu-icon-close" hidden><path d="M6 6l12 12M18 6L6 18"/></svg>
-        </button>
         <button class="icon-btn" id="button-settings" aria-label="Settings" data-testid="button-settings">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.64 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.64a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.36 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
         </button>
@@ -864,7 +870,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js"></script>
-<script type="module" src="./main.js?v=1.0.54"></script>
+<script src="./app.js?v=1.0.55"></script>
+<script type="module" src="./main.js?v=1.0.55"></script>
 </body>
 </html>

@@ -59,52 +59,6 @@
   });
   accountMenu?.addEventListener('click', (e) => e.stopPropagation());
 
-  // ---- Mobile nav menu toggle ----
-  const navMenuToggle = document.getElementById('nav-menu-toggle');
-  const navPills = document.getElementById('nav-pills');
-
-  function closeNavMenu() {
-    navMenuToggle?.setAttribute('aria-expanded', 'false');
-    navPills?.classList.remove('is-open');
-  }
-
-  function openNavMenu() {
-    navMenuToggle?.setAttribute('aria-expanded', 'true');
-    navPills?.classList.add('is-open');
-  }
-
-  navMenuToggle?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const isOpen = navMenuToggle.getAttribute('aria-expanded') === 'true';
-    if (isOpen) {
-      closeNavMenu();
-    } else {
-      openNavMenu();
-      navPills?.querySelector('.nav-pill')?.focus();
-    }
-  });
-
-  navPills?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (e.target.closest('.nav-pill')) {
-      closeNavMenu();
-      navMenuToggle?.focus();
-    }
-  });
-
-  document.addEventListener('click', () => closeNavMenu());
-
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && navMenuToggle?.getAttribute('aria-expanded') === 'true') {
-      closeNavMenu();
-      navMenuToggle.focus();
-    }
-  });
-
-  window.addEventListener('resize', () => {
-    if (window.innerWidth > 640) closeNavMenu();
-  });
-
   // ---- Auth tab switcher (Sign in / Create account) ----
   const authTabs = document.querySelectorAll('[data-auth-tab]');
   authTabs.forEach((tab) => {

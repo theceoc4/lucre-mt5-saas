@@ -162,6 +162,9 @@ const timezoneSelect = document.getElementById('timezone-select');
 const pushNotificationsButton = document.getElementById('button-push-notifications');
 const pushSettingsStatus = document.getElementById('push-settings-status');
 const pushPreferenceList = document.getElementById('push-preference-list');
+const settingsModalTitle = document.getElementById('settings-modal-title');
+const settingsModalSubtitle = document.getElementById('settings-modal-subtitle');
+const settingsBackButton = document.getElementById('button-settings-back');
 const VAPID_PUBLIC_KEY = 'BJx7Y2wwbHI0Heyu_qooP7C2LYbUPgSd3chuPO_Rnc1PNXQqsldZ5wnkhhDoNyDBdQpA7Gz_eHLwYlTti4tdcaQ';
 let pushRegistration = null;
 let pushSubscription = null;
@@ -358,6 +361,47 @@ function rerenderTimezoneSurfaces() {
   renderNotifications();
 }
 
+const SETTINGS_PAGES = {
+  timezone: {
+    title: 'Timezone',
+    subtitle: 'Choose how dates and times appear across Lucre Hub.',
+  },
+  notifications: {
+    title: 'Notifications',
+    subtitle: 'Manage push delivery and the alerts sent to this device.',
+  },
+  risk: {
+    title: 'Risk Management',
+    subtitle: 'Control account-wide limits for automatic strategy orders.',
+  },
+  symbols: {
+    title: 'Symbols',
+    subtitle: 'Choose visible instruments and manage broker-specific mappings.',
+  },
+};
+
+function showSettingsPage(page = 'home') {
+  const selected = SETTINGS_PAGES[page] ? page : 'home';
+  document.querySelectorAll('[data-settings-page]').forEach((panel) => {
+    panel.hidden = panel.dataset.settingsPage !== selected;
+  });
+  if (settingsBackButton) settingsBackButton.hidden = selected === 'home';
+  if (settingsModalTitle) settingsModalTitle.textContent = selected === 'home' ? 'Settings' : SETTINGS_PAGES[selected].title;
+  if (settingsModalSubtitle) settingsModalSubtitle.textContent = selected === 'home'
+    ? 'Choose a category to update your platform preferences.'
+    : SETTINGS_PAGES[selected].subtitle;
+  const settingsCard = document.querySelector('.settings-modal-card');
+  if (settingsCard) settingsCard.scrollTop = 0;
+  if (selected !== 'home') {
+    window.requestAnimationFrame(() => settingsBackButton?.focus());
+  }
+}
+
+document.querySelectorAll('[data-settings-page-target]').forEach((button) => {
+  button.addEventListener('click', () => showSettingsPage(button.dataset.settingsPageTarget));
+});
+settingsBackButton?.addEventListener('click', () => showSettingsPage('home'));
+
 document.getElementById('button-settings')?.addEventListener('click', () => {
   if (symbolSearchInput) symbolSearchInput.value = '';
   if (symbolSettingsStatus) {
@@ -369,6 +413,7 @@ document.getElementById('button-settings')?.addEventListener('click', () => {
   renderTimezoneSettings();
   loadPortfolioRiskSettings();
   loadPushNotificationSettings();
+  showSettingsPage('home');
   window.LucreUI?.openModal('modal-platform-settings');
 });
 
@@ -607,7 +652,7 @@ document.getElementById('button-confirm-account-action')?.addEventListener('clic
 function setActiveView(view) {
   const nextView = ['dashboard', 'strategies', 'pairs'].includes(view) ? view : 'dashboard';
   state.activeView = nextView;
-  const isPairs = view === 'pairs';
+  const isPairs = nextView === 'pairs';
   viewPairs.hidden = nextView !== 'pairs';
   viewStrategies.hidden = nextView !== 'strategies';
   viewDashboard.hidden = nextView !== 'dashboard';
@@ -615,6 +660,10 @@ function setActiveView(view) {
     const pillView = pill.dataset.view || 'dashboard';
     pill.classList.toggle('active', pillView === nextView);
   });
+  const activePill = document.querySelector(`.nav-pill[data-view="${nextView}"]`);
+  if (window.matchMedia('(max-width: 640px)').matches) {
+    activePill?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  }
   if (isPairs) {
     renderPairsView();
     renderSymbolMappingPanel();
@@ -2593,11 +2642,8 @@ function strategyPerformanceSummary(strategyId) {
 }
 
 function strategyBrief(strategy) {
-  const execution = strategy.run_mode === 'shadow'
-    ? 'Shadow'
-    : strategy.delivery_mode === 'auto' ? 'Auto' : 'Manual';
-  const pairs = (strategy.symbols || []).join(' · ') || 'No pairs';
-  return `${execution} · ${pairs} · ${strategy.timeframe || 'M5'} · ${strategy.risk_percent ?? '—'}% risk`;
+  if (strategy.run_mode === 'shadow') return 'Shadow';
+  return strategy.delivery_mode === 'auto' ? 'Auto' : 'Signal Only';
 }
 
 const GEAR_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.64 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.64a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.36 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15z"/></svg>';
@@ -2661,22 +2707,17 @@ function renderStrategies() {
   }
 
   strategyList.innerHTML = state.strategies
-    .map((s) => {
-      const health = strategyHealthSummary(s);
-      return `
+    .map((s) => `
       <div class="mini-table-row strategy-overview-row" data-strategy-id="${s.id}">
         <div class="mini-table-meta">
           <div class="strategy-name">${escapeHtml(s.name)}</div>
-          <div class="strategy-sub">${escapeHtml(strategyBrief(s))}${s.run_mode === 'shadow' ? ` · ${s.shadow_summary?.resolved || 0}/${s.min_shadow_signals || 20} shadow signals resolved` : ''}</div>
-          <div class="strategy-health strategy-health-${health.tone}"><span class="strategy-health-dot"></span>${health.label}${health.checked ? ` · checked ${strategyHealthAge(health.checked)}` : ''}</div>
+          <div class="strategy-sub">${escapeHtml(strategyBrief(s))}</div>
         </div>
-        <div class="mini-table-stats"></div>
         <label class="strategy-toggle strategy-toggle-icon-only" title="${s.enabled ? 'Disable' : 'Enable'} ${escapeHtml(s.name)}">
           <input type="checkbox" class="strategy-toggle-input" data-strategy-toggle="${s.id}" aria-label="${s.enabled ? 'Disable' : 'Enable'} ${escapeHtml(s.name)}" ${s.enabled ? 'checked' : ''} />
         </label>
         <button class="strategy-gear-button" type="button" data-edit-strategy="${s.id}" aria-label="Edit ${escapeHtml(s.name)}">${GEAR_ICON}</button>
-      </div>`;
-    })
+      </div>`)
     .join('');
 
   strategyList.querySelectorAll('[data-strategy-toggle]').forEach((input) => {
@@ -2734,17 +2775,14 @@ async function loadSignals() {
 }
 
 function renderSignalSummary() {
-  const total = state.signals.length;
-  const blocked = state.signals.filter((s) => s.policy_decision === 'block').length;
-  const executed = state.signalDeliveries.filter((d) => d.status === 'tapped' || d.status === 'auto_executed').length;
-  const expired = state.signalDeliveries.filter((d) => d.status === 'expired').length;
+  const summary = summarizeSignalsForRange(state.signals, state.signalDeliveries, state.signalChartRange);
 
-  textSignalTotal.textContent = total.toLocaleString();
-  countExecuted.textContent = executed.toLocaleString();
-  countBlocked.textContent = blocked.toLocaleString();
-  countExpired.textContent = expired.toLocaleString();
+  textSignalTotal.textContent = summary.total.toLocaleString();
+  countExecuted.textContent = summary.executed.toLocaleString();
+  countBlocked.textContent = summary.blocked.toLocaleString();
+  countExpired.textContent = summary.expired.toLocaleString();
 
-  chartEmptyOverlay.style.display = total === 0 ? 'flex' : 'none';
+  chartEmptyOverlay.style.display = summary.total === 0 ? 'flex' : 'none';
 }
 
 // ---------------------------------------------------------------------------
@@ -4814,19 +4852,48 @@ function buildSignalChartSeries(signals, executedSignalIds, range) {
   const blocked = new Array(buckets.length).fill(0);
   let signalCount = 0;
   signals.forEach((signal) => {
-    const parts = zonedDateParts(signal.generated_at);
-    if (!parts) return;
-    const index = range === 'today'
-      ? buckets.findIndex((bucket) => bucket.key === `${parts.year}-${parts.month}-${parts.day}-${parts.hour}`)
-      : range === 'year'
-        ? buckets.findIndex((bucket) => dateOrdinal(parts) >= bucket.startOrdinal && dateOrdinal(parts) < bucket.endOrdinal)
-        : buckets.findIndex((bucket) => bucket.key === `${parts.year}-${parts.month}-${parts.day}`);
+    const index = signalChartBucketIndex(signal, buckets, range);
     if (index < 0) return;
     signalCount += 1;
     if (signal.policy_decision === 'block') blocked[index] += 1;
     else if (executedSignalIds.has(signal.id)) executed[index] += 1;
   });
   return { labels: buckets.map((bucket) => bucket.label), sessions: buckets.map((bucket) => bucket.session || null), executed, blocked, signalCount };
+}
+
+function signalChartBucketIndex(signal, buckets, range) {
+  const parts = zonedDateParts(signal.generated_at);
+  if (!parts) return -1;
+  if (range === 'today') {
+    return buckets.findIndex((bucket) => bucket.key === `${parts.year}-${parts.month}-${parts.day}-${parts.hour}`);
+  }
+  if (range === 'year') {
+    const ordinal = dateOrdinal(parts);
+    return buckets.findIndex((bucket) => ordinal >= bucket.startOrdinal && ordinal < bucket.endOrdinal);
+  }
+  return buckets.findIndex((bucket) => bucket.key === `${parts.year}-${parts.month}-${parts.day}`);
+}
+
+function signalsInChartRange(signals, range) {
+  const buckets = buildSignalChartBuckets(range);
+  return signals.filter((signal) => signalChartBucketIndex(signal, buckets, range) >= 0);
+}
+
+function summarizeSignalsForRange(signals, deliveries, range) {
+  const filteredSignals = signalsInChartRange(signals, range);
+  const signalIds = new Set(filteredSignals.map((signal) => signal.id));
+  const executedIds = new Set(deliveries
+    .filter((delivery) => signalIds.has(delivery.signal_id) && ['tapped', 'auto_executed'].includes(delivery.status))
+    .map((delivery) => delivery.signal_id));
+  const expiredIds = new Set(deliveries
+    .filter((delivery) => signalIds.has(delivery.signal_id) && delivery.status === 'expired')
+    .map((delivery) => delivery.signal_id));
+  return {
+    total: filteredSignals.length,
+    executed: executedIds.size,
+    blocked: filteredSignals.filter((signal) => signal.policy_decision === 'block').length,
+    expired: expiredIds.size,
+  };
 }
 
 function sessionBandsPlugin(sessions, enabled) {
@@ -5004,6 +5071,7 @@ function renderStrategyPage() {
   }
   const strategy = selectedStrategy();
   const scoped = strategyScopedData(strategy.id);
+  const signalSummary = summarizeSignalsForRange(scoped.signals, scoped.deliveries, state.strategyChartRange);
   strategyPageSelect.disabled = false;
   strategyPageEdit.disabled = false;
   strategyPageSelect.innerHTML = state.strategies.map((item) =>
@@ -5013,10 +5081,10 @@ function renderStrategyPage() {
   content.hidden = false;
 
   document.getElementById('strategy-page-signal-description').textContent = `${strategy.name} · ${strategy.timeframe || 'M5'} · ${(strategy.symbols || []).length} pair${(strategy.symbols || []).length === 1 ? '' : 's'}`;
-  document.getElementById('strategy-page-signal-total').textContent = scoped.signals.length.toLocaleString();
-  document.getElementById('strategy-page-executed').textContent = scoped.executed.toLocaleString();
-  document.getElementById('strategy-page-blocked').textContent = scoped.blocked.toLocaleString();
-  document.getElementById('strategy-page-expired').textContent = scoped.expired.toLocaleString();
+  document.getElementById('strategy-page-signal-total').textContent = signalSummary.total.toLocaleString();
+  document.getElementById('strategy-page-executed').textContent = signalSummary.executed.toLocaleString();
+  document.getElementById('strategy-page-blocked').textContent = signalSummary.blocked.toLocaleString();
+  document.getElementById('strategy-page-expired').textContent = signalSummary.expired.toLocaleString();
   if (strategyChartRange) strategyChartRange.value = state.strategyChartRange;
   if (strategySessionBands) strategySessionBands.checked = state.strategySessionBands;
 
@@ -5112,6 +5180,7 @@ signalChartRange?.addEventListener('change', (event) => {
     state.signalSessionBands = false;
     if (signalSessionBands) signalSessionBands.checked = false;
   }
+  renderSignalSummary();
   renderVolumeChart();
 });
 strategyChartRange?.addEventListener('change', (event) => {
@@ -5120,8 +5189,7 @@ strategyChartRange?.addEventListener('change', (event) => {
     state.strategySessionBands = false;
     if (strategySessionBands) strategySessionBands.checked = false;
   }
-  const strategy = selectedStrategy();
-  if (strategy) renderStrategyVolumeChart(strategyScopedData(strategy.id));
+  renderStrategyPage();
 });
 signalSessionBands?.addEventListener('change', (event) => {
   state.signalSessionBands = event.target.checked;
@@ -5129,6 +5197,7 @@ signalSessionBands?.addEventListener('change', (event) => {
     state.signalChartRange = 'today';
     if (signalChartRange) signalChartRange.value = 'today';
   }
+  renderSignalSummary();
   renderVolumeChart();
 });
 strategySessionBands?.addEventListener('change', (event) => {
@@ -5137,8 +5206,7 @@ strategySessionBands?.addEventListener('change', (event) => {
     state.strategyChartRange = 'today';
     if (strategyChartRange) strategyChartRange.value = 'today';
   }
-  const strategy = selectedStrategy();
-  if (strategy) renderStrategyVolumeChart(strategyScopedData(strategy.id));
+  renderStrategyPage();
 });
 strategyPageEdit?.addEventListener('click', () => {
   if (state.selectedStrategyId) openEditStrategyModal(state.selectedStrategyId);

@@ -1,5 +1,16 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.55 — Mobile dock and focused settings (2026-09-03)
+
+- Replaces the mobile hamburger menu with a persistent, horizontally
+  scrollable bottom navigation dock aligned beside the theme control.
+- Splits Settings into Timezone, Notifications, Risk Management, and Symbols
+  subpages with a consistent back-navigation pattern.
+- Simplifies the Dashboard Strategies card to strategy name, delivery mode,
+  enable toggle, and edit control while preserving its fixed scrollable height.
+- Keeps both All Signals summaries synchronized with the active Signal
+  Activity range and the account's selected timezone.
+
 ## v1.0.54 — Broker-authoritative floating P/L (2026-09-03)
 
 - Uses the private MT5 `ACCOUNT_PROFIT` snapshot for the Lock In total instead
