@@ -1,6 +1,7 @@
 // Returns connection details for a terminal's high-entropy Realtime topic.
-// The topic carries command wake-up hints and ephemeral mark-to-market state;
-// actual commands and durable position state remain protected by ea-sync.
+// The public topic carries empty command wake-up hints and private-stream lease
+// requests only. Mark-to-market state is relayed separately to an owner-only
+// private topic; commands and durable position state remain protected by ea-sync.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { authenticateTerminal } from "./_shared/auth.ts";

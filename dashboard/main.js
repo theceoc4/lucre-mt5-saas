@@ -62,6 +62,9 @@ const POSITION_POLL_FALLBACK_MS = 8000;
 const POSITION_POLL_HEALTHY_MS = 60000;
 let realtimeIsHealthy = false;
 let realtimeChannel = null;
+let positionRealtimeChannel = null;
+let realtimeCommandSubscribed = false;
+let realtimePositionSubscribed = false;
 let realtimeReconnectTimer = null;
 let positionStreamRequestIntervalId = null;
 let streamedPositionFields = new Map();
@@ -1624,7 +1627,10 @@ function stopPositionStreamRequests() {
 function requestPositionStream() {
   if (!realtimeChannel) return;
   realtimeChannel
-    .send({ type: 'broadcast', event: 'position_stream_subscribe', payload: {} })
+    // This event name deliberately does not contain the legacy public-stream
+    // lease name. Pre-v1.0.46 EAs ignore it and therefore cannot accidentally
+    // publish private position values on the public command-wake topic.
+    .send({ type: 'broadcast', event: 'private_position_lease', payload: {} })
     .catch((error) => console.warn('[realtime] position stream lease failed', error));
 }
 
@@ -1632,6 +1638,21 @@ function startPositionStreamRequests() {
   stopPositionStreamRequests();
   requestPositionStream();
   positionStreamRequestIntervalId = setInterval(requestPositionStream, 15000);
+}
+
+function maybeStartPositionStreamRequests() {
+  if (realtimeCommandSubscribed && realtimePositionSubscribed) {
+    startPositionStreamRequests();
+  }
+}
+
+function scheduleRealtimeReconnect(terminalId) {
+  stopPositionStreamRequests();
+  if (realtimeReconnectTimer) return;
+  realtimeReconnectTimer = setTimeout(() => {
+    realtimeReconnectTimer = null;
+    if (state.activeTerminalId === terminalId) startRealtime(terminalId);
+  }, 3000);
 }
 
 // v1.0.12 -- lightweight balance/equity/margin_level refresh, run on the
@@ -1671,13 +1692,37 @@ function startRealtime(terminalId) {
   const channelName = terminal?.realtime_topic_id
     ? `terminal:${terminal.realtime_topic_id}`
     : `terminal-${terminalId}`;
+  const positionChannelName = terminal?.realtime_topic_id
+    ? `terminal:${terminal.realtime_topic_id}:positions`
+    : null;
+
+  // Mark-to-market values use a separate authenticated Realtime topic. RLS on
+  // realtime.messages verifies that the signed-in user owns this terminal.
+  // Durable position rows and all modify/close controls remain unchanged.
+  if (positionChannelName) {
+    positionRealtimeChannel = supabase
+      .channel(positionChannelName, {
+        config: { private: true, broadcast: { ack: false, self: false } },
+      })
+      .on(
+        'broadcast',
+        { event: 'position_state' },
+        (payload) => applyStreamedPositionState(terminalId, payload)
+      )
+      .subscribe((status) => {
+        console.log('[position-realtime]', status, 'terminal', terminalId);
+        if (status === 'SUBSCRIBED') {
+          realtimePositionSubscribed = true;
+          maybeStartPositionStreamRequests();
+        }
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          realtimePositionSubscribed = false;
+          scheduleRealtimeReconnect(terminalId);
+        }
+      });
+  }
   realtimeChannel = supabase
     .channel(channelName)
-    .on(
-      'broadcast',
-      { event: 'position_state' },
-      (payload) => applyStreamedPositionState(terminalId, payload)
-    )
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'positions', filter: `terminal_id=eq.${terminalId}` },
@@ -1794,17 +1839,14 @@ function startRealtime(terminalId) {
     .subscribe((status) => {
       console.log('[realtime]', status, 'terminal', terminalId);
       if (status === 'SUBSCRIBED') {
+        realtimeCommandSubscribed = true;
         setRealtimeHealth(true);
-        startPositionStreamRequests();
+        maybeStartPositionStreamRequests();
       }
       if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-        stopPositionStreamRequests();
+        realtimeCommandSubscribed = false;
         setRealtimeHealth(false);
-        if (realtimeReconnectTimer) return;
-        realtimeReconnectTimer = setTimeout(() => {
-          realtimeReconnectTimer = null;
-          if (state.activeTerminalId === terminalId) startRealtime(terminalId);
-        }, 3000);
+        scheduleRealtimeReconnect(terminalId);
       }
     });
 }
@@ -2083,6 +2125,8 @@ document.addEventListener('keydown', (event) => {
 
 function stopRealtime() {
   stopPositionStreamRequests();
+  realtimeCommandSubscribed = false;
+  realtimePositionSubscribed = false;
   if (realtimeReconnectTimer) {
     clearTimeout(realtimeReconnectTimer);
     realtimeReconnectTimer = null;
@@ -2090,6 +2134,10 @@ function stopRealtime() {
   if (realtimeChannel) {
     supabase.removeChannel(realtimeChannel);
     realtimeChannel = null;
+  }
+  if (positionRealtimeChannel) {
+    supabase.removeChannel(positionRealtimeChannel);
+    positionRealtimeChannel = null;
   }
 }
 

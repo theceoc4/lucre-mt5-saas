@@ -6,6 +6,8 @@
   position broadcast confirms they are absent, while durable ledger
   reconciliation continues in the background.
 - Removes the artificial 700ms delay after submitting a position modification.
+- Receives ephemeral position values on a private terminal-owner Realtime
+  topic instead of the public command wake-up topic.
 
 All notable changes to the dashboard frontend are documented here. Follows the
 same `vMAJOR.MINOR.PATCH` convention as the backend

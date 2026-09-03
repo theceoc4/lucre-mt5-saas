@@ -442,6 +442,9 @@ verify_jwt = false
 [functions.terminal-realtime-config]
 verify_jwt = false
 
+[functions.report-position-state]
+verify_jwt = false
+
 [functions.request-symbol-rescan]
 verify_jwt = true
 

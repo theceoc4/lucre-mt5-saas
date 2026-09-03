@@ -1,5 +1,16 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.46 — Private live position transport (2026-09-03)
+
+- Moves ephemeral mark-to-market position snapshots off the public command
+  wake-up topic and through an EA-key-authenticated server relay.
+- Delivers the snapshot on a private Realtime topic protected by terminal-owner
+  RLS; another authenticated user cannot subscribe to it.
+- Uses a new lease event that older EAs ignore, preventing a pre-v1.0.46 EA
+  from publishing position values on the legacy public lane.
+- Keeps durable position reconciliation and every open/modify/close command
+  path unchanged, with the normal polling fallback if the private stream drops.
+
 ## v1.0.45 — Low-latency trading control plane (2026-09-03)
 
 - Adds a compact command-only exchange so opening, modifying, and closing no

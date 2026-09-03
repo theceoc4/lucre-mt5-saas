@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.45 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.46 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
@@ -41,7 +41,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.45"
+#property version   "1.46"
 #property strict
 
 
@@ -1935,8 +1935,9 @@ void CalendarSync_Run()
 //|  trip instead of waiting for the next fallback reconciliation.     |
 //|                                                                    |
 //|  Correctness never depends on this channel. It carries command     |
-//|  wake-up hints plus ephemeral mark-to-market position fields; the  |
-//|  durable reconciliation loop remains authoritative for position    |
+//|  wake-up hints and private-stream leases. Mark-to-market fields     |
+//|  use an authenticated private relay. Durable reconciliation remains |
+//|  authoritative for position                                         |
 //|  identity, status, commands, account history and heartbeats.        |
 //|  EASync.mqh's ordinary reconciliation loop remains active          |
 //|  regardless of WebSocket state — it is                             |
@@ -1992,7 +1993,7 @@ void CalendarSync_Run()
 //|      first-party endpoint reached over TLS.                              |
 //|    - Frames with the 127-length marker (payloads >= 64KB, RFC6455        |
 //|      len7==127) are defensively dropped — this channel only ever         |
-//|      carries compact wake/state/heartbeat frames, which never approach  |
+//|      carries compact wake/lease/heartbeat frames, which never approach  |
 //|      that size.                                                           |
 //|    - Reconnect logic runs from OnTimer(), so there can be a brief         |
 //|      (sub-second) blocking window during SocketConnect/TlsHandshake       |
@@ -2142,31 +2143,45 @@ string EAStream_BuildPositionState()
 }
 
 //+------------------------------------------------------------------+
-//| Broadcast at most once per configured interval and only when the  |
-//| aggregate position state changed. One message covers every open   |
-//| position, so usage does not multiply with position count.         |
+//| Report at most once per configured interval and only when the      |
+//| aggregate position state changed. The API-key-authenticated Edge   |
+//| Function relays it onto an owner-only private Realtime topic.       |
+//| One message covers every open position, so usage does not multiply |
+//| with position count.                                                |
 //+------------------------------------------------------------------+
 void EAStream_BroadcastPositionState(const bool force)
 {
    if(!g_ews_joined) return;
-   datetime now = TimeCurrent();
-   if(!force && now > g_ews_position_stream_requested_until) return;
+   datetime now = TimeLocal();
+   // Never send state without an active dashboard lease. This applies even
+   // to command-wake refreshes, avoiding unnecessary network requests when
+   // nobody is viewing the terminal.
+   if(now > g_ews_position_stream_requested_until) return;
    if(!force && now - g_ews_last_position_stream_check < g_ews_position_stream_seconds) return;
    g_ews_last_position_stream_check = now;
 
    string state_json = EAStream_BuildPositionState();
    if(!force && state_json == g_ews_last_position_state) return;
 
-   string ref = IntegerToString(g_ews_ref++);
-   string topic = "realtime:" + g_ews_topic;
-   string message =
-      "{\"topic\":\"" + EASync_JsonEscape(topic) + "\","
-      "\"event\":\"broadcast\",\"payload\":{"
-      "\"type\":\"broadcast\",\"event\":\"position_state\","
-      "\"payload\":" + state_json + "},"
-      "\"ref\":\"" + ref + "\",\"join_ref\":\"" + g_ews_join_ref + "\"}";
-   EAStream_SendText(message);
-   g_ews_last_position_state = state_json;
+   string url = g_ews_base_url + "/functions/v1/report-position-state";
+   string headers = "Content-Type: application/json\r\nx-api-key: " + g_ews_api_key + "\r\n";
+   uchar data[];
+   int data_len = StringToCharArray(state_json, data, 0, StringLen(state_json), CP_UTF8);
+   ArrayResize(data, data_len);
+   uchar result[];
+   string result_headers;
+   ResetLastError();
+   int status = WebRequest("POST", url, headers, 2500, data, result, result_headers);
+   if(status == 200)
+   {
+      g_ews_last_position_state = state_json;
+      return;
+   }
+
+   string detail = (status == -1)
+      ? IntegerToString(GetLastError())
+      : CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+   PrintFormat("EAStream: private position relay failed, HTTP %d: %s", status, detail);
 }
 
 void EAStream_MaybeBroadcastPositionState()
@@ -2399,7 +2414,7 @@ void EAStream_HandleFrame(int opcode, const uchar &payload[], int payload_len)
    {
       string text = CharArrayToString(payload, 0, payload_len, CP_UTF8);
       if(StringFind(text, "\"event\":\"broadcast\"") >= 0 &&
-         StringFind(text, "position_stream_subscribe") >= 0)
+         StringFind(text, "private_position_lease") >= 0)
       {
          // Dashboard leases are renewed every 15s. If every viewer leaves,
          // broadcasts stop automatically after this short grace period.
@@ -4294,10 +4309,10 @@ input string SupabaseProjectUrl   = "https://qxlfnscmrhwfcpattqxa.supabase.co"; 
 input string TerminalApiKey       = "";  // Paste your terminal's mtk_live_... key here
 input int    SyncFallbackPollSeconds = 5;  // reconciliation cadence while Realtime is unavailable
 input int    SyncHealthyPollSeconds  = 30; // durable account/position snapshot cadence while Realtime is joined
-input int    PositionStreamSeconds   = 2;  // ephemeral mark-to-market broadcast cadence; sends only changed state
+input int    PositionStreamSeconds   = 2;  // private ephemeral mark-to-market relay cadence; sends only changed state
 input int    CalendarSyncMinutes  = 15;  // Economic calendar push interval
 input bool   EnableCalendarSync   = true; // Turn off only if this terminal should not push calendar data
-input bool   EnableWebSocketPush  = true; // Persistent WebSocket for command wake-ups and ephemeral live position state; durable polling remains the fallback
+input bool   EnableWebSocketPush  = true; // Persistent WebSocket for command wake-ups and private-stream leases; durable polling remains the fallback
 input int    PriceScanSeconds     = 1;   // compatibility input; v1.43 deadline checks are fixed at 1s and send only new bars
 input int    SymbolMapRefreshHours = 24;  // Full broker-symbol rescan interval (also runs once on startup and on-demand from the dashboard)
 

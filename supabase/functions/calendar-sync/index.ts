@@ -179,7 +179,7 @@ Deno.serve(async (req: Request) => {
     feed_name: "economic_calendar", last_received_at: new Date().toISOString(),
     last_event_time: validTimes.length ? new Date(Math.max(...validTimes.map((value) => value.getTime()))).toISOString() : null,
     last_actual_release_at: actualTimes.length ? new Date(Math.max(...actualTimes.map((value) => value.getTime()))).toISOString() : null,
-    last_source_terminal_id: terminal.id, rows_received: preparedEvents.length, updated_at: new Date().toISOString(),
+    rows_received: preparedEvents.length, updated_at: new Date().toISOString(),
   }, { onConflict: "feed_name" });
 
   return jsonResponse(result);

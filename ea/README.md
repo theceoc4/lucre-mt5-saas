@@ -1,6 +1,13 @@
-# LucreHubEA — v1.0.45 (single-file build)
+# LucreHubEA — v1.0.46 (single-file build)
 
 ## What changed in this build
+
+Version 1.0.46 keeps the fast public Realtime lane limited to empty command
+wake-up hints and dashboard lease requests. Live position values now travel
+through an API-key-authenticated relay onto a private Realtime topic whose RLS
+policy only admits the terminal owner. The snapshot remains ephemeral (no
+`positions` table write every two seconds), and the existing durable sync and
+all modify/close controls are unchanged.
 
 Version 1.0.45 separates latency-sensitive trade commands from the heavier
 account, history, candle-manifest, and symbol reconciliation path. Realtime
