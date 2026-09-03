@@ -550,15 +550,20 @@ a {
 
 @media (max-width: 640px) {
   .balance-widget {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
   }
   .balance-metric + .balance-metric {
+    border-left: 0;
+    border-top: 1px solid var(--color-border-primary);
     padding-left: var(--space-4);
   }
   .balance-metric { padding: var(--space-4); }
-  .balance-metric:nth-child(3), .floating-pl-button { border-top: 1px solid var(--color-border-primary); }
-  .balance-metric:nth-child(3) { border-left: 0; }
-  .floating-pl-button { padding: var(--space-3); }
+  .floating-pl-button {
+    min-height: 88px;
+    padding: var(--space-3);
+    border-left: 0;
+    border-top: 1px solid var(--color-border-primary);
+  }
   .position-card-head-actions { gap: var(--space-1); }
 }
 

@@ -18,6 +18,8 @@ independently but share the same numbering scheme for easy cross-reference.
 - Queues one `close_all` EA command instead of sending a separate request for
   every position. The updated EA executes that one command across all active
   positions in the connected MT5 account.
+- Stacks Balance, Equity, Margin Level, and Lock In vertically on mobile while
+  retaining the four-column desktop layout.
 
 ## v1.0.48 — Account timezone and session chart bands (2026-09-02)
 
