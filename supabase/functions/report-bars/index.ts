@@ -15,16 +15,12 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { authenticateTerminal } from "./_shared/auth.ts";
 import {
-  advanceTrendIndicatorState,
-  computeCompositeTrend,
-  initializeTrendIndicatorState,
-  TREND_BAR_LIMIT,
+  computeTrendStrengthV3,
+  TREND_ANCHOR_TIMEFRAME,
+  TREND_CONTEXT_TIMEFRAME,
   TREND_MODEL_VERSION,
-  TREND_TIMEFRAME_WEIGHTS,
-  type TrendIndicatorState,
-  type TimeframeTrend,
-  type TrendBar,
-} from "./_shared/trend-strength.ts";
+  type TrendV3Bar,
+} from "../_shared/trend-strength-v3.ts";
 
 declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
 
@@ -83,94 +79,39 @@ async function updateTrendStates(
   // deno-lint-ignore no-explicit-any
   admin: any,
   terminalId: string,
-  rows: Array<{ symbol: string; timeframe: string; bar_time: string; open: number; high: number; low: number; close: number; volume: number }>,
+  rows: Array<{ symbol: string; timeframe: string; bar_time: string; open: number; high: number; low: number; close: number; volume: number; real_volume?: number | null }>,
 ): Promise<{ updated: number; warnings: string[] }> {
-  const uniqueSeries = [...new Map(rows
-    .filter((row) => row.timeframe in TREND_TIMEFRAME_WEIGHTS)
-    .map((row) => [`${row.symbol}:${row.timeframe}`, row])).values()];
-  if (uniqueSeries.length === 0) return { updated: 0, warnings: [] };
-
-  const symbols = [...new Set(uniqueSeries.map((series) => series.symbol))];
-  const { data: calculationRows, error: calculationError } = await admin
-    .from("symbol_trend_calculation_state")
-    .select("symbol,timeframe,indicator_state,timeframe_result,model_version")
-    .eq("terminal_id", terminalId)
-    .in("symbol", symbols);
-  if (calculationError) {
-    return { updated: 0, warnings: [`Trend calculation-state lookup failed: ${calculationError.message}`] };
-  }
-
-  const calculations = new Map<string, { indicator?: TrendIndicatorState; result?: TimeframeTrend; version?: string }>();
-  const nextBySymbol = new Map<string, Record<string, TimeframeTrend>>();
-  for (const row of calculationRows ?? []) {
-    const symbol = String(row.symbol);
-    const timeframe = String(row.timeframe);
-    calculations.set(`${symbol}:${timeframe}`, {
-      indicator: row.indicator_state as TrendIndicatorState,
-      result: row.timeframe_result as TimeframeTrend,
-      version: String(row.model_version),
-    });
-    if (row.timeframe_result) {
-      if (!nextBySymbol.has(symbol)) nextBySymbol.set(symbol, {});
-      nextBySymbol.get(symbol)![timeframe] = row.timeframe_result as TimeframeTrend;
-    }
-  }
-
+  // The meter is intentionally recalculated only when its M30 anchor or H1
+  // context receives a newly closed candle. Faster charts no longer make the
+  // day-trading score twitch, and slower charts no longer dilute it.
+  const symbols = [...new Set(rows
+    .filter((row) => row.timeframe === TREND_ANCHOR_TIMEFRAME || row.timeframe === TREND_CONTEXT_TIMEFRAME)
+    .map((row) => row.symbol))];
+  if (symbols.length === 0) return { updated: 0, warnings: [] };
   const warnings: string[] = [];
-  const calculationUpserts: Record<string, unknown>[] = [];
-  for (const { symbol, timeframe } of uniqueSeries) {
-    const key = `${symbol}:${timeframe}`;
-    const prior = calculations.get(key);
-    const incomingBars: TrendBar[] = rows.filter((row) => row.symbol === symbol && row.timeframe === timeframe)
-      .map((row) => ({
-        bar_time: row.bar_time, open: row.open, high: row.high, low: row.low,
-        close: row.close, volume: row.volume,
-      }));
-    let computed = prior?.version === TREND_MODEL_VERSION && prior.indicator
-      ? advanceTrendIndicatorState(timeframe, prior.indicator, incomingBars, prior.result?.regime)
-      : null;
-
-    // A series is warmed once (or after a model version change), then every
-    // later update advances solely from the candle(s) in the EA request.
-    if (!computed) {
-      const { data, error } = await admin.from("price_bars")
-        .select("bar_time,open,high,low,close,volume")
-        .eq("terminal_id", terminalId).eq("symbol", symbol).eq("timeframe", timeframe)
-        .order("bar_time", { ascending: false }).limit(TREND_BAR_LIMIT);
-      if (error) {
-        warnings.push(`${symbol} ${timeframe} trend warmup failed: ${error.message}`);
-        continue;
-      }
-      const history: TrendBar[] = [...(data ?? [])].reverse().map((bar) => ({
-        bar_time: String(bar.bar_time), open: Number(bar.open), high: Number(bar.high),
-        low: Number(bar.low), close: Number(bar.close), volume: Number(bar.volume),
-      }));
-      computed = initializeTrendIndicatorState(timeframe, history, prior?.result?.regime);
-    }
-    if (!computed) continue; // fewer than 60 closed candles: still warming up
-    if (!nextBySymbol.has(symbol)) nextBySymbol.set(symbol, {});
-    nextBySymbol.get(symbol)![timeframe] = computed.result;
-    calculationUpserts.push({
-      terminal_id: terminalId, symbol, timeframe,
-      indicator_state: computed.indicatorState,
-      timeframe_result: computed.result,
-      source_bar_time: computed.result.source_bar_time,
-      model_version: TREND_MODEL_VERSION,
-      updated_at: new Date().toISOString(),
+  const now = new Date().toISOString();
+  const payload: Record<string, unknown>[] = [];
+  const [{ data: windowRows, error: windowError }, { data: priorRows, error: priorError }] = await Promise.all([
+    admin.rpc("get_trend_strength_bars", { p_terminal_id: terminalId, p_symbols: symbols }),
+    admin.from("symbol_trend_state").select("symbol,regime").eq("terminal_id", terminalId).in("symbol", symbols),
+  ]);
+  if (windowError) return { updated: 0, warnings: [`Trend history window failed: ${windowError.message}`] };
+  if (priorError) warnings.push(`Prior trend regime lookup failed: ${priorError.message}`);
+  const barsBySeries = new Map<string, TrendV3Bar[]>();
+  for (const bar of windowRows ?? []) {
+    const key = `${bar.symbol}:${bar.timeframe}`;
+    if (!barsBySeries.has(key)) barsBySeries.set(key, []);
+    barsBySeries.get(key)!.push({
+      bar_time: String(bar.bar_time), open: Number(bar.open), high: Number(bar.high), low: Number(bar.low),
+      close: Number(bar.close), volume: Number(bar.volume), real_volume: bar.real_volume == null ? null : Number(bar.real_volume),
     });
   }
-
-  if (calculationUpserts.length > 0) {
-    const { error } = await admin.from("symbol_trend_calculation_state")
-      .upsert(calculationUpserts, { onConflict: "terminal_id,symbol,timeframe" });
-    if (error) warnings.push(`Trend calculation-state upsert failed: ${error.message}`);
-  }
-
-  const now = new Date().toISOString();
-  const payload = symbols.map((symbol) => {
-    const timeframeScores = nextBySymbol.get(symbol) ?? {};
-    const composite = computeCompositeTrend(timeframeScores);
-    return {
+  const priorRegimeBySymbol = new Map((priorRows ?? []).map((row) => [String(row.symbol), String(row.regime)]));
+  for (const symbol of symbols) {
+    const anchorBars = barsBySeries.get(`${symbol}:${TREND_ANCHOR_TIMEFRAME}`) ?? [];
+    const contextBars = barsBySeries.get(`${symbol}:${TREND_CONTEXT_TIMEFRAME}`) ?? [];
+    const composite = computeTrendStrengthV3(anchorBars, contextBars, priorRegimeBySymbol.get(symbol));
+    payload.push({
       terminal_id: terminalId,
       symbol,
       score: composite.score,
@@ -178,14 +119,14 @@ async function updateTrendStates(
       strength: composite.strength,
       confidence: composite.confidence,
       regime: composite.regime,
-      timeframe_scores: timeframeScores,
+      timeframe_scores: composite.timeframe_scores,
       components: composite.components,
       source_bar_times: composite.source_bar_times,
       source_bar_time: composite.source_bar_time,
       model_version: TREND_MODEL_VERSION,
       computed_at: now,
-    };
-  });
+    });
+  }
   const { error: upsertError } = await admin
     .from("symbol_trend_state")
     .upsert(payload, { onConflict: "terminal_id,symbol" });

@@ -5,6 +5,7 @@
 // one open simulation at a time, and a chronological 70/30 validation split.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { computeTrendStrengthV3, TREND_MIN_BARS } from "../_shared/trend-strength-v3.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -12,7 +13,7 @@ const cors = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
-type Bar = { bar_time: string; open: number; high: number; low: number; close: number; volume: number; spread: number | null };
+type Bar = { bar_time: string; open: number; high: number; low: number; close: number; volume: number; real_volume?: number | null; spread: number | null };
 type Side = "buy" | "sell";
 type Session = "asia" | "london" | "overlap" | "ny";
 const n = (value: unknown, fallback: number) => { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : fallback; };
@@ -46,24 +47,26 @@ function adx(bars: Bar[], period = 14): number[] {
 }
 function corr(values: number[]) { const xm = (values.length - 1) / 2, ym = values.reduce((a, b) => a + b, 0) / values.length; let c = 0, xv = 0, yv = 0; values.forEach((v, i) => { c += (i - xm) * (v - ym); xv += (i - xm) ** 2; yv += (v - ym) ** 2; }); return xv * yv ? c / Math.sqrt(xv * yv) : 0; }
 
-function metrics(bars: Bar[], index: number) {
+function contextThrough(contextBars: Bar[], barTime: string) {
+  return contextBars.filter((bar) => bar.bar_time <= barTime);
+}
+function metrics(bars: Bar[], index: number, contextBars: Bar[] = []) {
   const slice = bars.slice(0, index + 1), closes = slice.map((bar) => bar.close), av = atr(slice), a = av[index];
   const e20 = ema(closes, 20)[index], e50 = ema(closes, 50)[index], rv = rsi(closes)[index], ax = adx(slice)[index];
   const prior = slice.slice(-21, -1), high = prior.length ? Math.max(...prior.map((bar) => bar.high)) : closes[index], low = prior.length ? Math.min(...prior.map((bar) => bar.low)) : closes[index];
   const atrBase = median(av.filter(Number.isFinite).slice(-50)); const volumeBase = median(slice.slice(-31, -1).map((bar) => bar.volume));
   const spreadBase = median(slice.slice(-31, -1).map((bar) => Number(bar.spread)).filter((v) => v > 0)); const linearity = Math.abs(corr(closes.slice(-30)));
-  const direction = Math.max(-1, Math.min(1, (e20 - e50) / a)); const confidence = Math.max(0, Math.min(1, (ax - 15) / 25)) * (0.5 + 0.5 * linearity);
   return { rsi14: rv, adx14: ax, ema_spread_atr: (e20 - e50) / a, close_ema20_atr: (closes[index] - e20) / a,
     breakout20_atr: closes[index] > high ? (closes[index] - high) / a : closes[index] < low ? (closes[index] - low) / a : 0,
     atr_ratio: a / atrBase, volume_ratio: slice[index].volume / volumeBase,
     spread_ratio: spreadBase > 0 && Number(slice[index].spread) > 0 ? Number(slice[index].spread) / spreadBase : 1,
-    trend_score: 100 * (0.75 * direction + 0.25 * Math.max(-1, Math.min(1, (rv - 50) / 20))) * confidence,
+    trend_score: computeTrendStrengthV3(slice, contextThrough(contextBars, bars[index].bar_time)).score,
     linearity, atr: a, ema20: e20, ema50: e50 };
 }
 function compare(actual: number, op: string, expected: number) { return op === 'gt' ? actual > expected : op === 'gte' ? actual >= expected : op === 'lt' ? actual < expected : op === 'lte' ? actual <= expected : Math.abs(actual - expected) < 1e-6; }
 
 function indicatorParam(params:any,key:string,fallback:number,min:number,max:number){return Math.min(max,Math.max(min,n(params?.[key],fallback)));}
-function indicatorClause(clause:any,bars:Bar[],index:number){
+function indicatorClause(clause:any,bars:Bar[],index:number,contextBars:Bar[]=[]){
   const empty={buy:false,sell:false}; if(index<10)return empty; const params=clause?.params||{},slice=bars.slice(0,index+1),closes=slice.map(b=>b.close),current=bars[index];
   if(clause.indicator==='ema_crossover'){
     const fastPeriod=Math.floor(indicatorParam(params,'fast_period',20,2,200)),slowPeriod=Math.floor(indicatorParam(params,'slow_period',50,3,400));if(fastPeriod>=slowPeriod||index<slowPeriod)return empty;
@@ -77,17 +80,17 @@ function indicatorClause(clause:any,bars:Bar[],index:number){
   if(clause.indicator==='breakout'){const lookback=Math.floor(indicatorParam(params,'lookback',20,3,200)),prior=bars.slice(index-lookback,index);if(prior.length<lookback)return empty;const high=Math.max(...prior.map(b=>b.high)),low=Math.min(...prior.map(b=>b.low)),minimum=indicatorParam(params,'minimum_atr',0,0,10);return{buy:(current.close-high)/a>=minimum,sell:(current.close-low)/a<=-minimum};}
   if(clause.indicator==='atr_volatility'){const period=Math.floor(indicatorParam(params,'period',14,2,100)),baselineBars=Math.floor(indicatorParam(params,'baseline',50,10,200)),values=atr(slice,period),value=values[index],base=median(values.filter(Number.isFinite).slice(-(baselineBars+1),-1)),ratio=base>0?value/base:NaN,matched=Number.isFinite(ratio)&&ratio>=indicatorParam(params,'minimum_ratio',1,.1,10);return{buy:matched,sell:matched};}
   if(clause.indicator==='volume_confirmation'){const lookback=Math.floor(indicatorParam(params,'lookback',30,5,200)),base=median(bars.slice(index-lookback,index).map(b=>b.volume)),ratio=base>0?current.volume/base:NaN,matched=Number.isFinite(ratio)&&ratio>=indicatorParam(params,'minimum_ratio',1,.1,10);return{buy:matched,sell:matched};}
-  if(clause.indicator==='trend_strength'){const score=metrics(bars,index).trend_score;return{buy:Number.isFinite(score)&&score>=indicatorParam(params,'buy_above',35,-100,100),sell:Number.isFinite(score)&&score<=indicatorParam(params,'sell_below',-35,-100,100)};}
+  if(clause.indicator==='trend_strength'){const score=computeTrendStrengthV3(slice,contextThrough(contextBars,current.bar_time)).score;return{buy:Number.isFinite(score)&&score>=indicatorParam(params,'buy_above',35,-100,100),sell:Number.isFinite(score)&&score<=indicatorParam(params,'sell_below',-35,-100,100)};}
   if(clause.indicator==='linearity'){const lookback=Math.floor(indicatorParam(params,'lookback',30,5,200)),value=corr(closes.slice(-lookback)),minimum=indicatorParam(params,'minimum',.6,0,1);return{buy:value>=minimum,sell:value<=-minimum};}
   return empty;
 }
-function indicatorSides(definition:any,bars:Bar[],index:number){const clauses=(definition?.indicators||[]).slice(0,4);if(!clauses.length)return{buy:false,sell:false};let buy=false,sell=false;clauses.forEach((clause:any,i:number)=>{const result=indicatorClause(clause,bars,index);if(i===0){buy=result.buy;sell=result.sell;}else if(clause.join==='or'){buy=buy||result.buy;sell=sell||result.sell;}else{buy=buy&&result.buy;sell=sell&&result.sell;}});return{buy,sell};}
+function indicatorSides(definition:any,bars:Bar[],index:number,contextBars:Bar[]=[]){const clauses=(definition?.indicators||[]).slice(0,4);if(!clauses.length)return{buy:false,sell:false};let buy=false,sell=false;clauses.forEach((clause:any,i:number)=>{const result=indicatorClause(clause,bars,index,contextBars);if(i===0){buy=result.buy;sell=result.sell;}else if(clause.join==='or'){buy=buy||result.buy;sell=sell||result.sell;}else{buy=buy&&result.buy;sell=sell&&result.sell;}});return{buy,sell};}
 
-function entry(strategy: any, bars: Bar[], index: number): Side | null {
-  if (index < 80) return null; const config = strategy.config || {}, m = metrics(bars, index), current = bars[index], previous = bars[index - 1];
+function entry(strategy: any, bars: Bar[], index: number, contextBars: Bar[] = []): Side | null {
+  if (index < 80) return null; const config = strategy.config || {}, m = metrics(bars, index, contextBars), current = bars[index], previous = bars[index - 1];
   let side: Side | null = null;
   if (strategy.kind === 'custom_rules') {
-    if(strategy.rule_definition?.version===2){const result=indicatorSides(strategy.rule_definition,bars,index);if(result.buy!==result.sell)side=result.buy?'buy':'sell';}
+    if(strategy.rule_definition?.version===2){const result=indicatorSides(strategy.rule_definition,bars,index,contextBars);if(result.buy!==result.sell)side=result.buy?'buy':'sell';}
     else for (const [name, candidate] of [['long','buy'],['short','sell']] as const) { const rules = strategy.rule_definition?.[name] || []; if (rules.length && rules.every((rule: any) => rule.timeframe === strategy.timeframe && compare((m as any)[rule.metric], rule.operator, Number(rule.value)))) { if (side) return null; side = candidate; } }
   } else if (strategy.kind === 'momentum_breakout' || strategy.kind === 'volatility_compression_breakout') {
     const lookback = Math.max(3, Math.min(100, Math.floor(n(config.breakout_lookback, strategy.kind === 'momentum_breakout' ? 12 : 20)))); const prior = bars.slice(index - lookback, index); const high = Math.max(...prior.map((b) => b.high)), low = Math.min(...prior.map((b) => b.low));
@@ -112,14 +115,14 @@ function stats(results: number[]) {
 
 function sessionAt(barTime:string):Session { const h=new Date(barTime).getUTCHours(); return h<7?'asia':h<12?'london':h<16?'overlap':h<21?'ny':'asia'; }
 
-function simulate(strategy:any,bars:Bar[]){
+function simulate(strategy:any,bars:Bar[],contextBars:Bar[]=[]){
   const exits=strategy.exit_config||{},stopAtr=Math.max(.1,n(exits.stop_atr??strategy.config?.stop_atr,1.8)),targetR=Math.max(.1,n(exits.target_r??strategy.config?.target_r,2));
   const breakevenR=Math.max(0,n(exits.breakeven_r,1)),trailingStartR=Math.max(0,n(exits.trailing_start_r,1.5)),trailAtr=Math.max(.1,n(exits.trail_atr,1.5));
   const horizon=Math.max(5,Math.min(200,Math.floor(n(strategy.config?.shadow_horizon_bars,50)))),atrValues=atr(bars),results:{index:number,r:number}[]=[];
   const allowed=new Set(Array.isArray(strategy.allowed_sessions)?strategy.allowed_sessions:[]),cooldownMs=Math.max(0,n(strategy.cooldown_minutes,0))*60000,maxSpread=strategy.max_spread_points==null?Infinity:n(strategy.max_spread_points,Infinity);let lastEntry=-Infinity;
   for(let i=80;i<bars.length-horizon;i++){
     const enteredAt=new Date(bars[i].bar_time).getTime();if(allowed.size&&!allowed.has(sessionAt(bars[i].bar_time)))continue;if(Number.isFinite(Number(bars[i].spread))&&Number(bars[i].spread)>maxSpread)continue;if(enteredAt-lastEntry<cooldownMs)continue;
-    const side=entry(strategy,bars,i);if(!side)continue;const a=atrValues[i];if(!(a>0))continue;
+    const side=entry(strategy,bars,i,contextBars);if(!side)continue;const a=atrValues[i];if(!(a>0))continue;
     const risk=stopAtr*a,ep=bars[i].close,tp=side==='buy'?ep+targetR*risk:ep-targetR*risk;let sl=side==='buy'?ep-risk:ep+risk,result=0,exit=i+horizon;lastEntry=enteredAt;
     for(let j=i+1;j<=Math.min(i+horizon,bars.length-1);j++){
       const hitSl=side==='buy'?bars[j].low<=sl:bars[j].high>=sl,hitTp=side==='buy'?bars[j].high>=tp:bars[j].low<=tp;
@@ -156,12 +159,15 @@ Deno.serve(async(req)=>{
   for(const symbol of symbols){
     const{data:run}=await admin.from('strategy_backtest_runs').insert({terminal_id:strategy.terminal_id,strategy_id:strategy.id,symbol,timeframe:strategy.timeframe,definition_snapshot:snapshot,status:'running'}).select('id').single();
     const fail=async(message:string)=>{if(run)await admin.from('strategy_backtest_runs').update({status:'failed',completed_at:new Date().toISOString(),error_message:message}).eq('id',run.id);perSymbol.push({symbol,status:'failed',error:message});};
-    const{data:raw,error:barsError}=await admin.from('price_bars').select('bar_time,open,high,low,close,volume,spread').eq('terminal_id',strategy.terminal_id).eq('symbol',symbol).eq('timeframe',strategy.timeframe).order('bar_time',{ascending:false}).limit(1000);
+    const{data:raw,error:barsError}=await admin.from('price_bars').select('bar_time,open,high,low,close,volume,real_volume,spread').eq('terminal_id',strategy.terminal_id).eq('symbol',symbol).eq('timeframe',strategy.timeframe).order('bar_time',{ascending:false}).limit(1000);
     if(barsError||!raw||raw.length<250){await fail('At least 250 closed candles are required for this timeframe. Let the EA finish backfilling first.');continue;}
-    const bars:Bar[]=raw.reverse().map((b:any)=>({...b,open:Number(b.open),high:Number(b.high),low:Number(b.low),close:Number(b.close),volume:Number(b.volume),spread:b.spread==null?null:Number(b.spread)})),outcome=simulate(strategy,bars);
-    const payload={...outcome.all,bars_tested:bars.length,train_bars:outcome.split,validation_bars:bars.length-outcome.split,validation_expectancy_r:outcome.validationStats.expectancy_r,result:{engine_version:'bounded-v3',conservative_same_bar_ordering:true,non_overlapping:true,train:outcome.details.train,validation:outcome.details.validation,modeled_controls:['indicator parameters','direction','sessions','spread cap','cooldown','ATR stop','R target','breakeven','ATR trailing stop'],warning:'Operational-cache backtests are diagnostic and do not model slippage.'},status:'completed',completed_at:new Date().toISOString()};
+    const usesTrendStrength=strategy.timeframe==='M30'&&strategy.rule_definition?.version===2&&(strategy.rule_definition.indicators||[]).some((clause:any)=>clause.indicator==='trend_strength');
+    let contextBars:Bar[]=[];
+    if(usesTrendStrength){const{data:context,error:contextError}=await admin.from('price_bars').select('bar_time,open,high,low,close,volume,real_volume,spread').eq('terminal_id',strategy.terminal_id).eq('symbol',symbol).eq('timeframe','H1').order('bar_time',{ascending:false}).limit(1000);if(contextError||!context||context.length<TREND_MIN_BARS){await fail('At least 120 closed H1 candles are required for M30 Trend Strength context. Let the EA finish backfilling first.');continue;}contextBars=context.reverse().map((b:any)=>({...b,open:Number(b.open),high:Number(b.high),low:Number(b.low),close:Number(b.close),volume:Number(b.volume),real_volume:b.real_volume==null?null:Number(b.real_volume),spread:b.spread==null?null:Number(b.spread)}));}
+    const bars:Bar[]=raw.reverse().map((b:any)=>({...b,open:Number(b.open),high:Number(b.high),low:Number(b.low),close:Number(b.close),volume:Number(b.volume),real_volume:b.real_volume==null?null:Number(b.real_volume),spread:b.spread==null?null:Number(b.spread)})),outcome=simulate(strategy,bars,contextBars);
+    const payload={...outcome.all,bars_tested:bars.length,train_bars:outcome.split,validation_bars:bars.length-outcome.split,validation_expectancy_r:outcome.validationStats.expectancy_r,result:{engine_version:'bounded-v4-trend-v3',trend_model:'trend-strength-v3',conservative_same_bar_ordering:true,non_overlapping:true,train:outcome.details.train,validation:outcome.details.validation,modeled_controls:['indicator parameters','direction','sessions','spread cap','cooldown','ATR stop','R target','breakeven','ATR trailing stop'],warning:'Operational-cache backtests are diagnostic and do not model slippage.'},status:'completed',completed_at:new Date().toISOString()};
     if(run)await admin.from('strategy_backtest_runs').update(payload).eq('id',run.id);perSymbol.push({symbol,run_id:run?.id,status:'completed',...payload});allResults.push(...outcome.results);allValidation.push(...outcome.validationResults);totalBars+=bars.length;totalTrainBars+=outcome.split;totalValidationBars+=bars.length-outcome.split;
   }
   const completed=perSymbol.filter(row=>row.status==='completed');if(!completed.length)return json({error:'No selected pair had enough retained candles to run the backtest.',symbols_requested:symbols,per_symbol:perSymbol},400);
-  const aggregate=stats(allResults),validation=stats(allValidation);return json({...aggregate,bars_tested:totalBars,train_bars:totalTrainBars,validation_bars:totalValidationBars,validation_expectancy_r:validation.expectancy_r,max_drawdown_r:Math.max(...completed.map(row=>Number(row.max_drawdown_r)||0)),symbols_requested:symbols,symbols_tested:completed.map(row=>row.symbol),per_symbol:perSymbol,result:{engine_version:'bounded-v3',aggregation:'trade-weighted across selected pairs',warning:'Diagnostic only; slippage is not modeled.'},status:'completed',completed_at:new Date().toISOString()});
+  const aggregate=stats(allResults),validation=stats(allValidation);return json({...aggregate,bars_tested:totalBars,train_bars:totalTrainBars,validation_bars:totalValidationBars,validation_expectancy_r:validation.expectancy_r,max_drawdown_r:Math.max(...completed.map(row=>Number(row.max_drawdown_r)||0)),symbols_requested:symbols,symbols_tested:completed.map(row=>row.symbol),per_symbol:perSymbol,result:{engine_version:'bounded-v4-trend-v3',trend_model:'trend-strength-v3',aggregation:'trade-weighted across selected pairs',warning:'Diagnostic only; slippage is not modeled.'},status:'completed',completed_at:new Date().toISOString()});
 });

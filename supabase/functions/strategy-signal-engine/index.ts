@@ -11,6 +11,7 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { resolveBrokerSymbol } from "./_shared/symbol-resolver.ts";
+import { computeTrendStrengthV3, TREND_MIN_BARS } from "../_shared/trend-strength-v3.ts";
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -40,6 +41,7 @@ type PriceBar = {
   low: number;
   close: number;
   volume: number;
+  real_volume?: number | null;
   spread?: number | null;
 };
 
@@ -337,7 +339,7 @@ function correlationWithTime(values: number[]): number {
   return denominator > EPSILON ? covariance / denominator : 0;
 }
 
-function metricValue(metric: RuleCondition["metric"], bars: PriceBar[]): number {
+function metricValue(metric: RuleCondition["metric"], bars: PriceBar[], contextBars: PriceBar[] = []): number {
   if (bars.length < 60) return Number.NaN;
   const closes = bars.map((bar) => bar.close);
   const index = bars.length - 1;
@@ -374,11 +376,7 @@ function metricValue(metric: RuleCondition["metric"], bars: PriceBar[]): number 
   const linearity = Math.abs(correlationWithTime(closes.slice(-30)));
   if (metric === "linearity") return linearity;
   if (metric === "trend_score") {
-    const rsi = computeRSI(closes, 14)[index];
-    const adx = computeADX(bars, 14)[index];
-    const direction = clamp01(Math.abs((ema20 - ema50) / atr)) * Math.sign(ema20 - ema50);
-    const confidence = clamp01((adx - 15) / 25) * (0.5 + 0.5 * linearity);
-    return 100 * (0.75 * direction + 0.25 * Math.max(-1, Math.min(1, (rsi - 50) / 20))) * confidence;
+    return computeTrendStrengthV3(bars, contextBars).score;
   }
   return Number.NaN;
 }
@@ -400,7 +398,8 @@ function customRuleSide(
   const metrics: Record<string, number> = {};
   for (const condition of conditions) {
     const bars = barsByTimeframe.get(condition.timeframe) ?? [];
-    const actual = metricValue(condition.metric, bars);
+    const contextBars = condition.timeframe === "M30" ? (barsByTimeframe.get("H1") ?? []) : [];
+    const actual = metricValue(condition.metric, bars, contextBars);
     metrics[`${condition.timeframe}.${condition.metric}`] = actual;
     if (!compareRule(actual, condition.operator, Number(condition.value))) return { matched: false, metrics };
   }
@@ -420,6 +419,7 @@ function indicatorNumber(
 function evaluateIndicatorClause(
   clause: IndicatorClause,
   bars: PriceBar[],
+  contextBars: PriceBar[] = [],
 ): { buy: boolean; sell: boolean; metrics: Record<string, number | string> } {
   const empty = { buy: false, sell: false, metrics: {} };
   if (bars.length < 10) return empty;
@@ -505,7 +505,7 @@ function evaluateIndicatorClause(
   }
 
   if (clause.indicator === "trend_strength") {
-    const score = metricValue("trend_score", bars);
+    const score = metricValue("trend_score", bars, contextBars);
     const buyAbove = indicatorNumber(params, "buy_above", 35, -100, 100);
     const sellBelow = indicatorNumber(params, "sell_below", -35, -100, 100);
     return { buy: finite(score) && score >= buyAbove, sell: finite(score) && score <= sellBelow, metrics: { trend_score: score } };
@@ -523,13 +523,14 @@ function evaluateIndicatorClause(
 function indicatorRuleSides(
   definition: IndicatorRuleDefinition,
   bars: PriceBar[],
+  contextBars: PriceBar[] = [],
 ): { buy: boolean; sell: boolean; metrics: Record<string, unknown> } {
   const clauses = definition.indicators.slice(0, 4);
   if (clauses.length === 0) return { buy: false, sell: false, metrics: {} };
   let buy = false, sell = false;
   const metrics: Record<string, unknown> = {};
   clauses.forEach((clause, index) => {
-    const result = evaluateIndicatorClause(clause, bars);
+    const result = evaluateIndicatorClause(clause, bars, contextBars);
     metrics[`${index + 1}.${clause.indicator}`] = result.metrics;
     if (index === 0) { buy = result.buy; sell = result.sell; return; }
     if (clause.join === "or") { buy = buy || result.buy; sell = sell || result.sell; }
@@ -621,7 +622,7 @@ function evaluateStrategy(
     const definition = strategy.rule_definition;
     if (!definition) return null;
     if (definition.version === 2) {
-      const result = indicatorRuleSides(definition, bars);
+      const result = indicatorRuleSides(definition, bars, strategy.timeframe === "M30" ? (barsByTimeframe.get("H1") ?? []) : []);
       if (result.buy === result.sell) return null; // ambiguous or no match
       return candidateFromSide(strategy, bars, result.buy ? "buy" : "sell", 0.72, news);
     }
@@ -1171,12 +1172,19 @@ Deno.serve(async (req: Request) => {
             if (supportedTimeframes.has(condition.timeframe)) requiredTimeframes.add(condition.timeframe);
           }
         }
+        const usesTrendStrength = strategy.rule_definition?.version === 2
+          ? strategy.rule_definition.indicators.some((clause) => clause.indicator === "trend_strength")
+          : strategy.rule_definition?.version === 1
+            ? [...(strategy.rule_definition.long ?? []), ...(strategy.rule_definition.short ?? [])]
+              .some((condition) => condition.metric === "trend_score" && condition.timeframe === "M30")
+            : false;
+        if (usesTrendStrength && requiredTimeframes.has("M30")) requiredTimeframes.add("H1");
         const barsByTimeframe = new Map<string, PriceBar[]>();
         let missingBars = false;
         for (const requiredTimeframe of requiredTimeframes) {
           const requiredHistoryBars = requiredTimeframe === timeframe && strategy.rule_definition?.version === 2
             ? Math.max(240, indicatorWarmupBars(strategy.rule_definition))
-            : 240;
+            : requiredTimeframe === "H1" && usesTrendStrength ? TREND_MIN_BARS : 240;
           const feedState = feedStateBySeries.get(
             `${strategy.terminal_id}:${symbol}:${requiredTimeframe}`,
           );
@@ -1192,7 +1200,7 @@ Deno.serve(async (req: Request) => {
           }
           const barLimit = requiredHistoryBars;
           const { data: descendingBars, error: barsError } = await admin.from("price_bars")
-            .select("bar_time, open, high, low, close, volume, spread")
+            .select("bar_time, open, high, low, close, volume, real_volume, spread")
             .eq("terminal_id", strategy.terminal_id).eq("symbol", symbol).eq("timeframe", requiredTimeframe)
             .order("bar_time", { ascending: false }).limit(barLimit);
           if (barsError || !descendingBars || descendingBars.length < 60) {
@@ -1206,7 +1214,8 @@ Deno.serve(async (req: Request) => {
           }
           barsByTimeframe.set(requiredTimeframe, [...descendingBars].reverse().map((bar) => ({
             bar_time: bar.bar_time, open: Number(bar.open), high: Number(bar.high), low: Number(bar.low),
-            close: Number(bar.close), volume: Number(bar.volume), spread: bar.spread == null ? null : Number(bar.spread),
+            close: Number(bar.close), volume: Number(bar.volume), real_volume: bar.real_volume == null ? null : Number(bar.real_volume),
+            spread: bar.spread == null ? null : Number(bar.spread),
           })).filter((bar) => allFinite(bar.open, bar.high, bar.low, bar.close, bar.volume)));
         }
         if (missingBars) continue;

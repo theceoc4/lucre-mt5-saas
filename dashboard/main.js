@@ -2584,7 +2584,7 @@ async function loadTrendStates() {
   }
   const { data, error } = await supabase
     .from('symbol_trend_state')
-    .select('symbol, score, direction, strength, confidence, regime, timeframe_scores, source_bar_time, computed_at')
+    .select('symbol, score, direction, strength, confidence, regime, timeframe_scores, components, source_bar_times, source_bar_time, model_version, computed_at')
     .eq('terminal_id', state.activeTerminalId);
   if (error) {
     console.error('loadTrendStates error', error);
@@ -2770,12 +2770,12 @@ function computeSymbolPerformance(symbol) {
 
 function trendMeterPresentation(symbol) {
   const trend = state.trendStates.find((item) => item.symbol === symbol);
-  if (!trend || trend.regime === 'insufficient_data') {
-    return { score: 0, position: 50, status: 'Warming up', detail: 'Waiting for at least 60 closed candles.' };
+  if (!trend || trend.regime === 'insufficient_data' || trend.model_version !== 'trend-strength-v3') {
+    return { score: 0, position: 50, status: 'Warming up', detail: 'Waiting for the M30 trend model to process 120 closed candles.' };
   }
   const score = Math.max(-100, Math.min(100, Number(trend.score) || 0));
-  const sourceTime = trend.source_bar_time ? new Date(trend.source_bar_time).getTime() : 0;
-  const stale = !sourceTime || Date.now() - sourceTime > 5 * 60 * 1000;
+  const m30Feed = priceFeedPresentation(symbol, 'M30');
+  const stale = !m30Feed.available && m30Feed.tone !== 'waiting';
   const words = {
     volatility_shock: 'Volatility shock',
     trending: 'Trending',
@@ -2785,14 +2785,20 @@ function trendMeterPresentation(symbol) {
   const direction = trend.direction === 'bullish' ? 'bullish' : trend.direction === 'bearish' ? 'bearish' : 'neutral';
   const strength = trend.strength === 'neutral' ? 'Neutral' : `${trend.strength[0].toUpperCase()}${trend.strength.slice(1)} ${direction}`;
   const status = stale ? `${strength} · Market data paused` : `${strength} · ${words[trend.regime] || 'Transition'}`;
-  const breakdown = Object.entries(trend.timeframe_scores || {})
-    .map(([timeframe, value]) => `${timeframe} ${Number(value?.score) >= 0 ? '+' : ''}${Math.round(Number(value?.score) || 0)}`)
-    .join(' · ');
+  const components = trend.components || {};
+  const participation = Number(components.volume_ratio);
+  const alignment = Number(components.h1_alignment);
+  const detailParts = [
+    `M30 quality ${Math.round((Number(components.regime_quality) || 0) * 100)}%`,
+    Number.isFinite(participation) ? `volume ${participation.toFixed(2)}×` : null,
+    Number.isFinite(alignment) ? `H1 alignment ${Math.round(alignment * 100)}%` : null,
+    components.extended ? 'price extended' : null,
+  ].filter(Boolean);
   return {
     score,
     position: (score + 100) / 2,
     status,
-    detail: breakdown || 'Layered EMA, RSI, DMI/ADX, persistence and volatility regime score.',
+    detail: detailParts.join(' · ') || 'M30 direction, regime quality, broker volume and H1 context.',
     stale,
   };
 }
