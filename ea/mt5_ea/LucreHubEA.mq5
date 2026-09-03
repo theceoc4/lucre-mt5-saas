@@ -1,13 +1,14 @@
 //+------------------------------------------------------------------+
 //|                                                  LucreHubEA.mq5   |
-//|  v1.0.43 — Lucre Hub main Expert Advisor (single-file build)      |
+//|  v1.0.44 — Lucre Hub main Expert Advisor (single-file build)      |
 //|                                                                    |
 //|  Thin execution client per the architecture spec (§3 "MT5 EA —    |
 //|  Thin Execution Client"): this file owns no trading logic of its  |
 //|  own. It authenticates once, then on a timer:                     |
 //|    - reports account state + open positions (EASync module)      |
 //|    - executes whatever commands the dashboard/backend queued      |
-//|      (open/modify/close/hedge_open/flatten_basket/modify_sl_tp)    |
+//|      (open/modify/close/close_all/hedge_open/flatten_basket/       |
+//|       modify_sl_tp)                                                |
 //|    - pushes the terminal's native Economic Calendar to the        |
 //|      backend on a slower interval (CalendarSync module)            |
 //|    - optionally holds a persistent WebSocket to the backend for     |
@@ -40,7 +41,7 @@
 //|  for readability/navigation.                                        |
 //+------------------------------------------------------------------+
 #property copyright "Lucre Hub"
-#property version   "1.43"
+#property version   "1.44"
 #property strict
 
 
@@ -1038,13 +1039,13 @@ void EASync_ExecuteClose(const string ea_command_id, const long ticket)
 //| Executes 'flatten_basket': close every currently open position on |
 //| this terminal (see file header re: one-basket-per-terminal today).|
 //+------------------------------------------------------------------+
-void EASync_ExecuteFlattenBasket(const string ea_command_id)
+void EASync_ExecuteFlattenBasket(const string ea_command_id, const string operation)
 {
    string trading_block = EASync_TradingBlockedReason();
    if(trading_block != "")
    {
       EASync_QueueFailed(ea_command_id, trading_block);
-      PrintFormat("EASync: trading blocked (%s) -- rejected flatten_basket command=%s", trading_block, ea_command_id);
+      PrintFormat("EASync: trading blocked (%s) -- rejected %s command=%s", trading_block, operation, ea_command_id);
       return;
    }
 
@@ -1087,9 +1088,9 @@ void EASync_ExecuteFlattenBasket(const string ea_command_id)
    if(failed == 0)
       EASync_QueueResult("{\"ea_command_id\":\"" + ea_command_id + "\",\"status\":\"executed\"}");
    else
-      EASync_QueueFailed(ea_command_id, StringFormat("flatten_partial:closed=%d,failed=%d", closed, failed));
+      EASync_QueueFailed(ea_command_id, StringFormat("%s_partial:closed=%d,failed=%d", operation, closed, failed));
 
-   PrintFormat("EASync: flatten_basket closed=%d failed=%d, command=%s", closed, failed, ea_command_id);
+   PrintFormat("EASync: %s closed=%d failed=%d, command=%s", operation, closed, failed, ea_command_id);
 }
 
 //+------------------------------------------------------------------+
@@ -1108,8 +1109,8 @@ void EASync_ExecuteCommand(const string id, const string command_type, const str
       EASync_ExecuteModify(id, mt5_ticket, sl, tp, sl_pips, tp_pips);
    else if(command_type == "close")
       EASync_ExecuteClose(id, mt5_ticket);
-   else if(command_type == "flatten_basket")
-      EASync_ExecuteFlattenBasket(id);
+   else if(command_type == "flatten_basket" || command_type == "close_all")
+      EASync_ExecuteFlattenBasket(id, command_type);
    else
       EASync_QueueFailed(id, "unknown_command_type:" + command_type);
 }

@@ -1,6 +1,11 @@
-# LucreHubEA — v1.0.43 (single-file build)
+# LucreHubEA — v1.0.44 (single-file build)
 
 ## What changed in this build
+
+Version 1.0.44 accepts the dashboard's single `close_all` command and executes
+it through the existing terminal-wide close routine. This is one queued command,
+not one backend command per position; the following EA sync reconciles every
+broker-confirmed close and its deal history.
 
 Every prior release shipped as `LucreHubEA.mq5` plus five sibling include
 files that had to be copied separately into `MQL5/Include`:

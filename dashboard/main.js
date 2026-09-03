@@ -5,6 +5,7 @@ import {
   placeManualOrder,
   modifyPosition,
   closePosition,
+  closeAllPositions,
   rescanSymbols,
   repairPriceFeed,
   bindSymbol,
@@ -98,6 +99,8 @@ const balanceWidget = document.getElementById('balance-widget');
 const balanceWidgetBalance = document.getElementById('balance-widget-balance');
 const balanceWidgetEquity = document.getElementById('balance-widget-equity');
 const balanceWidgetMargin = document.getElementById('balance-widget-margin');
+const balanceWidgetFloatingPl = document.getElementById('balance-widget-floating-pl');
+const floatingPlButton = document.getElementById('button-floating-pl');
 const bannerAutotrading = document.getElementById('banner-autotrading');
 const bannerCommandStatus = document.getElementById('banner-command-status');
 
@@ -1487,6 +1490,57 @@ async function handleClosePosition(positionId) {
   }
 }
 
+let closeAllSubmitting = false;
+
+function openCloseAllPositionsModal() {
+  if (!state.activeTerminalId || !state.positions.some((position) => position.status === 'open')) return;
+  const total = state.positions.reduce((sum, position) => sum + (Number(position.unrealized_pl) || 0), 0);
+  document.getElementById('close-all-position-copy').textContent =
+    `This sends one terminal-wide command to close every active MT5 position, including trades opened outside Lucre Hub. Current displayed floating P/L: ${fmtUsd(total)}.`;
+  const input = document.getElementById('close-all-confirmation-input');
+  input.value = '';
+  document.getElementById('close-all-position-message').textContent = '';
+  document.getElementById('button-confirm-close-all').disabled = true;
+  window.LucreUI.openModal('modal-close-all-positions');
+  setTimeout(() => input.focus(), 0);
+}
+
+document.getElementById('close-all-confirmation-input')?.addEventListener('input', (event) => {
+  document.getElementById('button-confirm-close-all').disabled = event.target.value !== 'CLOSE ALL' || closeAllSubmitting;
+});
+
+document.getElementById('button-confirm-close-all')?.addEventListener('click', async () => {
+  const input = document.getElementById('close-all-confirmation-input');
+  const button = document.getElementById('button-confirm-close-all');
+  const message = document.getElementById('close-all-position-message');
+  if (input.value !== 'CLOSE ALL' || closeAllSubmitting || !state.activeTerminalId) return;
+
+  closeAllSubmitting = true;
+  button.disabled = true;
+  message.style.color = 'var(--color-accent)';
+  message.textContent = 'Sending one close-all command to MT5…';
+  renderFloatingPl();
+  renderCloseAllControls();
+  try {
+    await closeAllPositions(state.activeTerminalId, { client_request_id: crypto.randomUUID() });
+    message.textContent = 'Close-all queued. Waiting for terminal confirmation…';
+    await loadPositions();
+    setTimeout(() => window.LucreUI.closeModal(document.getElementById('modal-close-all-positions')), 700);
+  } catch (error) {
+    message.style.color = 'var(--color-negative)';
+    message.textContent = error.message;
+  } finally {
+    closeAllSubmitting = false;
+    renderFloatingPl();
+    renderCloseAllControls();
+  }
+});
+
+floatingPlButton?.addEventListener('click', openCloseAllPositionsModal);
+document.querySelectorAll('[data-close-all-positions]').forEach((button) => {
+  button.addEventListener('click', openCloseAllPositionsModal);
+});
+
 // ---------------------------------------------------------------------------
 // Position polling
 // ---------------------------------------------------------------------------
@@ -2543,6 +2597,28 @@ function renderPositions() {
       ? 'No open positions. Place an order to see it here.'
       : 'No open positions. Connect an account and place an order to see it here.'
   );
+  renderFloatingPl();
+  renderCloseAllControls();
+}
+
+function renderCloseAllControls() {
+  const canClose = Boolean(state.activeTerminalId)
+    && state.positions.some((position) => position.status === 'open')
+    && !closeAllSubmitting;
+  document.querySelectorAll('[data-close-all-positions]').forEach((button) => {
+    button.disabled = !canClose;
+  });
+}
+
+function renderFloatingPl() {
+  if (!floatingPlButton || !balanceWidgetFloatingPl) return;
+  const total = state.positions.reduce((sum, position) => sum + (Number(position.unrealized_pl) || 0), 0);
+  balanceWidgetFloatingPl.textContent = `${total >= 0 ? '+' : ''}${fmtUsd(total)}`;
+  floatingPlButton.classList.toggle('is-positive', total > 0);
+  floatingPlButton.classList.toggle('is-negative', total < 0);
+  floatingPlButton.classList.toggle('is-flat', total === 0);
+  floatingPlButton.disabled = closeAllSubmitting || !state.activeTerminalId
+    || !state.positions.some((position) => position.status === 'open');
 }
 
 // ---------------------------------------------------------------------------
@@ -4119,6 +4195,7 @@ function renderBalanceWidget() {
   balanceWidgetEquity.textContent = fmtUsd(active.equity);
   balanceWidgetMargin.textContent =
     active.margin_level === null || active.margin_level === undefined ? '—' : `${fmtNum(active.margin_level)}%`;
+  renderFloatingPl();
 }
 
 async function loadScenarioStats() {

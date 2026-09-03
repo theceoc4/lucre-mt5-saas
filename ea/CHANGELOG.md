@@ -1,5 +1,14 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.44 — Atomic dashboard close-all (2026-09-03)
+
+- Accepts one `close_all` command from the dashboard and closes every active
+  position directly inside MT5 through the existing terminal-wide close path.
+- Keeps user-requested close-all commands distinct from automated
+  `flatten_basket` risk events in backend command history.
+- Reports a single aggregate command result; normal account-history and
+  position reconciliation retain broker-confirmed close details per trade.
+
 ## v1.0.43 — Bounded snapshots and broker-session truth (2026-09-02)
 
 - Caps each bootstrap payload at the newest 1,000 closed candles after MT5

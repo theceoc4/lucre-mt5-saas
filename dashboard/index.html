@@ -260,6 +260,25 @@
   </div>
 </div>
 
+<!-- ============ Close all positions confirmation ============ -->
+<div class="modal-overlay" id="modal-close-all-positions" aria-hidden="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>Close all positions</h3>
+      <button class="icon-btn" type="button" data-modal-close aria-label="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="modal-sub" id="close-all-position-copy">This sends one terminal-wide command and closes every active MT5 position, including trades opened outside Lucre Hub.</p>
+    <label class="field" for="close-all-confirmation-input">
+      <span>Type <strong>CLOSE ALL</strong> to lock in the current floating P/L</span>
+      <input id="close-all-confirmation-input" autocomplete="off" spellcheck="false" />
+    </label>
+    <p class="auth-message" id="close-all-position-message" role="status"></p>
+    <button class="btn-danger auth-submit" type="button" id="button-confirm-close-all" disabled>Close every position</button>
+  </div>
+</div>
+
 <!-- ============ Modify position modal ============ -->
 <div class="modal-overlay" id="modal-modify-position" aria-hidden="true">
   <div class="modal-card">
@@ -478,6 +497,11 @@
         <span class="balance-label">Margin level</span>
         <span class="balance-value" id="balance-widget-margin">—</span>
       </div>
+      <button class="floating-pl-button is-flat" type="button" id="button-floating-pl" aria-label="Close all positions and lock in floating profit or loss" disabled>
+        <span class="balance-label">Floating P/L</span>
+        <span class="balance-value" id="balance-widget-floating-pl">—</span>
+        <span class="floating-pl-lock">Lock in</span>
+      </button>
     </section>
     <div class="banner-warning" id="banner-autotrading" hidden role="alert">
       AutoTrading is OFF on the terminal — new orders and signal-driven trades will be rejected until it's enabled in MT5.
@@ -631,7 +655,10 @@
       <section class="card card-pad card-span-2" aria-label="Open positions">
         <div class="card-title-row">
           <h3>Open Positions</h3>
-          <button class="btn-secondary btn-xs" type="button" id="button-new-order">New order</button>
+          <div class="position-card-head-actions">
+            <button class="btn-secondary btn-xs close-all-positions-button" type="button" data-close-all-positions disabled>Close all</button>
+            <button class="btn-secondary btn-xs" type="button" id="button-new-order">New order</button>
+          </div>
         </div>
         <div class="mini-table" id="positions-list">
           <p class="empty-state-text" id="positions-empty-state">No open positions. Connect an account and place an order to see it here.</p>
@@ -670,6 +697,7 @@
       <section class="card card-pad" aria-label="Open positions detail">
         <div class="card-title-row">
           <h3>Open Positions</h3>
+          <button class="btn-secondary btn-xs close-all-positions-button" type="button" data-close-all-positions disabled>Close all</button>
         </div>
         <div class="mini-table" id="tab-positions-list">
           <p class="empty-state-text">No open positions. Connect an account and place an order to see it here.</p>

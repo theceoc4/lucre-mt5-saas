@@ -1,4 +1,4 @@
-// v1.0.3 — position-action (dashboard modify / close)
+// v1.0.4 — position-action (dashboard modify / close / close all)
 //
 // Validates ownership and position existence, then inserts a dashboard_modify or
 // dashboard_close command. Close commands inherit session/regime/near-news context
@@ -18,7 +18,7 @@
 // EA's position report at open time), so this is a direct copy, not a fresh
 // lookup.
 //
-// Request:  POST { position_id, action: "modify"|"close", sl?, tp?,
+// Request:  POST { position_id?, terminal_id?, action: "modify"|"close"|"close_all", sl?, tp?,
 //                   clear_sl?, clear_tp?, max_deviation_points?, client_request_id? }
 // Response: { ea_command_id, status: "queued" }
 
@@ -84,7 +84,8 @@ Deno.serve(async (req: Request) => {
 
   let body: {
     position_id?: string;
-    action?: "modify" | "close";
+    terminal_id?: string;
+    action?: "modify" | "close" | "close_all";
     sl?: number | null;
     tp?: number | null;
     clear_sl?: boolean;
@@ -98,10 +99,12 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: "invalid_json_body" }, 400);
   }
 
-  if (!body.position_id) return jsonResponse({ error: "position_id_required" }, 400);
-  if (body.action !== "modify" && body.action !== "close") {
+  if (body.action !== "modify" && body.action !== "close" && body.action !== "close_all") {
     return jsonResponse({ error: "invalid_action" }, 400);
   }
+  if (body.action === "close_all") {
+    if (!body.terminal_id) return jsonResponse({ error: "terminal_id_required" }, 400);
+  } else if (!body.position_id) return jsonResponse({ error: "position_id_required" }, 400);
   const hasSlChange = body.sl !== undefined || body.clear_sl === true;
   const hasTpChange = body.tp !== undefined || body.clear_tp === true;
   if (body.action === "modify" && !hasSlChange && !hasTpChange) {
@@ -109,6 +112,48 @@ Deno.serve(async (req: Request) => {
   }
 
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+  if (body.action === "close_all") {
+    const { data: terminal, error: terminalError } = await admin
+      .from("mt5_terminals")
+      .select("id, user_id")
+      .eq("id", body.terminal_id!)
+      .maybeSingle();
+    if (terminalError) return jsonResponse({ error: "lookup_failed", detail: terminalError.message }, 500);
+    if (!terminal) return jsonResponse({ error: "terminal_not_found" }, 404);
+    if (terminal.user_id !== userData.user.id) return jsonResponse({ error: "forbidden" }, 403);
+
+    const { data: positions, error: positionsError } = await admin
+      .from("positions")
+      .select("id")
+      .eq("terminal_id", terminal.id)
+      .eq("status", "open");
+    if (positionsError) return jsonResponse({ error: "lookup_failed", detail: positionsError.message }, 500);
+    if (!positions?.length) return jsonResponse({ error: "no_open_positions" }, 409);
+
+    const now = new Date();
+    const { data: command, error: insertError } = await admin
+      .from("ea_commands")
+      .insert({
+        terminal_id: terminal.id,
+        source: "dashboard_close",
+        command_type: "close_all",
+        max_deviation_points: body.max_deviation_points ?? 20,
+        idempotency_key: body.client_request_id ?? `close-all:${terminal.id}:${now.getTime()}`,
+      })
+      .select()
+      .single();
+    if (insertError) {
+      if (insertError.code === "23505") return jsonResponse({ error: "already_closing" }, 409);
+      return jsonResponse({ error: "insert_failed", detail: insertError.message }, 500);
+    }
+
+    await admin.from("positions")
+      .update({ status: "closing", updated_at: now.toISOString() })
+      .eq("terminal_id", terminal.id)
+      .eq("status", "open");
+    return jsonResponse({ ea_command_id: command.id, status: command.status, position_count: positions.length });
+  }
 
   const { data: position, error: positionError } = await admin
     .from("positions")

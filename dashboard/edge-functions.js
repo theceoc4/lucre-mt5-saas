@@ -25,6 +25,7 @@ const ERROR_MESSAGES = {
   update_failed: 'Something went wrong saving that. Try again.',
   duplicate_request: 'That request was already submitted.',
   already_closing: 'This position is already closing.',
+  no_open_positions: 'There are no open positions to close.',
 
   terminal_id_required: 'Select a terminal first.',
   terminal_not_found: 'That terminal could not be found.',
@@ -151,6 +152,13 @@ export function modifyPosition(
 
 export function closePosition(position_id, { max_deviation_points, client_request_id } = {}) {
   const body = { position_id, action: 'close' };
+  if (max_deviation_points !== undefined) body.max_deviation_points = max_deviation_points;
+  if (client_request_id !== undefined) body.client_request_id = client_request_id;
+  return callEdgeFunction('position-action', body);
+}
+
+export function closeAllPositions(terminal_id, { max_deviation_points, client_request_id } = {}) {
+  const body = { terminal_id, action: 'close_all' };
   if (max_deviation_points !== undefined) body.max_deviation_points = max_deviation_points;
   if (client_request_id !== undefined) body.client_request_id = client_request_id;
   return callEdgeFunction('position-action', body);
