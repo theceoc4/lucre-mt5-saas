@@ -1367,6 +1367,7 @@ document.getElementById('form-new-order')?.addEventListener('submit', async (e) 
     symbol: form.symbol.value,
     side,
     volume,
+    entry_surface: 'dashboard',
     client_request_id: crypto.randomUUID(),
   };
   // Keep the one-click surface simple while honoring any protection defaults
@@ -2522,7 +2523,7 @@ async function loadPositions() {
 
   const { data, error } = await supabase
     .from('positions')
-    .select('id, mt5_ticket, symbol, side, volume, open_price, current_price, sl, tp, unrealized_pl, status, open_time')
+    .select('id, mt5_ticket, symbol, side, volume, open_price, current_price, sl, tp, unrealized_pl, status, open_time, source, strategy_id, strategy_name_at_entry, origin_detail')
     .eq('terminal_id', state.activeTerminalId)
     .neq('status', 'closed')
     .order('open_time', { ascending: false });
@@ -2536,6 +2537,30 @@ async function loadPositions() {
   renderPositionsTab();
 }
 
+function getPositionInitiator(position) {
+  const linkedStrategy = state.strategies.find((strategy) => strategy.id === position.strategy_id);
+  const capturedName = String(position.strategy_name_at_entry || linkedStrategy?.name || '').trim();
+  const isManualPlaceholder = capturedName === 'Discretionary manual' || capturedName === 'MT5 direct manual';
+
+  if (position.strategy_id || (capturedName && !isManualPlaceholder)) {
+    return {
+      name: capturedName || 'Strategy',
+      detail: position.source === 'manual_tap' ? 'Strategy · Manual signal' : 'Strategy · Auto',
+    };
+  }
+
+  if (position.origin_detail === 'pairs_one_click') {
+    return { name: 'Pairs one-click', detail: 'Manual · Pairs card' };
+  }
+  if (position.origin_detail === 'mt5_direct_manual' || capturedName === 'MT5 direct manual') {
+    return { name: 'MT5 terminal', detail: 'External · Outside dashboard' };
+  }
+  if (position.source === 'manual_tap') {
+    return { name: 'Dashboard signal', detail: 'Manual · Signal accepted' };
+  }
+  return { name: 'Dashboard order', detail: 'Manual · Dashboard' };
+}
+
 function renderPositionRows(list, emptyMessage) {
   if (!list) return;
 
@@ -2544,11 +2569,12 @@ function renderPositionRows(list, emptyMessage) {
     return;
   }
 
-  list.innerHTML = state.positions
+  const rows = state.positions
     .map((p) => {
       const plValue = Number(p.unrealized_pl) || 0;
       const plColor = plValue > 0 ? 'var(--color-positive)' : plValue < 0 ? 'var(--color-negative)' : 'var(--color-text-muted)';
       const sideClass = p.side === 'sell' ? 'side-sell' : 'side-buy';
+      const initiator = getPositionInitiator(p);
       // v1.0.18 -- a position flagged 'closing' (reported missing from the
       // EA's last poll, pending final confirmation) can no longer be acted
       // on -- position-action already rejects it with a 409 position_not_open
@@ -2562,10 +2588,14 @@ function renderPositionRows(list, emptyMessage) {
             <button class="position-action-button is-close" type="button" data-close-position="${p.id}">Close</button>
           </div>`;
       return `
-        <div class="mini-table-row${isClosing ? ' is-reconciling' : ''}">
+        <div class="mini-table-row position-table-row${isClosing ? ' is-reconciling' : ''}">
           <div class="mini-table-meta">
-            <div class="strategy-name">${p.symbol}<span class="side-badge ${sideClass}">${p.side}</span></div>
+            <div class="strategy-name">${escapeHtml(p.symbol)}<span class="side-badge ${sideClass}">${escapeHtml(p.side)}</span></div>
             <div class="strategy-sub">${p.volume} lots · opened ${formatDateTime(p.open_time)}</div>
+          </div>
+          <div class="position-origin">
+            <div class="position-origin-name">${escapeHtml(initiator.name)}</div>
+            <div class="position-origin-detail">${escapeHtml(initiator.detail)}</div>
           </div>
           <div class="mini-table-stats">
             <div class="pct" style="color:${plColor}">${plValue >= 0 ? '+' : ''}${plValue.toFixed(2)}</div>
@@ -2575,6 +2605,15 @@ function renderPositionRows(list, emptyMessage) {
         </div>`;
     })
     .join('');
+
+  list.innerHTML = `
+    <div class="positions-table-head" aria-hidden="true">
+      <span>Position</span>
+      <span>Initiated by</span>
+      <span style="text-align:right">Live P/L</span>
+      <span style="text-align:right">Actions</span>
+    </div>
+    ${rows}`;
 
   list.querySelectorAll('[data-modify-position]').forEach((btn) => {
     btn.addEventListener('click', () => openModifyModal(btn.dataset.modifyPosition));
@@ -3002,6 +3041,7 @@ async function handleQuickOrder(symbol, side, btn) {
     symbol,
     side,
     volume,
+    entry_surface: 'pairs',
     client_request_id: crypto.randomUUID(),
   };
   if (setting?.auto_sl_tp_enabled) {

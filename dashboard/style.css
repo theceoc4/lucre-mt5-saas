@@ -949,6 +949,72 @@ a {
   grid-column: span 2;
 }
 
+.overview-positions-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(230px, 1fr);
+  gap: var(--space-4);
+}
+
+.overview-open-positions-card,
+.overview-durations-card {
+  min-width: 0;
+}
+
+.positions-data-list {
+  gap: 0;
+}
+
+.positions-table-head,
+.position-table-row {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.25fr) minmax(150px, 1fr) minmax(105px, 0.65fr) auto;
+  align-items: center;
+  column-gap: var(--space-4);
+}
+
+.positions-table-head {
+  padding: 0 0 var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.position-table-row {
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.position-table-row:last-child {
+  border-bottom: 0;
+}
+
+.position-origin {
+  min-width: 0;
+}
+
+.position-origin-name,
+.position-origin-detail {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.position-origin-name {
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.position-origin-detail {
+  margin-top: 0.1rem;
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+}
+
 /* ---------------- Secondary / danger buttons ---------------- */
 
 .btn-secondary {
@@ -1428,6 +1494,9 @@ select.dropdown-pill {
     flex-direction: column;
     align-items: flex-start;
   }
+  .overview-positions-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 640px) {
@@ -1486,6 +1555,21 @@ select.dropdown-pill {
     width: 100%;
     justify-content: flex-end;
     margin-top: var(--space-1);
+  }
+  .positions-table-head {
+    display: none;
+  }
+  .position-table-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: var(--space-2);
+  }
+  .position-table-row .position-origin,
+  .position-table-row .inline-actions {
+    grid-column: 1 / -1;
+  }
+  .position-table-row .inline-actions {
+    margin-top: 0;
   }
   .chart-callout {
     left: var(--space-4);

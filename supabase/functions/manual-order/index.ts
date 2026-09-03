@@ -21,7 +21,7 @@
 //
 // Request:  POST {
 //   terminal_id, symbol, side: "buy"|"sell", volume, sl?, tp?, sl_pips?, tp_pips?,
-//   max_deviation_points?, client_request_id?
+//   max_deviation_points?, client_request_id?, entry_surface?: "dashboard"|"pairs"
 // }
 // Response: { ea_command_id, status: "queued" }
 
@@ -98,6 +98,7 @@ Deno.serve(async (req: Request) => {
     tp_pips?: number;
     max_deviation_points?: number;
     client_request_id?: string;
+    entry_surface?: "dashboard" | "pairs";
   };
   try {
     body = await req.json();
@@ -113,6 +114,9 @@ Deno.serve(async (req: Request) => {
   }
   if (body.side !== "buy" && body.side !== "sell") return jsonResponse({ error: "invalid_side" }, 400);
   if (!(body.volume! > 0)) return jsonResponse({ error: "invalid_volume" }, 400);
+  if (body.entry_surface !== undefined && body.entry_surface !== "dashboard" && body.entry_surface !== "pairs") {
+    return jsonResponse({ error: "invalid_entry_surface" }, 400);
+  }
   if (body.sl !== undefined && body.sl_pips !== undefined) {
     return jsonResponse({ error: "sl_and_sl_pips_conflict" }, 400);
   }
@@ -176,8 +180,9 @@ Deno.serve(async (req: Request) => {
 
   const now = new Date();
   const riskDefined = (body.sl !== undefined && body.sl > 0) || (body.sl_pips !== undefined && body.sl_pips > 0);
+  const originDetail = body.entry_surface === "pairs" ? "pairs_one_click" : "dashboard_manual";
   const marketContext = await captureMarketContext(admin, {
-    terminalId: terminal.id, symbol: body.symbol!, at: now, origin: "dashboard_manual", riskDefined,
+    terminalId: terminal.id, symbol: body.symbol!, at: now, origin: originDetail, riskDefined,
   });
   const idempotencyKey = body.client_request_id ?? crypto.randomUUID();
 
@@ -201,7 +206,7 @@ Deno.serve(async (req: Request) => {
       near_news_event: marketContext.near_news_event,
       news_event_id: marketContext.news_event_id,
       strategy_name_at_entry: "Discretionary manual",
-      origin_detail: "dashboard_manual",
+      origin_detail: originDetail,
       risk_defined: riskDefined,
       entry_context: marketContext.context,
     })

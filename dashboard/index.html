@@ -633,28 +633,30 @@
         </div>
       </section>
 
-      <section class="card card-pad card-span-2" aria-label="Open positions">
-        <div class="card-title-row">
-          <h3>Open Positions</h3>
-          <div class="position-card-head-actions">
-            <button class="btn-secondary btn-xs close-all-positions-button" type="button" data-close-all-positions disabled>Close all</button>
-            <button class="btn-secondary btn-xs" type="button" id="button-new-order">New order</button>
+      <div class="overview-positions-row">
+        <section class="card card-pad overview-open-positions-card" aria-label="Open positions">
+          <div class="card-title-row">
+            <h3>Open Positions</h3>
+            <div class="position-card-head-actions">
+              <button class="btn-secondary btn-xs close-all-positions-button" type="button" data-close-all-positions disabled>Close all</button>
+              <button class="btn-secondary btn-xs" type="button" id="button-new-order">New order</button>
+            </div>
           </div>
-        </div>
-        <div class="mini-table" id="positions-list">
-          <p class="empty-state-text" id="positions-empty-state">No open positions. Connect an account and place an order to see it here.</p>
-        </div>
-      </section>
+          <div class="mini-table positions-data-list" id="positions-list">
+            <p class="empty-state-text" id="positions-empty-state">No open positions. Connect an account and place an order to see it here.</p>
+          </div>
+        </section>
 
-      <section class="card card-pad card-span-2" aria-label="Trade duration breakdown">
-        <div class="card-title-row">
-          <h3>Durations</h3>
-        </div>
-        <p class="desc">How long closed trades stay open, from fill to close.</p>
-        <div class="mini-table" id="tab-duration-list">
-          <p class="empty-state-text">No closed trades yet.</p>
-        </div>
-      </section>
+        <section class="card card-pad overview-durations-card" aria-label="Trade duration breakdown">
+          <div class="card-title-row">
+            <h3>Durations</h3>
+          </div>
+          <p class="desc">How long closed trades stay open, from fill to close.</p>
+          <div class="mini-table" id="tab-duration-list">
+            <p class="empty-state-text">No closed trades yet.</p>
+          </div>
+        </section>
+      </div>
 
     </div>
     </div>
@@ -680,7 +682,7 @@
           <h3>Open Positions</h3>
           <button class="btn-secondary btn-xs close-all-positions-button" type="button" data-close-all-positions disabled>Close all</button>
         </div>
-        <div class="mini-table" id="tab-positions-list">
+        <div class="mini-table positions-data-list" id="tab-positions-list">
           <p class="empty-state-text">No open positions. Connect an account and place an order to see it here.</p>
         </div>
       </section>
