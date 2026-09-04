@@ -24,6 +24,14 @@ begin
   ) then
     raise exception 'privacy audit failed: tenant data has an unrestricted RLS policy';
   end if;
+  if exists (
+    select 1
+    from information_schema.role_table_grants
+    where table_schema = 'public'
+      and grantee = 'anon'
+  ) then
+    raise exception 'privacy audit failed: anonymous role retains public table grants';
+  end if;
   select relrowsecurity into reservation_rls
   from pg_class
   where oid = 'public.open_command_reservations'::regclass;
@@ -55,6 +63,12 @@ begin
   if has_function_privilege('anon', 'public.broadcast_ea_command_available()', 'execute')
      or has_function_privilege('authenticated', 'public.broadcast_ea_command_available()', 'execute') then
     raise exception 'privacy audit failed: command broadcast trigger is browser-callable';
+  end if;
+  if has_function_privilege('anon', 'public.on_position_push_event()', 'execute')
+     or has_function_privilege('authenticated', 'public.on_position_push_event()', 'execute')
+     or has_function_privilege('anon', 'public.on_trend_extreme_push_event()', 'execute')
+     or has_function_privilege('authenticated', 'public.on_trend_extreme_push_event()', 'execute') then
+    raise exception 'privacy audit failed: push trigger helper is browser-callable';
   end if;
   if has_function_privilege('anon', 'public.promote_strategy_to_live(uuid)', 'execute') then
     raise exception 'privacy audit failed: anonymous strategy promotion is enabled';
