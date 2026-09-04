@@ -1,5 +1,12 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.64 — Focused Social timeline (2026-09-04)
+
+- Removes both multi-metric account summaries from the Social experience.
+- Keeps the page focused on the post composer and timeline.
+- Adds a full-width sticky floating P/L action above the composer, displaying
+  only the live dollar amount while preserving immediate Lock In execution.
+
 ## v1.0.63 — Social foundation and private inbox (2026-09-04)
 
 - Adds Social as the first navigation item while keeping Dashboard as the

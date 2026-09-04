@@ -191,10 +191,7 @@ const paletteSettingsForm = document.getElementById('form-palette-settings');
 const paletteSettingsMessage = document.getElementById('palette-settings-message');
 const socialFeed = document.getElementById('social-feed');
 const socialCommunityList = document.getElementById('social-community-list');
-const socialAccountStrip = document.getElementById('social-account-strip');
-const socialBalance = document.getElementById('social-balance');
-const socialEquity = document.getElementById('social-equity');
-const socialMargin = document.getElementById('social-margin');
+const socialPlDock = document.getElementById('social-pl-dock');
 const socialFloatingPl = document.getElementById('social-floating-pl');
 const socialFloatingPlButton = document.getElementById('social-floating-pl-button');
 const buttonInbox = document.getElementById('button-inbox');
@@ -5382,19 +5379,16 @@ function renderBalanceWidget() {
   const active = state.terminals.find((t) => t.id === state.activeTerminalId);
   if (!active) {
     balanceWidget.hidden = true;
-    if (socialAccountStrip) socialAccountStrip.hidden = true;
+    if (socialPlDock) socialPlDock.hidden = true;
     bannerAutotrading.hidden = true;
     return;
   }
   balanceWidget.hidden = state.activeView === 'social';
-  if (socialAccountStrip) socialAccountStrip.hidden = state.activeView !== 'social';
+  if (socialPlDock) socialPlDock.hidden = state.activeView !== 'social';
   balanceWidgetBalance.textContent = fmtUsd(active.balance);
   balanceWidgetEquity.textContent = fmtUsd(active.equity);
   balanceWidgetMargin.textContent =
     active.margin_level === null || active.margin_level === undefined ? '—' : `${fmtNum(active.margin_level)}%`;
-  if (socialBalance) socialBalance.textContent = fmtUsd(active.balance);
-  if (socialEquity) socialEquity.textContent = fmtUsd(active.equity);
-  if (socialMargin) socialMargin.textContent = active.margin_level == null ? '—' : `${fmtNum(active.margin_level)}%`;
   renderFloatingPl();
 }
 

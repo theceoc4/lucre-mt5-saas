@@ -18,7 +18,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.63" />
+<link rel="stylesheet" href="./style.css?v=1.0.64" />
 </head>
 <body>
 
@@ -621,12 +621,9 @@
     <div class="banner-warning" id="banner-position-stream" hidden role="status"></div>
 
     <div class="view social-view" id="view-social" hidden>
-      <section class="social-account-strip" id="social-account-strip" hidden aria-label="Live account summary">
-        <div><span>Balance</span><strong id="social-balance">—</strong></div>
-        <div><span>Equity</span><strong id="social-equity">—</strong></div>
-        <div><span>Margin</span><strong id="social-margin">—</strong></div>
-        <button class="floating-pl-button is-flat" type="button" id="social-floating-pl-button" data-close-all-positions disabled>
-          <span class="balance-label">Floating P/L</span><span class="balance-value" id="social-floating-pl">—</span><span class="floating-pl-lock">Lock in</span>
+      <section class="social-pl-dock" id="social-pl-dock" hidden aria-label="Floating profit or loss quick action">
+        <button class="social-pl-button floating-pl-button is-flat" type="button" id="social-floating-pl-button" data-close-all-positions aria-label="Close all positions at the displayed floating profit or loss" disabled>
+          <span id="social-floating-pl">—</span>
         </button>
       </section>
 
@@ -1014,7 +1011,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.63"></script>
-<script type="module" src="./main.js?v=1.0.63"></script>
+<script src="./app.js?v=1.0.64"></script>
+<script type="module" src="./main.js?v=1.0.64"></script>
 </body>
 </html>
