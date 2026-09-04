@@ -1,5 +1,14 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.60 — Soleau Gold palette (2026-09-04)
+
+- Adds Soleau Gold as the first alternate dashboard palette, translating the
+  supplied charcoal-to-gold swatches across surfaces, borders, glass, and UI accents.
+- Adds an Appearance settings page with instant palette previews while keeping
+  light/dark mode and trading-semantic profit/loss colors independent.
+- Saves the selected palette to the private user profile so it follows the user
+  across browsers and devices without adding Realtime traffic.
+
 ## v1.0.59 — Automatic notification reads (2026-09-04)
 
 - Marks the currently visible activity notifications as read whenever the user

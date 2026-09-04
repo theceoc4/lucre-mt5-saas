@@ -181,6 +181,8 @@ const pushPreferenceList = document.getElementById('push-preference-list');
 const settingsModalTitle = document.getElementById('settings-modal-title');
 const settingsModalSubtitle = document.getElementById('settings-modal-subtitle');
 const settingsBackButton = document.getElementById('button-settings-back');
+const paletteSettingsForm = document.getElementById('form-palette-settings');
+const paletteSettingsMessage = document.getElementById('palette-settings-message');
 const VAPID_PUBLIC_KEY = 'BJx7Y2wwbHI0Heyu_qooP7C2LYbUPgSd3chuPO_Rnc1PNXQqsldZ5wnkhhDoNyDBdQpA7Gz_eHLwYlTti4tdcaQ';
 let pushRegistration = null;
 let pushSubscription = null;
@@ -380,6 +382,10 @@ function rerenderTimezoneSurfaces() {
 }
 
 const SETTINGS_PAGES = {
+  appearance: {
+    title: 'Appearance',
+    subtitle: 'Choose the dashboard color palette that feels like home.',
+  },
   timezone: {
     title: 'Timezone',
     subtitle: 'Choose how dates and times appear across Lucre Hub.',
@@ -428,6 +434,7 @@ document.getElementById('button-settings')?.addEventListener('click', () => {
   }
   renderSymbolSettingsList();
   renderSymbolMappingPanel();
+  renderPaletteSettings();
   renderTimezoneSettings();
   loadPortfolioRiskSettings();
   loadPushNotificationSettings();
@@ -584,6 +591,44 @@ pushPreferenceList?.addEventListener('change', async () => {
   pushPreferenceList.querySelectorAll('input[name]').forEach((input) => { values[input.name] = input.checked; });
   const { error } = await supabase.from('push_notification_preferences').upsert(values, { onConflict: 'user_id' });
   setPushStatus(error ? `Could not save preferences: ${error.message}` : 'Notification preferences saved.', error ? 'error' : 'success');
+});
+
+function renderPaletteSettings() {
+  if (!paletteSettingsForm) return;
+  const selected = state.profile?.dashboard_palette || 'lucre';
+  paletteSettingsForm.querySelectorAll('input[name="dashboard_palette"]').forEach((input) => {
+    input.checked = input.value === selected;
+  });
+}
+
+paletteSettingsForm?.addEventListener('change', async (event) => {
+  const input = event.target.closest('input[name="dashboard_palette"]');
+  if (!input) return;
+  const previous = state.profile?.dashboard_palette || 'lucre';
+  const dashboardPalette = input.value === 'soleau-gold' ? 'soleau-gold' : 'lucre';
+  paletteSettingsForm.querySelectorAll('input').forEach((option) => { option.disabled = true; });
+  window.LucreTheme?.applyPalette(dashboardPalette);
+  if (paletteSettingsMessage) {
+    paletteSettingsMessage.style.color = 'var(--color-text-muted)';
+    paletteSettingsMessage.textContent = 'Saving palette…';
+  }
+  try {
+    await accountManagement('update_dashboard_palette', { dashboard_palette: dashboardPalette });
+    state.profile = { ...(state.profile || {}), dashboard_palette: dashboardPalette };
+    if (paletteSettingsMessage) {
+      paletteSettingsMessage.style.color = 'var(--color-accent-strong)';
+      paletteSettingsMessage.textContent = `${dashboardPalette === 'soleau-gold' ? 'Soleau Gold' : 'Lucre Sage'} applied.`;
+    }
+  } catch (error) {
+    window.LucreTheme?.applyPalette(previous);
+    renderPaletteSettings();
+    if (paletteSettingsMessage) {
+      paletteSettingsMessage.style.color = 'var(--color-negative)';
+      paletteSettingsMessage.textContent = error.message;
+    }
+  } finally {
+    paletteSettingsForm.querySelectorAll('input').forEach((option) => { option.disabled = false; });
+  }
 });
 
 document.getElementById('form-timezone-settings')?.addEventListener('submit', async (event) => {
@@ -2677,7 +2722,7 @@ window.addEventListener('pagehide', releaseRealtimeLeadership);
 async function loadProfile() {
   const { data, error } = await supabase
     .from('profiles')
-    .select('display_name, bio, location, website, trading_style, timezone')
+    .select('display_name, bio, location, website, trading_style, timezone, dashboard_palette')
     .eq('id', state.session.user.id)
     .maybeSingle();
 
@@ -2695,7 +2740,9 @@ async function loadProfile() {
       console.warn('Could not persist the detected timezone; backend daily boundaries will use UTC until saved.', timezoneError);
     }
   }
+  window.LucreTheme?.applyPalette(data?.dashboard_palette || 'lucre');
   renderTimezoneSettings();
+  renderPaletteSettings();
 
   const displayName = data?.display_name || state.session.user.email?.split('@')[0] || 'there';
   textGreeting.textContent = `Hey, ${displayName}`;
@@ -5837,6 +5884,7 @@ async function bootDashboard() {
 
 function resetDashboardState() {
   state.profile = null;
+  window.LucreTheme?.applyPalette('lucre');
   state.portfolioRisk = null;
   state.terminals = [];
   state.activeTerminalId = null;

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="light" data-palette="lucre">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -18,7 +18,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.57" />
+<link rel="stylesheet" href="./style.css?v=1.0.60" />
 </head>
 <body>
 
@@ -329,11 +329,33 @@
 
     <div class="settings-page" data-settings-page="home">
       <div class="settings-category-list">
+        <button class="settings-category-button" type="button" data-settings-page-target="appearance"><span class="settings-category-icon settings-category-icon-text" aria-hidden="true">UI</span><span><strong>Appearance</strong><small>Choose the color palette used across your dashboard.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
         <button class="settings-category-button" type="button" data-settings-page-target="timezone"><span class="settings-category-icon" aria-hidden="true">◷</span><span><strong>Timezone</strong><small>Localize charts, activity, news, and trade times.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
         <button class="settings-category-button" type="button" data-settings-page-target="notifications"><span class="settings-category-icon" aria-hidden="true">⌁</span><span><strong>Notifications</strong><small>Choose which live alerts reach this device.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
         <button class="settings-category-button" type="button" data-settings-page-target="risk"><span class="settings-category-icon" aria-hidden="true">◇</span><span><strong>Risk Management</strong><small>Set account-wide automatic trading guardrails.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
         <button class="settings-category-button" type="button" data-settings-page-target="symbols"><span class="settings-category-icon" aria-hidden="true">⌕</span><span><strong>Symbols</strong><small>Control visible pairs and broker symbol mappings.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
       </div>
+    </div>
+
+    <div class="settings-page" data-settings-page="appearance" hidden>
+      <section class="symbol-settings-section" aria-labelledby="appearance-settings-title">
+        <div class="symbol-settings-heading"><div><h4 id="appearance-settings-title">Dashboard palette</h4><p class="desc">Choose the color system used across Lucre Hub. Your light or dark mode remains separate.</p></div></div>
+        <form id="form-palette-settings" class="palette-settings-form">
+          <label class="palette-option">
+            <input type="radio" name="dashboard_palette" value="lucre" />
+            <span class="palette-preview palette-preview-lucre" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+            <span class="palette-option-copy"><strong>Lucre Sage</strong><small>Original mint, sage, and neon-lime palette.</small></span>
+            <span class="palette-selected-label">Selected</span>
+          </label>
+          <label class="palette-option">
+            <input type="radio" name="dashboard_palette" value="soleau-gold" />
+            <span class="palette-preview palette-preview-soleau" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+            <span class="palette-option-copy"><strong>Soleau Gold</strong><small>Charcoal, bronze, and polished-gold accents.</small></span>
+            <span class="palette-selected-label">Selected</span>
+          </label>
+        </form>
+        <p class="auth-message palette-settings-message" id="palette-settings-message" role="status"></p>
+      </section>
     </div>
 
     <div class="settings-page" data-settings-page="timezone" hidden>
@@ -898,7 +920,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.57"></script>
-<script type="module" src="./main.js?v=1.0.57"></script>
+<script src="./app.js?v=1.0.60"></script>
+<script type="module" src="./main.js?v=1.0.60"></script>
 </body>
 </html>

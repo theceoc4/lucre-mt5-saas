@@ -45,6 +45,14 @@ Deno.serve(async (req) => {
     if (error) return reply({ error: "timezone_update_failed", detail: error.message }, 500);
     return reply({ ok: true, timezone });
   }
+  if (body.action === "update_dashboard_palette") {
+    const dashboardPalette = body.dashboard_palette === "soleau-gold" ? "soleau-gold"
+      : body.dashboard_palette === "lucre" ? "lucre" : null;
+    if (!dashboardPalette) return reply({ error: "invalid_dashboard_palette" }, 422);
+    const { error } = await admin.from("profiles").update({ dashboard_palette: dashboardPalette }).eq("id", userId);
+    if (error) return reply({ error: "dashboard_palette_update_failed", detail: error.message }, 500);
+    return reply({ ok: true, dashboard_palette: dashboardPalette });
+  }
   if (body.action === "reset_account_data") {
     if (body.confirmation !== "RESET MY DATA") return reply({ error: "confirmation_required" }, 422);
     // Terminals are the ownership root for trading data. Their foreign-key
