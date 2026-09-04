@@ -1,6 +1,15 @@
-# LucreHubEA — v1.0.48 (single-file build)
+# LucreHubEA — v1.0.49 (single-file build)
 
 ## What changed in this build
+
+Version 1.0.49 adds the MT5 side of external indicator strategies. The EA
+receives only the owner-approved indicator configurations from `ea-sync`,
+loads each custom indicator with `iCustom`, reads BUY and SELL buffers from
+the newly closed candle, and forwards a deduplicated candidate to Lucre's
+authenticated external-signal ingress. The backend—not the indicator—still
+owns news policy, adaptive policy, portfolio risk, lot sizing, symbol mapping,
+and execution mode. The first observed candle is seeded without firing, so an
+EA restart cannot replay an old indicator arrow.
 
 Version 1.0.48 makes the Realtime and P/L lanes work together efficiently. A
 standby EA now pauses its HTTP data lanes after a lease rejection instead of
@@ -13,7 +22,8 @@ floating P/L value on the dashboard and private two-second stream. It also
 reports `ACCOUNT_CREDIT`, aggregate position profit, and cumulative open swap
 as reconciliation diagnostics, while retaining the durable 30-second snapshot
 as a fallback. Version 1.0.48 retains that broker-authoritative value and ships
-explicitly versioned `LucreHubEA-v1.48.mq5` and `LucreHubEA-v1.48.zip` artifacts.
+explicitly versioned artifacts. Version 1.0.49 continues that convention with
+`LucreHubEA-v1.49.mq5` and `LucreHubEA-v1.49.zip`.
 
 Version 1.0.46 keeps the fast public Realtime lane limited to empty command
 wake-up hints and dashboard lease requests. Live position values now travel
@@ -42,6 +52,8 @@ files that had to be copied separately into `MQL5/Include`:
   `report-symbols`
 - `PriceReporter.mqh` — reports broker-native closed bars for all enabled
   symbols across M1, M5, M15, M30, H1, H4, D1, and W1 to `report-bars`
+- `IndicatorBridge` — new in v1.0.49 and inlined directly; reads configured
+  custom-indicator buffers and relays closed-candle candidates to Lucre
 
 That works fine on a terminal you control directly, but **MetaTrader VPS
 hosting does not reliably sync sibling `.mq5`/`.mqh` source files** — it
@@ -51,7 +63,7 @@ multi-file layout could fail to compile (or silently run stale/missing
 includes) because `EASync.mqh` and friends never made it onto the VPS's
 `MQL5/Include` folder.
 
-**This build inlines all five modules directly into `LucreHubEA.mq5`.**
+**This build inlines every module directly into `LucreHubEA.mq5`.**
 MQL5's `#include` is plain text substitution — the compiled `.ex5` from this
 single file is byte-for-byte equivalent to compiling the old five-file
 layout before the v1.0.20 safety controls described below. Each module's
@@ -62,7 +74,7 @@ between sections).
 
 ## Install (one file now)
 
-1. Copy **only** `releases/LucreHubEA-v1.48.mq5` into `MQL5/Experts/` on the
+1. Copy **only** `releases/LucreHubEA-v1.49.mq5` into `MQL5/Experts/` on the
    terminal (local **or** VPS-hosted).
 2. Open it in MetaEditor and compile (F7). No `.mqh` files to copy —
    there are no `#include` dependencies left to satisfy.
@@ -75,6 +87,12 @@ between sections).
    unchanged from prior releases).
 6. Check the Experts/Journal tab for `LucreHubEA: initialized` followed by
    `EASync: initialized` to confirm the first poll succeeds.
+
+For an MT5 custom-indicator strategy, place the compiled indicator in the
+terminal's normal `MQL5/Indicators` location before enabling the strategy.
+The configured indicator filename is resolved by MT5 and currently uses that
+indicator's default Inputs. Buffer values are read only from closed candle
+index 1; zero and `EMPTY_VALUE` mean no signal.
 
 If you're moving an existing local install to a VPS: delete any old
 `EASync.mqh` / `CalendarSync.mqh` / `EAStream.mqh` / `SymbolMap.mqh` /

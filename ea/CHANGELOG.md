@@ -1,5 +1,18 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.49 — External custom-indicator bridge (2026-09-04)
+
+- Receives terminal-owned MT5 indicator strategy configuration from the
+  existing authenticated `ea-sync` response.
+- Loads configured custom indicators with their default Inputs and reads BUY
+  and SELL buffers only after a candle closes.
+- Relays one idempotent candidate per strategy, broker symbol, timeframe,
+  candle and side to the external-signal ingress; risk and execution remain
+  server-authoritative.
+- Seeds the current closed candle without emitting it on EA start or strategy
+  reconfiguration, preventing stale indicator arrows from becoming trades.
+- Ships only explicitly versioned `LucreHubEA-v1.49` source and ZIP artifacts.
+
 ## v1.0.48 — Quiet standby and resilient private P/L (2026-09-03)
 
 - Pauses every non-socket network lane for 45 seconds when the backend reports

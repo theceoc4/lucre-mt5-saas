@@ -945,7 +945,7 @@ Deno.serve(async (req: Request) => {
   // strategy's exact symbol/timeframe feed.
   const { data: enabledStrategies, error: enabledStrategiesError } = await admin
     .from("strategies")
-    .select("symbols,timeframe,bias_timeframe,rule_definition,kind,run_mode,delivery_mode")
+    .select("id,name,symbols,timeframe,bias_timeframe,rule_definition,kind,run_mode,delivery_mode,signal_source,config")
     .eq("terminal_id", terminal.id)
     .eq("enabled", true);
   if (enabledStrategiesError) {
@@ -1055,6 +1055,21 @@ Deno.serve(async (req: Request) => {
       (priorityRankBySymbol.get(right.canonical_symbol) ?? 99);
     return rankDelta || left.canonical_symbol.localeCompare(right.canonical_symbol);
   });
+  const brokerSymbolByCanonical = new Map((mappings ?? []).map((mapping) => [mapping.canonical_symbol, mapping.broker_symbol]));
+  const indicatorSources = (enabledStrategies ?? [])
+    .filter((strategy) => strategy.signal_source === "mt5_indicator" && strategy.config?.mt5_indicator_name)
+    .flatMap((strategy) => (strategy.symbols ?? []).map((canonicalSymbol: string) => ({
+      strategy_id: strategy.id,
+      canonical_symbol: canonicalSymbol,
+      broker_symbol: brokerSymbolByCanonical.get(canonicalSymbol) ?? null,
+      timeframe: strategy.timeframe,
+      indicator_name: String(strategy.config.mt5_indicator_name).slice(0, 120),
+      buy_buffer: Math.max(0, Math.min(31,
+        Number.isFinite(Number(strategy.config.mt5_buy_buffer)) ? Math.floor(Number(strategy.config.mt5_buy_buffer)) : 0)),
+      sell_buffer: Math.max(0, Math.min(31,
+        Number.isFinite(Number(strategy.config.mt5_sell_buffer)) ? Math.floor(Number(strategy.config.mt5_sell_buffer)) : 1)),
+    })))
+    .filter((source) => source.broker_symbol);
 
   if (queuedCommands && queuedCommands.length > 0) {
     await admin
@@ -1085,6 +1100,7 @@ Deno.serve(async (req: Request) => {
     server_time: nowIso,
     command_results_processed: processedResults,
     pending_commands: queuedCommands ?? [],
+    indicator_sources: indicatorSources,
     bound_symbols: orderedMappings.map((m) => ({
       canonical_symbol: m.canonical_symbol,
       broker_symbol: m.broker_symbol,

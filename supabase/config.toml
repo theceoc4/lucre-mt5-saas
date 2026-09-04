@@ -465,3 +465,9 @@ verify_jwt = true
 
 [functions.account-management]
 verify_jwt = true
+
+[functions.external-signal]
+verify_jwt = false
+
+[functions.external-signal-endpoint]
+verify_jwt = true

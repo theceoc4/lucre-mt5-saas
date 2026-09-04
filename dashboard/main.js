@@ -20,6 +20,7 @@ const state = {
   terminals: [],
   activeTerminalId: null,
   strategies: [],
+  externalSignalEndpoints: [],
   signals: [],
   signalDeliveries: [],
   tradeHistory: [],
@@ -863,6 +864,7 @@ document.getElementById('form-connect-account')?.addEventListener('submit', asyn
 let strategySelectedSymbols = [];
 let strategyIndicatorRows = [];
 let strategyHasLegacyDefinition = false;
+const externalEndpointUrls = new Map();
 
 const STRATEGY_KIND_SIGNAL_FAMILY = {
   momentum_breakout: 'breakout',
@@ -1056,6 +1058,133 @@ function updateStrategyExecutionHint() {
 }
 document.getElementById('strategy-execution-mode')?.addEventListener('change', updateStrategyExecutionHint);
 
+function externalSignalTemplate(strategy) {
+  const symbol = strategySelectedSymbols[0] || 'EURUSD';
+  const timeframe = document.getElementById('strategy-timeframe')?.value || strategy?.timeframe || 'M5';
+  const source = document.getElementById('strategy-signal-source')?.value || strategy?.signal_source || 'tradingview';
+  if (source === 'tradingview') {
+    return JSON.stringify({
+      event_id: '{{ticker}}-{{interval}}-{{time}}-buy', symbol: '{{ticker}}',
+      timeframe: '{{interval}}', side: 'buy', source_price: '{{close}}', occurred_at: '{{timenow}}',
+    });
+  }
+  return JSON.stringify({
+    event_id: `unique-event-${Date.now()}`, symbol, timeframe, side: 'buy',
+    source_price: 0, occurred_at: new Date().toISOString(),
+  }, null, 2);
+}
+
+function updateStrategySourceUi(strategy = null) {
+  const source = document.getElementById('strategy-signal-source')?.value || 'internal';
+  const isExternal = source !== 'internal';
+  const setup = document.getElementById('external-signal-setup');
+  const hint = document.getElementById('strategy-source-hint');
+  const indicatorHeading = document.getElementById('strategy-indicators-label');
+  const backtestButton = document.getElementById('button-run-strategy-backtest');
+  if (setup) setup.hidden = !isExternal;
+  if (indicatorHeading) indicatorHeading.textContent = isExternal ? 'Confirmation indicators (optional)' : 'Indicators';
+  if (backtestButton) {
+    const isEditing = Boolean(strategy?.id || document.getElementById('strategy-edit-id')?.value);
+    backtestButton.hidden = !isEditing || isExternal;
+  }
+  if (hint) hint.textContent = source === 'internal'
+    ? 'Lucre evaluates the indicator stack on each newly closed broker candle.'
+    : source === 'mt5_indicator'
+    ? 'The Lucre EA reads a custom indicator and relays one closed-candle event into the same strategy engine.'
+    : 'An authenticated webhook proposes BUY or SELL; Lucre remains authoritative for broker data, filters, risk and execution.';
+  const mt5Fields = document.getElementById('mt5-indicator-fields');
+  if (mt5Fields) mt5Fields.hidden = source !== 'mt5_indicator';
+  if (!isExternal) return;
+
+  const endpoint = strategy?.external_endpoint || state.externalSignalEndpoints.find((row) => row.strategy_id === strategy?.id);
+  const savedUrl = strategy?.id ? externalEndpointUrls.get(strategy.id) : null;
+  const status = document.getElementById('external-endpoint-status');
+  const display = document.getElementById('external-endpoint-display');
+  const templateDisplay = document.getElementById('external-template-display');
+  const actions = document.getElementById('external-endpoint-actions');
+  const copy = document.getElementById('external-signal-copy');
+  const urlEl = document.getElementById('external-endpoint-url');
+  const template = document.getElementById('external-signal-template');
+  if (status) status.textContent = endpoint ? (endpoint.enabled ? `Connected · …${endpoint.token_last_four}` : 'Disabled') : 'Not connected';
+  if (copy) copy.textContent = savedUrl
+    ? 'This private URL is shown for this session. Store it in the provider now.'
+    : endpoint ? 'The secret URL is hidden after creation. Rotate it to receive a new copyable URL.' : 'Save the strategy to create its private connection.';
+  if (display) display.hidden = !savedUrl;
+  if (urlEl) urlEl.textContent = savedUrl || '';
+  if (templateDisplay) templateDisplay.hidden = !endpoint;
+  if (template) template.textContent = externalSignalTemplate(strategy);
+  if (actions) actions.hidden = !endpoint;
+  const toggle = document.getElementById('button-toggle-external-endpoint');
+  if (toggle && endpoint) toggle.textContent = endpoint.enabled ? 'Disable endpoint' : 'Enable endpoint';
+}
+
+document.getElementById('strategy-signal-source')?.addEventListener('change', () => {
+  updateStrategySourceUi();
+  renderStrategyIndicators();
+});
+
+async function manageExternalEndpoint(action) {
+  const strategyId = document.getElementById('strategy-edit-id')?.value;
+  const strategy = state.strategies.find((row) => row.id === strategyId);
+  if (!strategy) return null;
+  const { data, error } = await supabase.functions.invoke('external-signal-endpoint', {
+    body: { action, strategy_id: strategy.id },
+  });
+  if (error || data?.error) throw new Error(data?.detail || data?.error || error?.message || 'Endpoint update failed');
+  if (data.webhook_url) externalEndpointUrls.set(strategy.id, data.webhook_url);
+  const endpoint = { ...data.endpoint, strategy_id: strategy.id, terminal_id: state.activeTerminalId };
+  state.externalSignalEndpoints = state.externalSignalEndpoints.filter((row) => row.strategy_id !== strategy.id).concat(endpoint);
+  strategy.external_endpoint = endpoint;
+  updateStrategySourceUi(strategy);
+  return data;
+}
+
+document.getElementById('button-copy-external-endpoint')?.addEventListener('click', async () => {
+  const value = document.getElementById('external-endpoint-url')?.textContent || '';
+  if (value) await navigator.clipboard.writeText(value);
+});
+document.getElementById('button-copy-external-template')?.addEventListener('click', async () => {
+  const value = document.getElementById('external-signal-template')?.textContent || '';
+  if (value) await navigator.clipboard.writeText(value);
+});
+document.getElementById('button-rotate-external-endpoint')?.addEventListener('click', async () => {
+  try { await manageExternalEndpoint('rotate'); } catch (error) { alert(error.message); }
+});
+document.getElementById('button-toggle-external-endpoint')?.addEventListener('click', async () => {
+  const strategyId = document.getElementById('strategy-edit-id')?.value;
+  const endpoint = state.externalSignalEndpoints.find((row) => row.strategy_id === strategyId);
+  try { await manageExternalEndpoint(endpoint?.enabled ? 'disable' : 'enable'); } catch (error) { alert(error.message); }
+});
+document.getElementById('button-test-external-endpoint')?.addEventListener('click', async () => {
+  const msg = document.getElementById('add-strategy-message');
+  const strategyId = document.getElementById('strategy-edit-id')?.value;
+  const strategy = state.strategies.find((row) => row.id === strategyId);
+  const endpointUrl = externalEndpointUrls.get(strategyId);
+  if (!strategy || !endpointUrl) {
+    msg.style.color = 'var(--color-danger, #c0432f)';
+    msg.textContent = 'Rotate the private URL first so this browser can perform a no-trade connection test.';
+    return;
+  }
+  msg.style.color = 'var(--color-text-muted)';
+  msg.textContent = 'Testing connection…';
+  try {
+    const response = await fetch(endpointUrl, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        test: true, event_id: `dashboard-test-${crypto.randomUUID()}`,
+        symbol: strategy.symbols[0], timeframe: strategy.timeframe, side: 'buy', occurred_at: new Date().toISOString(),
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.valid) throw new Error(result.error || `HTTP ${response.status}`);
+    msg.style.color = 'var(--color-accent)';
+    msg.textContent = 'Connection verified. No signal or order was created.';
+  } catch (error) {
+    msg.style.color = 'var(--color-danger, #c0432f)';
+    msg.textContent = `Connection test failed: ${error.message}`;
+  }
+});
+
 function validateIndicatorStack() {
   const directional = new Set(['ema_crossover', 'rsi', 'price_vs_ema', 'breakout', 'trend_strength', 'linearity']);
   if (strategyIndicatorRows.length > 0 && !strategyIndicatorRows.some((row) => directional.has(row.indicator))) {
@@ -1243,11 +1372,13 @@ function openAddStrategyModal() {
   }
   const form = document.getElementById('form-add-strategy');
   form.reset();
+  form.signal_source.value = 'internal';
   form.execution_mode.value = 'shadow';
   strategyIndicatorRows = [];
   document.getElementById('strategy-indicator-composer').hidden = true;
   updateStrategyParameterVisibility();
   updateStrategyExecutionHint();
+  updateStrategySourceUi();
   resetStrategyModalToAddMode();
   strategySelectedSymbols = [];
   renderStrategySymbolChips();
@@ -1270,6 +1401,7 @@ function openEditStrategyModal(id) {
   form.reset();
   form.edit_id.value = strategy.id;
   form.kind.value = 'custom_rules';
+  form.signal_source.value = strategy.signal_source || 'internal';
   form.name.value = strategy.name;
   form.timeframe.value = strategy.timeframe || 'M5';
   form.max_lot_size.value = strategy.max_lot_size;
@@ -1283,6 +1415,9 @@ function openEditStrategyModal(id) {
   const allowedSessions = strategy.allowed_sessions || ['asia', 'london', 'overlap', 'ny'];
   form.querySelectorAll('input[name="allowed_sessions"]').forEach((input) => { input.checked = allowedSessions.includes(input.value); });
   const config = strategy.config || {};
+  form.mt5_indicator_name.value = config.mt5_indicator_name || '';
+  form.mt5_buy_buffer.value = config.mt5_buy_buffer ?? 0;
+  form.mt5_sell_buffer.value = config.mt5_sell_buffer ?? 1;
   const exits = strategy.exit_config || {};
   form.stop_atr.value = exits.stop_atr ?? config.stop_atr ?? 1.8; form.target_r.value = exits.target_r ?? config.target_r ?? 2.2;
   form.breakeven_r.value = exits.breakeven_r ?? 1; form.trailing_start_r.value = exits.trailing_start_r ?? 1.5;
@@ -1294,6 +1429,7 @@ function openEditStrategyModal(id) {
     : [];
   strategyHasLegacyDefinition = strategy.rule_definition?.version !== 2 || strategy.kind !== 'custom_rules';
   updateStrategyParameterVisibility();
+  updateStrategySourceUi(strategy);
 
   strategySelectedSymbols = (strategy.symbols || []).slice();
   renderStrategySymbolChips();
@@ -1438,7 +1574,8 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
   }
   const editId = form.edit_id.value;
   const existingStrategy = state.strategies.find((strategy) => strategy.id === editId);
-  if (strategyIndicatorRows.length === 0 && (!existingStrategy || existingStrategy.rule_definition?.version === 2)) {
+  const signalSource = form.signal_source.value || 'internal';
+  if (signalSource === 'internal' && strategyIndicatorRows.length === 0 && (!existingStrategy || existingStrategy.rule_definition?.version === 2)) {
     msg.textContent = 'Add at least one indicator before saving.';
     return;
   }
@@ -1455,27 +1592,38 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
 
   const existingConfig = existingStrategy?.config || {};
   const numeric = (field, fallback) => Number.isFinite(parseFloat(form[field]?.value)) ? parseFloat(form[field].value) : fallback;
-  const config = { ...existingConfig, stop_atr: numeric('stop_atr', 1.8), target_r: numeric('target_r', 2.2) };
+  if (signalSource === 'mt5_indicator' && !form.mt5_indicator_name.value.trim()) {
+    msg.textContent = 'Enter the MT5 custom indicator filename.';
+    return;
+  }
+  const config = {
+    ...existingConfig,
+    stop_atr: numeric('stop_atr', 1.8), target_r: numeric('target_r', 2.2),
+    mt5_indicator_name: signalSource === 'mt5_indicator' ? form.mt5_indicator_name.value.trim() : undefined,
+    mt5_buy_buffer: signalSource === 'mt5_indicator' ? Math.max(0, Math.min(31, Math.round(numeric('mt5_buy_buffer', 0)))) : undefined,
+    mt5_sell_buffer: signalSource === 'mt5_indicator' ? Math.max(0, Math.min(31, Math.round(numeric('mt5_sell_buffer', 1)))) : undefined,
+  };
   const exitConfig = {
     stop_atr: numeric('stop_atr', 1.8), target_r: numeric('target_r', 2.2),
     breakeven_r: numeric('breakeven_r', 1), trailing_start_r: numeric('trailing_start_r', 1.5),
     trail_atr: numeric('trail_atr', 1.5), swing_lookback: 5, max_stop_atr: 4,
   };
   const replacingLegacyDefinition = strategyIndicatorRows.length > 0;
-  const ruleDefinition = replacingLegacyDefinition ? {
+  const ruleDefinition = strategyIndicatorRows.length > 0 ? {
     version: 2,
     indicators: strategyIndicatorRows.map((row, index) => ({
       indicator: row.indicator,
       join: index === 0 ? 'and' : (row.join === 'or' ? 'or' : 'and'),
       params: { ...row.params },
     })),
-  } : existingStrategy?.rule_definition ?? null;
+  } : signalSource === 'internal' ? existingStrategy?.rule_definition ?? null : null;
   const executionMode = form.execution_mode.value;
   const kind = replacingLegacyDefinition || !existingStrategy ? 'custom_rules' : existingStrategy.kind;
   const payload = {
     terminal_id: state.activeTerminalId,
     name: form.name.value.trim(),
     kind,
+    signal_source: signalSource,
     signal_family: STRATEGY_KIND_SIGNAL_FAMILY[kind] || 'momentum',
     delivery_mode: executionMode === 'auto' ? 'auto' : 'manual_confirm',
     timeframe: form.timeframe.value,
@@ -1497,9 +1645,9 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
     promoted_at: executionMode === 'shadow' ? null : existingStrategy?.promoted_at || new Date().toISOString(),
   };
 
-  const { error } = editId
-    ? await supabase.from('strategies').update(payload).eq('id', editId)
-    : await supabase.from('strategies').insert({ ...payload, enabled: true });
+  const { data: savedStrategy, error } = editId
+    ? await supabase.from('strategies').update(payload).eq('id', editId).select('id').single()
+    : await supabase.from('strategies').insert({ ...payload, enabled: true }).select('id').single();
   if (error) {
     msg.textContent = error.message;
     return;
@@ -1507,6 +1655,29 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
 
   msg.style.color = 'var(--color-accent)';
   msg.textContent = editId ? 'Strategy updated.' : 'Strategy added.';
+  if (signalSource !== 'internal' && savedStrategy?.id) {
+    const endpointExists = state.externalSignalEndpoints.some((row) => row.strategy_id === savedStrategy.id);
+    if (!endpointExists || existingStrategy?.signal_source !== signalSource) {
+      const { data: endpointData, error: endpointError } = await supabase.functions.invoke('external-signal-endpoint', {
+        body: { action: endpointExists ? 'rotate' : 'create', strategy_id: savedStrategy.id },
+      });
+      if (endpointError || endpointData?.error) {
+        msg.style.color = 'var(--color-danger, #c0432f)';
+        msg.textContent = `Strategy saved, but its endpoint could not be created: ${endpointData?.detail || endpointData?.error || endpointError?.message}`;
+        await loadStrategies();
+        return;
+      }
+      externalEndpointUrls.set(savedStrategy.id, endpointData.webhook_url);
+      msg.textContent = 'Strategy saved. Copy the private connection URL before closing this window.';
+      await loadStrategies();
+      const refreshed = state.strategies.find((row) => row.id === savedStrategy.id);
+      if (refreshed) {
+        form.edit_id.value = savedStrategy.id;
+        updateStrategySourceUi(refreshed);
+      }
+      return;
+    }
+  }
   form.reset();
   strategyIndicatorRows = [];
   strategyHasLegacyDefinition = false;
@@ -2861,6 +3032,7 @@ terminalSelect?.addEventListener('change', async (e) => {
 async function loadStrategies() {
   if (!state.activeTerminalId) {
     state.strategies = [];
+    state.externalSignalEndpoints = [];
     renderStrategies();
     renderStrategyStatusTab();
     renderStrategyPage();
@@ -2873,7 +3045,7 @@ async function loadStrategies() {
     .select(
       'id, name, kind, timeframe, enabled, delivery_mode, symbols, max_lot_size, risk_percent, signal_ttl_seconds, ' +
         'news_posture, news_window_minutes, news_min_impact, news_exploit_size_multiplier, config, run_mode, bias_timeframe, ' +
-        'rule_definition, definition_version, exit_config, allowed_sessions, direction_mode, cooldown_minutes, max_concurrent_positions, max_spread_points, min_shadow_signals, promoted_at'
+        'rule_definition, definition_version, exit_config, allowed_sessions, direction_mode, cooldown_minutes, max_concurrent_positions, max_spread_points, min_shadow_signals, promoted_at, signal_source'
     )
     .eq('terminal_id', state.activeTerminalId)
     .in('kind', ACTIVE_STRATEGY_KINDS)
@@ -2884,17 +3056,21 @@ async function loadStrategies() {
     return;
   }
   state.strategies = data || [];
-  const [{ data: shadowRows }, { data: backtestRows }, { data: evaluationRows, error: evaluationError }] = await Promise.all([
+  const [{ data: shadowRows }, { data: backtestRows }, { data: evaluationRows, error: evaluationError }, { data: endpointRows, error: endpointError }] = await Promise.all([
     supabase.from('strategy_shadow_signals').select('strategy_id,status,result_r').eq('terminal_id', state.activeTerminalId).limit(5000),
     supabase.from('strategy_backtest_runs').select('strategy_id,status,trade_count,expectancy_r,validation_expectancy_r,completed_at').eq('terminal_id', state.activeTerminalId).eq('status', 'completed').order('completed_at', { ascending: false }).limit(500),
     supabase.from('strategy_evaluation_state').select('strategy_id,symbol,timeframe,status,source_bar_time,candle_age_seconds,detail,last_checked_at').eq('terminal_id', state.activeTerminalId),
+    supabase.from('external_signal_endpoints').select('id,public_id,terminal_id,strategy_id,provider,token_last_four,enabled,rate_limit_per_minute,last_received_at,last_accepted_at,last_status,rotated_at,created_at,updated_at').eq('terminal_id', state.activeTerminalId),
   ]);
   if (evaluationError) console.error('strategy evaluation health load failed', evaluationError);
+  if (endpointError) console.error('external endpoint load failed', endpointError);
+  state.externalSignalEndpoints = endpointRows || [];
   state.strategies.forEach((strategy) => {
     const resolved = (shadowRows || []).filter((row) => row.strategy_id === strategy.id && row.status !== 'pending');
     strategy.shadow_summary = { resolved: resolved.length, expectancy_r: resolved.length ? resolved.reduce((sum, row) => sum + Number(row.result_r || 0), 0) / resolved.length : null };
     strategy.latest_backtest = (backtestRows || []).find((row) => row.strategy_id === strategy.id) || null;
     strategy.evaluation_states = (evaluationRows || []).filter((row) => row.strategy_id === strategy.id);
+    strategy.external_endpoint = state.externalSignalEndpoints.find((row) => row.strategy_id === strategy.id) || null;
   });
   renderStrategies();
   renderStrategyWinRates();
@@ -3104,7 +3280,7 @@ async function loadSignals() {
       .from('signals')
       .select(
         'id, strategy_id, symbol, side, timeframe, policy_decision, generated_at, expires_at, suggested_volume, near_news_event, htf_regime, ' +
-          'block_reason, news_event_id, calendar_events(title, currency, impact)'
+          'block_reason, news_event_id, source_kind, external_event_id, calendar_events(title, currency, impact)'
       )
       .eq('terminal_id', state.activeTerminalId),
     supabase
@@ -3309,7 +3485,7 @@ function renderFloatingPl() {
         || (normalizedVersion[0] === 1 && normalizedVersion[1] === 0 && normalizedVersion[2] >= 48));
     const streamGraceElapsed = positionStreamStartedAt > 0 && now - positionStreamStartedAt > 12000;
     if (active?.status === 'connected' && !supportsAccountStream) {
-      bannerPositionStream.textContent = `EA ${active.ea_version || 'unknown'} does not provide broker-authoritative live P/L. Install LucreHubEA-v1.48.mq5 to enable it.`;
+      bannerPositionStream.textContent = `EA ${active.ea_version || 'unknown'} does not provide broker-authoritative live P/L. Install LucreHubEA-v1.49.mq5 to enable it.`;
       bannerPositionStream.hidden = false;
     } else if (hasOpenPosition && supportsAccountStream && streamGraceElapsed && !streamIsCurrent) {
       bannerPositionStream.textContent = 'The private MT5 P/L stream is unavailable. Displaying the durable 30-second account snapshot until it reconnects.';

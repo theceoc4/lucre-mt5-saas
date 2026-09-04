@@ -18,7 +18,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.60" />
+<link rel="stylesheet" href="./style.css?v=1.0.61" />
 </head>
 <body>
 
@@ -113,6 +113,16 @@
         <label for="strategy-name">Strategy name</label>
         <input id="strategy-name" name="name" type="text" placeholder="e.g. London Momentum" maxlength="80" required />
       </div>
+      <div class="field">
+        <label for="strategy-signal-source">Signal source</label>
+        <select id="strategy-signal-source" name="signal_source">
+          <option value="internal" selected>Lucre indicators</option>
+          <option value="tradingview">TradingView webhook</option>
+          <option value="mt5_indicator">MT5 custom indicator</option>
+          <option value="generic_webhook">Generic webhook</option>
+        </select>
+        <p class="field-hint" id="strategy-source-hint">Lucre evaluates the indicator stack on each newly closed broker candle.</p>
+      </div>
       <div class="strategy-builder-grid strategy-builder-grid-3">
         <div class="field">
           <label for="strategy-timeframe">Timeframe</label>
@@ -167,6 +177,35 @@
           </select>
         </div>
         <button class="strategy-add-indicator" type="button" id="button-add-strategy-indicator" aria-label="Add indicator">+</button>
+      </section>
+
+      <section class="external-signal-setup" id="external-signal-setup" hidden>
+        <div class="strategy-section-heading">
+          <div><h4>External signal connection</h4><p class="field-hint" id="external-signal-copy">Save the strategy to create its private connection.</p></div>
+          <span class="external-endpoint-status" id="external-endpoint-status">Not connected</span>
+        </div>
+        <div class="external-endpoint-display" id="external-endpoint-display" hidden>
+          <code id="external-endpoint-url"></code>
+          <button class="btn-secondary btn-xs" type="button" id="button-copy-external-endpoint">Copy URL</button>
+        </div>
+        <div class="external-template-display" id="external-template-display" hidden>
+          <code id="external-signal-template"></code>
+          <button class="btn-secondary btn-xs" type="button" id="button-copy-external-template">Copy JSON</button>
+        </div>
+        <div class="external-endpoint-actions" id="external-endpoint-actions" hidden>
+          <button class="btn-secondary btn-xs" type="button" id="button-rotate-external-endpoint">Rotate URL</button>
+          <button class="btn-secondary btn-xs" type="button" id="button-toggle-external-endpoint">Disable endpoint</button>
+          <button class="btn-secondary btn-xs" type="button" id="button-test-external-endpoint">Test only</button>
+        </div>
+        <div class="mt5-indicator-fields" id="mt5-indicator-fields" hidden>
+          <div class="strategy-builder-grid strategy-builder-grid-3">
+            <div class="field"><label for="mt5-indicator-name">Indicator file</label><input id="mt5-indicator-name" name="mt5_indicator_name" type="text" maxlength="120" placeholder="MyIndicator" /></div>
+            <div class="field"><label for="mt5-buy-buffer">BUY buffer</label><input id="mt5-buy-buffer" name="mt5_buy_buffer" type="number" min="0" max="31" step="1" value="0" /></div>
+            <div class="field"><label for="mt5-sell-buffer">SELL buffer</label><input id="mt5-sell-buffer" name="mt5_sell_buffer" type="number" min="0" max="31" step="1" value="1" /></div>
+          </div>
+          <p class="field-hint">The Lucre EA reads the indicator with its default Inputs and acts only on closed candle index 1. A non-empty BUY or SELL buffer value creates one event per candle.</p>
+        </div>
+        <p class="field-hint">The external trigger is always required. Indicators added above become optional Lucre confirmations; policy, news, risk, broker mapping and execution checks still run normally.</p>
       </section>
 
       <div class="field strategy-symbol-field">
@@ -920,7 +959,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.60"></script>
-<script type="module" src="./main.js?v=1.0.60"></script>
+<script src="./app.js?v=1.0.61"></script>
+<script type="module" src="./main.js?v=1.0.61"></script>
 </body>
 </html>

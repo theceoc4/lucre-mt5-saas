@@ -71,6 +71,7 @@ type StrategyRow = {
   news_window_minutes?: number | string;
   news_min_impact?: "low" | "medium" | "high";
   news_exploit_size_multiplier?: number | string;
+  signal_source?: "internal" | "tradingview" | "generic_webhook" | "mt5_indicator";
 };
 
 type RuleCondition = {
@@ -117,6 +118,14 @@ type TerminalPositionBudget = {
   max: number;
   initialOpenCount: number;
   overrideActive: boolean;
+};
+
+type CandidatePipelineResult = {
+  evaluationStatus: EvaluationStatus;
+  signalGenerated: number;
+  commandsQueued: number;
+  signalId: string | null;
+  reason?: string;
 };
 
 const EPSILON = 1e-12;
@@ -884,6 +893,234 @@ async function reservePositionSlot(
   return { reserved: true };
 }
 
+// Shared post-trigger pipeline. Internal indicators and authenticated external
+// sources both enter here, after a side has been proposed. Everything capable
+// of blocking, resizing, attributing, or executing the candidate lives on this
+// one path so a webhook can never bypass a guardrail used by native strategies.
+async function processSignalCandidate(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  input: {
+    strategy: StrategyRow;
+    symbol: string;
+    timeframe: string;
+    bars: PriceBar[];
+    candidate: SignalCandidate;
+    news: NewsContext;
+    regime: Regime;
+    session: Session;
+    sourceBarTime: string;
+    candleAgeSeconds: number;
+    now: Date;
+    nowIso: string;
+    eaVersion: unknown;
+    budgets: Map<string, TerminalPositionBudget>;
+    sourceKind?: "internal" | "tradingview" | "generic_webhook" | "mt5_indicator";
+    externalEventId?: string | null;
+    recordEvaluation: (status: EvaluationStatus, detail?: Record<string, unknown>) => void;
+  },
+): Promise<CandidatePipelineResult> {
+  const {
+    strategy, symbol, timeframe, bars, candidate, news, regime, session,
+    sourceBarTime, candleAgeSeconds, now, nowIso, eaVersion, budgets,
+    sourceKind = "internal", externalEventId = null, recordEvaluation,
+  } = input;
+  const finish = (
+    evaluationStatus: EvaluationStatus,
+    detail: Record<string, unknown> = {},
+    signalGenerated = 0,
+    commandsQueued = 0,
+    signalId: string | null = null,
+    reason?: string,
+  ): CandidatePipelineResult => {
+    recordEvaluation(evaluationStatus, detail);
+    return { evaluationStatus, signalGenerated, commandsQueued, signalId, reason };
+  };
+
+  if (news.has_direction && news.minutes_to_event != null && news.minutes_to_event <= 0 && news.implied_side !== candidate.side) {
+    return finish("policy_blocked", { reason: "opposes_released_news" }, 0, 0, null, "opposes_released_news");
+  }
+  if ((strategy.direction_mode === "long_only" && candidate.side === "sell") ||
+      (strategy.direction_mode === "short_only" && candidate.side === "buy")) {
+    return finish("direction_blocked", { candidate_side: candidate.side }, 0, 0, null, "direction_not_allowed");
+  }
+
+  const latestSpread = Number(bars[bars.length - 1].spread);
+  if (strategy.max_spread_points != null && Number.isFinite(latestSpread) &&
+      latestSpread > numberValue(strategy.max_spread_points, Number.POSITIVE_INFINITY)) {
+    return finish("spread_blocked", { spread_points: latestSpread, maximum: strategy.max_spread_points }, 0, 0, null, "spread_above_limit");
+  }
+
+  const cooldownMinutes = Math.max(0, Math.floor(numberValue(strategy.cooldown_minutes, 0)));
+  if (cooldownMinutes > 0) {
+    const { count } = await admin.from("signals").select("id", { count: "exact", head: true })
+      .eq("strategy_id", strategy.id).eq("symbol", symbol)
+      .gte("generated_at", new Date(now.getTime() - cooldownMinutes * 60_000).toISOString());
+    if ((count ?? 0) > 0) {
+      return finish("cooldown_blocked", { cooldown_minutes: cooldownMinutes }, 0, 0, null, "cooldown_active");
+    }
+  }
+
+  const ttlSeconds = Math.max(1, Math.floor(numberValue(strategy.signal_ttl_seconds, 60)));
+  const { data: recentSignal, error: recentSignalError } = externalEventId
+    ? await admin.from("signals").select("id").eq("external_event_id", externalEventId).limit(1).maybeSingle()
+    : await admin.from("signals").select("id")
+      .eq("terminal_id", strategy.terminal_id).eq("strategy_id", strategy.id)
+      .eq("symbol", symbol).eq("timeframe", timeframe)
+      .eq("source_bar_time", sourceBarTime).limit(1).maybeSingle();
+  if (recentSignalError) {
+    console.error(`strategy-signal-engine: idempotency lookup failed for ${strategy.id}/${symbol}: ${recentSignalError.message}`);
+    return finish("command_failed", { stage: "idempotency_lookup", error: recentSignalError.message }, 0, 0, null, "idempotency_lookup_failed");
+  }
+  if (recentSignal) return finish("duplicate_bar", { signal_id: recentSignal.id }, 0, 0, recentSignal.id, "duplicate_signal");
+
+  if (strategy.run_mode === "shadow") {
+    const shadowBars = Math.max(5, Math.min(500, Math.floor(positiveConfig(strategy.config, "shadow_horizon_bars", 50))));
+    const { error } = await admin.from("strategy_shadow_signals").insert({
+      terminal_id: strategy.terminal_id, strategy_id: strategy.id, symbol, timeframe,
+      source_bar_time: sourceBarTime, side: candidate.side, entry_price: candidate.entryPrice,
+      sl: candidate.suggestedSl, tp: candidate.suggestedTp,
+      initial_risk_distance: candidate.initialRiskDistance,
+      expires_at: new Date(now.getTime() + shadowBars * (TIMEFRAME_SECONDS[timeframe] ?? 60) * 1000).toISOString(),
+      evaluation_context: {
+        version: 2, strategy_kind: strategy.kind, definition_version: strategy.rule_definition?.version ?? null,
+        source_kind: sourceKind, external_event_id: externalEventId, regime, news,
+        score: candidate.score, rule_definition: strategy.rule_definition ?? null,
+      },
+    });
+    if (error && error.code !== "23505") {
+      return finish("command_failed", { stage: "shadow_insert", error: error.message }, 0, 0, null, "shadow_insert_failed");
+    }
+    return finish("shadow_signal", { candidate_side: candidate.side, source_kind: sourceKind });
+  }
+
+  const baseVolume = Math.max(0, numberValue(strategy.max_lot_size, 0));
+  const baseRiskPercent = Math.min(5, Math.max(0.01, numberValue(strategy.risk_percent, 0.5)));
+  if (baseVolume <= 0) return finish("risk_blocked", { reason: "non_positive_max_lot_size" }, 0, 0, null, "non_positive_max_lot_size");
+
+  const { data: signal, error: signalError } = await admin.from("signals").insert({
+    terminal_id: strategy.terminal_id, strategy_id: strategy.id, symbol, timeframe,
+    source_bar_time: sourceBarTime, side: candidate.side, suggested_volume: baseVolume,
+    suggested_risk_percent: baseRiskPercent, suggested_sl: candidate.suggestedSl,
+    suggested_tp: candidate.suggestedTp, entry_atr: candidate.entryAtr,
+    entry_spread_points: bars[bars.length - 1].spread ?? null,
+    initial_risk_distance: candidate.initialRiskDistance, entry_price_ref: candidate.entryPrice,
+    session, htf_regime: regime, near_news_event: news.near, news_event_id: news.news_event_id,
+    score: candidate.score, policy_decision: candidate.policyDecision, ttl_seconds: ttlSeconds,
+    generated_at: nowIso, expires_at: new Date(now.getTime() + ttlSeconds * 1000).toISOString(),
+    source_kind: sourceKind, external_event_id: externalEventId,
+  }).select("id").single();
+  if (signalError || !signal) {
+    return finish("command_failed", { stage: "signal_insert", error: signalError?.message ?? "no row returned" }, 0, 0, null, "signal_insert_failed");
+  }
+
+  const { data: delivery, error: deliveryError } = await admin.from("signal_deliveries").insert({
+    signal_id: signal.id, terminal_id: strategy.terminal_id,
+    delivery_mode: strategy.delivery_mode, status: "pending",
+  }).select("id").single();
+  if (deliveryError || !delivery) {
+    return finish("command_failed", { stage: "delivery_insert", error: deliveryError?.message ?? "no row returned" }, 1, 0, signal.id, "delivery_insert_failed");
+  }
+  if (strategy.delivery_mode === "manual_confirm") {
+    return finish("manual_signal", { signal_id: signal.id, candidate_side: candidate.side, source_kind: sourceKind }, 1, 0, signal.id);
+  }
+  if (!versionAtLeast(eaVersion, "1.0.29")) {
+    await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
+    return finish("ea_version_blocked", { required_version: "1.0.29", installed_version: eaVersion ?? null }, 1, 0, signal.id, "ea_version_blocked");
+  }
+
+  const { data: persistedSignal } = await admin.from("signals")
+    .select("policy_decision, near_news_event, block_reason").eq("id", signal.id).single();
+  const persistedDecision: PolicyDecision = persistedSignal?.policy_decision === "block" || persistedSignal?.policy_decision === "downweight"
+    ? persistedSignal.policy_decision : candidate.policyDecision;
+  const policy = await policyForCell(admin, strategy.terminal_id, strategy.id, symbol, session, regime, news.near);
+  if (policy.error) {
+    await admin.from("signals").update({ policy_decision: "block", block_reason: "Adaptive policy lookup failed" }).eq("id", signal.id);
+    await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
+    return finish("policy_blocked", { reason: "policy_lookup_failed", error: policy.error }, 1, 0, signal.id, "policy_lookup_failed");
+  }
+  const finalDecision: PolicyDecision = policy.decision === "block" || persistedDecision === "block" ? "block"
+    : policy.decision === "downweight" || persistedDecision === "downweight" ? "downweight" : "ok";
+  const finalBlockReason = finalDecision === "block"
+    ? persistedSignal?.block_reason ?? policy.reason ?? (persistedSignal?.near_news_event ? "Directional news policy" : "Adaptive policy blocked this market context")
+    : null;
+  await admin.from("signals").update({ policy_decision: finalDecision, block_reason: finalBlockReason }).eq("id", signal.id);
+  if (finalDecision === "block") {
+    await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
+    return finish("policy_blocked", { reason: finalBlockReason ?? "adaptive_or_news_policy" }, 1, 0, signal.id, finalBlockReason ?? "policy_blocked");
+  }
+
+  const avoidNewsFactor = news.near && (strategy.news_posture ?? "avoid") === "avoid"
+    ? positiveConfig(strategy.config, "news_volume_factor", 0.5) : 1;
+  const exploitNewsFactor = news.has_direction && news.minutes_to_event != null && news.minutes_to_event <= 0 &&
+      strategy.news_posture === "exploit" && news.implied_side === candidate.side
+    ? Math.min(3, numberValue(strategy.news_exploit_size_multiplier, 1.5)) * (regime === "trending" ? 1.25 : 1) : 1;
+  const effectiveRiskPercent = baseRiskPercent * (policy.decision === "downweight" ? policy.factor : 1) * avoidNewsFactor * exploitNewsFactor;
+  if (!Number.isFinite(effectiveRiskPercent) || effectiveRiskPercent <= 0) {
+    await admin.from("signals").update({ policy_decision: "block", block_reason: "Calculated risk was not positive" }).eq("id", signal.id);
+    await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
+    return finish("risk_blocked", { reason: "non_positive_effective_risk" }, 1, 0, signal.id, "non_positive_effective_risk");
+  }
+  const { data: riskGate, error: riskGateError } = await admin.rpc("portfolio_risk_gate", {
+    p_terminal_id: strategy.terminal_id, p_strategy_id: strategy.id,
+    p_symbol: symbol, p_proposed_risk_percent: effectiveRiskPercent,
+  });
+  if (riskGateError || !riskGate?.[0]?.allowed) {
+    const reason = riskGate?.[0]?.reason ?? "Portfolio risk guardrail";
+    await admin.from("signals").update({ policy_decision: "block", block_reason: reason }).eq("id", signal.id);
+    await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
+    return finish("risk_blocked", { reason, error: riskGateError?.message ?? null }, 1, 0, signal.id, reason);
+  }
+
+  const positionCount = finalDecision === "downweight" ? 1 : candidate.score >= 0.85 ? 3 : candidate.score >= 0.7 ? 2 : 1;
+  const riskPercentPerLeg = effectiveRiskPercent / positionCount;
+  const resolution = await resolveBrokerSymbol(admin, strategy.terminal_id, symbol);
+  if (resolution.error || !resolution.brokerSymbol) {
+    await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
+    return finish("broker_mapping_failed", { error: resolution.error ?? "empty broker symbol" }, 1, 0, signal.id, "broker_mapping_failed");
+  }
+
+  let firstCommandId: string | null = null;
+  let insertedLegs = 0;
+  let insertFailure: string | null = null;
+  for (let leg = 1; leg <= positionCount; leg++) {
+    const reservation = await reservePositionSlot(admin, strategy.terminal_id, budgets);
+    if (reservation.error) { insertFailure = reservation.error; break; }
+    if (!reservation.reserved) break;
+    const origin = sourceKind === "internal" ? "strategy_auto" : `external_${sourceKind}`;
+    const { data: command, error } = await admin.from("ea_commands").insert({
+      terminal_id: strategy.terminal_id, source: "auto_signal", command_type: "open",
+      symbol: resolution.brokerSymbol, side: candidate.side, volume: baseVolume,
+      risk_percent: riskPercentPerLeg, sl: candidate.suggestedSl, tp: candidate.suggestedTp,
+      entry_atr: candidate.entryAtr, entry_spread_points: bars[bars.length - 1].spread ?? null,
+      initial_risk_distance: candidate.initialRiskDistance, auto_manage: true,
+      idempotency_key: `sig:${signal.id}:${leg}`, signal_delivery_id: leg === 1 ? delivery.id : null,
+      strategy_id: strategy.id, session, htf_regime: regime, near_news_event: news.near,
+      news_event_id: news.news_event_id, strategy_name_at_entry: strategy.name,
+      origin_detail: origin, risk_defined: true,
+      entry_context: {
+        version: 3, captured_at: nowIso, origin, source_kind: sourceKind,
+        external_event_id: externalEventId, strategy_name_at_entry: strategy.name,
+        session_definition: "utc-v1", regime_model: `adx14-${timeframe.toLowerCase()}-v1`,
+        regime_quality: "strategy_grade", risk_defined: true, timeframe,
+        strategy_kind: strategy.kind, canonical_symbol: symbol,
+        risk_percent_total: effectiveRiskPercent, risk_percent_leg: riskPercentPerLeg,
+        initial_atr: candidate.entryAtr, initial_risk_distance: candidate.initialRiskDistance,
+        entry_spread_points: bars[bars.length - 1].spread ?? null,
+      },
+    }).select("id").single();
+    if (error || !command) { insertFailure = error?.message ?? "no command row returned"; break; }
+    if (!firstCommandId) firstCommandId = command.id;
+    insertedLegs++;
+  }
+  if (insertedLegs > 0 && firstCommandId) {
+    await admin.from("signal_deliveries").update({ status: "auto_executed", acted_at: nowIso, ea_command_id: firstCommandId }).eq("id", delivery.id);
+    return finish("command_queued", { signal_id: signal.id, candidate_side: candidate.side, command_count: insertedLegs, source_kind: sourceKind }, 1, insertedLegs, signal.id);
+  }
+  await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
+  return finish("command_failed", { stage: "command_insert", error: insertFailure ?? "no_position_capacity" }, 1, 0, signal.id, insertFailure ?? "no_position_capacity");
+}
+
 async function manageOpenStrategyPositions(
   // deno-lint-ignore no-explicit-any
   admin: any,
@@ -1075,6 +1312,20 @@ Deno.serve(async (req: Request) => {
   if (authorized !== true) return jsonResponse({ error: "unauthorized" }, 401);
 
   try {
+    let requestBody: { external_event_id?: string } = {};
+    try { requestBody = await req.json(); } catch { requestBody = {}; }
+    const externalEventId = typeof requestBody.external_event_id === "string" ? requestBody.external_event_id : null;
+    let externalEvent: Record<string, unknown> | null = null;
+    if (externalEventId) {
+      const { data: claimed, error: claimError } = await admin.from("external_signal_events")
+        .update({ status: "processing" }).eq("id", externalEventId).eq("status", "received")
+        .select("id,endpoint_id,terminal_id,strategy_id,provider,provider_event_id,canonical_symbol,timeframe,side,occurred_at,received_at")
+        .maybeSingle();
+      if (claimError) return jsonResponse({ error: "external_event_claim_failed", detail: claimError.message }, 500);
+      if (!claimed) return jsonResponse({ processed: 0, duplicate_or_missing_external_event: true });
+      externalEvent = claimed;
+    }
+
     // A stopped terminal cannot call us to announce its own absence. This
     // scheduled server-side check detects the missing heartbeat, while the
     // outbox dispatcher sends any pending notification work asynchronously.
@@ -1084,14 +1335,21 @@ Deno.serve(async (req: Request) => {
     if (disconnectError) console.error("strategy-signal-engine: disconnect detection failed", disconnectError.message);
     dispatchPushInBackground(admin);
 
-    const { data: strategies, error: strategiesError } = await admin
+    let strategyQuery = admin
       .from("strategies")
-      .select("id, terminal_id, name, kind, timeframe, symbols, delivery_mode, max_lot_size, risk_percent, signal_ttl_seconds, config, run_mode, bias_timeframe, rule_definition, exit_config, allowed_sessions, direction_mode, cooldown_minutes, max_concurrent_positions, max_spread_points, news_posture, news_window_minutes, news_min_impact, news_exploit_size_multiplier")
+      .select("id, terminal_id, name, kind, timeframe, symbols, delivery_mode, max_lot_size, risk_percent, signal_ttl_seconds, config, run_mode, bias_timeframe, rule_definition, exit_config, allowed_sessions, direction_mode, cooldown_minutes, max_concurrent_positions, max_spread_points, news_posture, news_window_minutes, news_min_impact, news_exploit_size_multiplier, signal_source")
       .eq("enabled", true)
       .in("kind", ["momentum_breakout", "confirmed_trend_pullback", "multi_timeframe_trend_pullback", "range_mean_reversion", "volatility_compression_breakout", "news_continuation", "custom_rules"]);
+    if (externalEvent) {
+      strategyQuery = strategyQuery.eq("id", externalEvent.strategy_id).neq("signal_source", "internal");
+    }
+    const { data: strategies, error: strategiesError } = await strategyQuery;
     if (strategiesError) return jsonResponse({ error: "strategies_fetch_failed", detail: strategiesError.message }, 500);
     const activeStrategies = strategies ?? [];
-    if (activeStrategies.length === 0) return jsonResponse({ processed: 0, signals_generated: 0, commands_queued: 0 });
+    if (activeStrategies.length === 0) {
+      if (externalEventId) await admin.from("external_signal_events").update({ status: "blocked", block_reason: "strategy_disabled_or_missing", processed_at: new Date().toISOString() }).eq("id", externalEventId);
+      return jsonResponse({ processed: 0, signals_generated: 0, commands_queued: 0 });
+    }
 
     const terminalIds = [...new Set(activeStrategies.map((strategy) => strategy.terminal_id))];
     const { data: terminalCapabilities, error: capabilitiesError } = terminalIds.length > 0
@@ -1146,6 +1404,7 @@ Deno.serve(async (req: Request) => {
     let processed = 0;
     let signalsGenerated = 0;
     let commandsQueued = 0;
+    let externalPipelineResult: CandidatePipelineResult | null = null;
     const evaluationStates = new Map<string, Record<string, unknown>>();
     const recordEvaluation = (
       strategy: StrategyRow,
@@ -1167,11 +1426,28 @@ Deno.serve(async (req: Request) => {
 
     for (const rawStrategy of activeStrategies) {
       const strategy = rawStrategy as StrategyRow;
+      // External strategies are event-driven, but remain in the scheduled
+      // strategy set so their open positions still receive trailing-stop and
+      // breakeven management between inbound events.
+      if (!externalEvent && (strategy.signal_source ?? "internal") !== "internal") continue;
       if (!Array.isArray(strategy.symbols)) continue;
       if (!supportedTimeframes.has(strategy.timeframe)) continue;
       if (strategy.kind === "news_continuation" && !calendarFreshByTerminal.get(strategy.terminal_id)) continue;
+      const strategySymbols = externalEvent
+        ? [String(externalEvent.canonical_symbol ?? "")].filter(Boolean)
+        : strategy.symbols;
+      if (externalEvent) {
+        const occurredAtMs = new Date(String(externalEvent.occurred_at)).getTime();
+        const ttlMs = Math.max(1, Math.floor(numberValue(strategy.signal_ttl_seconds, 60))) * 1000;
+        if (!Number.isFinite(occurredAtMs) || now.getTime() - occurredAtMs > ttlMs) {
+          for (const symbol of strategySymbols) {
+            recordEvaluation(strategy, symbol, "command_failed", null, null, { reason: "external_signal_expired_in_queue" });
+          }
+          continue;
+        }
+      }
       if (Array.isArray(strategy.allowed_sessions) && !strategy.allowed_sessions.includes(session)) {
-        for (const symbol of strategy.symbols) {
+        for (const symbol of strategySymbols) {
           if (typeof symbol === "string" && symbol.length > 0) {
             recordEvaluation(strategy, symbol, "session_blocked", null, null, { current_session: session });
           }
@@ -1180,7 +1456,7 @@ Deno.serve(async (req: Request) => {
       }
       const timeframe = strategy.timeframe;
 
-      for (const symbol of strategy.symbols) {
+      for (const symbol of strategySymbols) {
         if (typeof symbol !== "string" || symbol.length === 0) continue;
 
         const symbolSetting = settingsByTerminalSymbol.get(`${strategy.terminal_id}:${symbol}`);
@@ -1291,336 +1567,82 @@ Deno.serve(async (req: Request) => {
         await settleShadowSignals(admin, strategy, symbol, bars, nowIso);
 
         const news = await newsContextForStrategy(admin, strategy, symbol, now);
-        const candidate = evaluateStrategy(strategy, barsByTimeframe, news);
-        if (!candidate) {
-          recordEvaluation(strategy, symbol, "no_setup", sourceBarTime, candleAgeSeconds);
-          continue;
-        }
-        if (news.has_direction && news.minutes_to_event != null && news.minutes_to_event <= 0 && news.implied_side !== candidate.side) {
-          recordEvaluation(strategy, symbol, "policy_blocked", sourceBarTime, candleAgeSeconds, { reason: "opposes_released_news" });
-          continue;
-        }
-        if (strategy.direction_mode === "long_only" && candidate.side === "sell") {
-          recordEvaluation(strategy, symbol, "direction_blocked", sourceBarTime, candleAgeSeconds, { candidate_side: candidate.side });
-          continue;
-        }
-        if (strategy.direction_mode === "short_only" && candidate.side === "buy") {
-          recordEvaluation(strategy, symbol, "direction_blocked", sourceBarTime, candleAgeSeconds, { candidate_side: candidate.side });
-          continue;
-        }
-        const latestSpread = Number(bars[bars.length - 1].spread);
-        if (strategy.max_spread_points != null && Number.isFinite(latestSpread) && latestSpread > numberValue(strategy.max_spread_points, Number.POSITIVE_INFINITY)) {
-          recordEvaluation(strategy, symbol, "spread_blocked", sourceBarTime, candleAgeSeconds, { spread_points: latestSpread, maximum: strategy.max_spread_points });
-          continue;
-        }
-
-        const cooldownMinutes = Math.max(0, Math.floor(numberValue(strategy.cooldown_minutes, 0)));
-        if (cooldownMinutes > 0) {
-          const { count: cooldownSignals } = await admin.from("signals").select("id", { count: "exact", head: true })
-            .eq("strategy_id", strategy.id).eq("symbol", symbol)
-            .gte("generated_at", new Date(now.getTime() - cooldownMinutes * 60_000).toISOString());
-          if ((cooldownSignals ?? 0) > 0) {
-            recordEvaluation(strategy, symbol, "cooldown_blocked", sourceBarTime, candleAgeSeconds, { cooldown_minutes: cooldownMinutes });
-            continue;
+        let candidate: SignalCandidate | null;
+        if (externalEvent) {
+          const externalSide = externalEvent.side === "sell" ? "sell" : "buy";
+          let confirmed = true;
+          if (strategy.rule_definition?.version === 2 && strategy.rule_definition.indicators.length > 0) {
+            const confirmation = indicatorRuleSides(
+              strategy.rule_definition,
+              bars,
+              strategy.timeframe === "M30" ? (barsByTimeframe.get("H1") ?? []) : [],
+            );
+            confirmed = externalSide === "buy" ? confirmation.buy : confirmation.sell;
+          } else if (strategy.rule_definition?.version === 1) {
+            const conditions = externalSide === "buy" ? strategy.rule_definition.long : strategy.rule_definition.short;
+            confirmed = customRuleSide(conditions, barsByTimeframe).matched;
           }
-        }
-
-        const ttlSeconds = Math.max(1, Math.floor(numberValue(strategy.signal_ttl_seconds, 60)));
-        const { data: recentSignal, error: recentSignalError } = await admin
-          .from("signals")
-          .select("id")
-          .eq("terminal_id", strategy.terminal_id)
-          .eq("strategy_id", strategy.id)
-          .eq("symbol", symbol)
-          .eq("timeframe", timeframe)
-          .eq("source_bar_time", sourceBarTime)
-          .limit(1)
-          .maybeSingle();
-        if (recentSignalError) {
-          console.error(`strategy-signal-engine: idempotency lookup failed for ${strategy.id}/${symbol}: ${recentSignalError.message}`);
-          continue;
-        }
-        if (recentSignal) {
-          recordEvaluation(strategy, symbol, "duplicate_bar", sourceBarTime, candleAgeSeconds);
-          continue;
-        }
-
-        if (strategy.run_mode === "shadow") {
-          const shadowBars = Math.max(5, Math.min(500, Math.floor(positiveConfig(strategy.config, "shadow_horizon_bars", 50))));
-          const timeframeSeconds: Record<string, number> = {
-            M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400, D1: 86400, W1: 604800,
-          };
-          const { error: shadowError } = await admin.from("strategy_shadow_signals").insert({
-            terminal_id: strategy.terminal_id, strategy_id: strategy.id, symbol, timeframe,
-            source_bar_time: sourceBarTime, side: candidate.side, entry_price: candidate.entryPrice,
-            sl: candidate.suggestedSl, tp: candidate.suggestedTp,
-            initial_risk_distance: candidate.initialRiskDistance,
-            expires_at: new Date(now.getTime() + shadowBars * timeframeSeconds[timeframe] * 1000).toISOString(),
-            evaluation_context: {
-              version: 1, strategy_kind: strategy.kind, definition_version: 1,
-              regime, news, score: candidate.score, rule_definition: strategy.rule_definition ?? null,
-            },
-          });
-          if (shadowError && shadowError.code !== "23505") {
-            console.error(`strategy-signal-engine: shadow insert failed for ${strategy.id}/${symbol}: ${shadowError.message}`);
-            recordEvaluation(strategy, symbol, "command_failed", sourceBarTime, candleAgeSeconds, { stage: "shadow_insert", error: shadowError.message });
-          } else {
-            recordEvaluation(strategy, symbol, "shadow_signal", sourceBarTime, candleAgeSeconds, { candidate_side: candidate.side });
-          }
-          continue;
-        }
-
-        const baseVolume = Math.max(0, numberValue(strategy.max_lot_size, 0));
-        const baseRiskPercent = Math.min(5, Math.max(0.01, numberValue(strategy.risk_percent, 0.5)));
-        if (baseVolume <= 0) {
-          console.error(`strategy-signal-engine: strategy ${strategy.id} has non-positive max_lot_size; signal skipped`);
-          recordEvaluation(strategy, symbol, "risk_blocked", sourceBarTime, candleAgeSeconds, { reason: "non_positive_max_lot_size" });
-          continue;
-        }
-
-        const { data: signal, error: signalError } = await admin
-          .from("signals")
-          .insert({
-            terminal_id: strategy.terminal_id,
-            strategy_id: strategy.id,
-            symbol,
-            timeframe,
-            source_bar_time: sourceBarTime,
-            side: candidate.side,
-            suggested_volume: baseVolume,
-            suggested_risk_percent: baseRiskPercent,
-            suggested_sl: candidate.suggestedSl,
-            suggested_tp: candidate.suggestedTp,
-            entry_atr: candidate.entryAtr,
-            entry_spread_points: bars[bars.length - 1].spread ?? null,
-            initial_risk_distance: candidate.initialRiskDistance,
-            entry_price_ref: candidate.entryPrice,
-            session,
-            htf_regime: regime,
-            near_news_event: news.near,
-            news_event_id: news.news_event_id,
-            score: candidate.score,
-            policy_decision: candidate.policyDecision,
-            ttl_seconds: ttlSeconds,
-            generated_at: nowIso,
-            expires_at: new Date(now.getTime() + ttlSeconds * 1000).toISOString(),
-          })
-          .select("id")
-          .single();
-        if (signalError || !signal) {
-          console.error(`strategy-signal-engine: signal insert failed for ${strategy.id}/${symbol}: ${signalError?.message ?? "no row returned"}`);
-          recordEvaluation(strategy, symbol, "command_failed", sourceBarTime, candleAgeSeconds, { stage: "signal_insert", error: signalError?.message ?? "no row returned" });
-          continue;
-        }
-        signalsGenerated++;
-
-        const { data: delivery, error: deliveryError } = await admin
-          .from("signal_deliveries")
-          .insert({
-            signal_id: signal.id,
-            terminal_id: strategy.terminal_id,
-            delivery_mode: strategy.delivery_mode,
-            status: "pending",
-          })
-          .select("id")
-          .single();
-        if (deliveryError || !delivery) {
-          console.error(`strategy-signal-engine: delivery insert failed for signal ${signal.id}: ${deliveryError?.message ?? "no row returned"}`);
-          recordEvaluation(strategy, symbol, "command_failed", sourceBarTime, candleAgeSeconds, { stage: "delivery_insert", error: deliveryError?.message ?? "no row returned" });
-          continue;
-        }
-
-        if (strategy.delivery_mode === "manual_confirm") {
-          recordEvaluation(strategy, symbol, "manual_signal", sourceBarTime, candleAgeSeconds, { signal_id: signal.id, candidate_side: candidate.side });
-          continue;
-        }
-
-        if (!versionAtLeast(eaVersionByTerminal.get(strategy.terminal_id), "1.0.29")) {
-          await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
-          console.warn(`strategy-signal-engine: terminal ${strategy.terminal_id} requires EA v1.0.29 for risk-sized auto execution`);
-          recordEvaluation(strategy, symbol, "ea_version_blocked", sourceBarTime, candleAgeSeconds, { required_version: "1.0.29", installed_version: eaVersionByTerminal.get(strategy.terminal_id) ?? null });
-          continue;
-        }
-
-        // INSERT triggers apply the directional-news and adaptive throttle
-        // policies before this worker continues. Re-read their durable result
-        // so a trigger-level block is never accidentally downgraded by the
-        // worker's following policy pass, and retain its exact block reason.
-        const { data: persistedSignal } = await admin.from("signals")
-          .select("policy_decision, near_news_event, block_reason")
-          .eq("id", signal.id)
-          .single();
-        const persistedDecision: PolicyDecision = persistedSignal?.policy_decision === "block" ||
-            persistedSignal?.policy_decision === "downweight"
-          ? persistedSignal.policy_decision
-          : candidate.policyDecision;
-
-        const policy = await policyForCell(admin, strategy.terminal_id, strategy.id, symbol, session, regime, news.near);
-        if (policy.error) {
-          await admin.from("signals").update({
-            policy_decision: "block",
-            block_reason: "Adaptive policy lookup failed",
-          }).eq("id", signal.id);
-          await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
-          console.error(`strategy-signal-engine: policy lookup failed for ${strategy.id}/${symbol}: ${policy.error}`);
-          recordEvaluation(strategy, symbol, "policy_blocked", sourceBarTime, candleAgeSeconds, { reason: "policy_lookup_failed", error: policy.error });
-          continue;
-        }
-
-        const finalDecision: PolicyDecision = policy.decision === "block" || persistedDecision === "block"
-          ? "block"
-          : policy.decision === "downweight" || persistedDecision === "downweight"
-          ? "downweight"
-          : "ok";
-        await admin.from("signals").update({
-          policy_decision: finalDecision,
-          block_reason: finalDecision === "block"
-            ? (persistedSignal?.block_reason ?? policy.reason ??
-              (persistedSignal?.near_news_event ? "Directional news policy" : "Adaptive policy blocked this market context"))
-            : null,
-        }).eq("id", signal.id);
-
-        if (finalDecision === "block") {
-          await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
-          recordEvaluation(strategy, symbol, "policy_blocked", sourceBarTime, candleAgeSeconds, { reason: "adaptive_or_news_policy" });
-          continue;
-        }
-
-        const avoidNewsFactor = news.near && (strategy.news_posture ?? "avoid") === "avoid"
-          ? positiveConfig(strategy.config, "news_volume_factor", 0.5) : 1;
-        const exploitNewsFactor = news.has_direction && news.minutes_to_event != null && news.minutes_to_event <= 0 &&
-            strategy.news_posture === "exploit" && news.implied_side === candidate.side
-          ? Math.min(3, positiveConfig(strategy as unknown as Record<string, unknown>, "news_exploit_size_multiplier", 1.5)) * (regime === "trending" ? 1.25 : 1)
-          : 1;
-        const effectiveRiskPercent = baseRiskPercent *
-          (policy.decision === "downweight" ? policy.factor : 1) * avoidNewsFactor * exploitNewsFactor;
-        if (!Number.isFinite(effectiveRiskPercent) || effectiveRiskPercent <= 0) {
-          await admin.from("signals").update({
-            policy_decision: "block",
-            block_reason: "Calculated risk was not positive",
-          }).eq("id", signal.id);
-          await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
-          recordEvaluation(strategy, symbol, "risk_blocked", sourceBarTime, candleAgeSeconds, { reason: "non_positive_effective_risk" });
-          continue;
-        }
-
-        const { data: riskGate, error: riskGateError } = await admin.rpc("portfolio_risk_gate", {
-          p_terminal_id: strategy.terminal_id,
-          p_strategy_id: strategy.id,
-          p_symbol: symbol,
-          p_proposed_risk_percent: effectiveRiskPercent,
-        });
-        if (riskGateError || !riskGate?.[0]?.allowed) {
-          await admin.from("signals").update({
-            policy_decision: "block",
-            block_reason: riskGate?.[0]?.reason ?? "Portfolio risk guardrail",
-          }).eq("id", signal.id);
-          await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
-          if (riskGateError) console.error(`strategy-signal-engine: portfolio risk gate failed: ${riskGateError.message}`);
-          recordEvaluation(strategy, symbol, "risk_blocked", sourceBarTime, candleAgeSeconds, { reason: "portfolio_risk_gate", error: riskGateError?.message ?? null });
-          continue;
-        }
-
-        // Any downweight (adaptive-policy or near-news) caps the multiplier at
-        // one. Otherwise score 0.85+ gets three entries, 0.70+ gets two.
-        const positionCount = finalDecision === "downweight" ? 1 : candidate.score >= 0.85 ? 3 : candidate.score >= 0.7 ? 2 : 1;
-        const riskPercentPerLeg = effectiveRiskPercent / positionCount;
-        const resolution = await resolveBrokerSymbol(admin, strategy.terminal_id, symbol);
-        if (resolution.error || !resolution.brokerSymbol) {
-          await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
-          console.error(`strategy-signal-engine: broker symbol resolution failed for ${strategy.id}/${symbol}: ${resolution.error ?? "empty broker symbol"}`);
-          recordEvaluation(strategy, symbol, "broker_mapping_failed", sourceBarTime, candleAgeSeconds, { error: resolution.error ?? "empty broker symbol" });
-          continue;
-        }
-
-        let firstCommandId: string | null = null;
-        let insertedLegs = 0;
-        let insertFailure: string | null = null;
-        for (let leg = 1; leg <= positionCount; leg++) {
-          const reservation = await reservePositionSlot(admin, strategy.terminal_id, budgets);
-          if (reservation.error) {
-            insertFailure = reservation.error;
-            break;
-          }
-          if (!reservation.reserved) break; // cap reached; do not overshoot it
-
-          // signal_deliveries has a 1:1 ea_command_id FK so only the first
-          // multiplier position is linked back to the delivery record —
-          // positions 2/3 are still fully attributed via ea_commands.strategy_id
-          // and the shared idempotency_key prefix, just not joinable from
-          // signal_deliveries directly. A future migration could add a join
-          // table if per-multiplier-leg delivery tracking becomes necessary.
-          const commandRow: Record<string, unknown> = {
-            terminal_id: strategy.terminal_id,
-            source: "auto_signal",
-            command_type: "open",
-            symbol: resolution.brokerSymbol,
-            side: candidate.side,
-            volume: baseVolume,
-            risk_percent: riskPercentPerLeg,
-            sl: candidate.suggestedSl,
-            tp: candidate.suggestedTp,
-            entry_atr: candidate.entryAtr,
-            entry_spread_points: bars[bars.length - 1].spread ?? null,
-            initial_risk_distance: candidate.initialRiskDistance,
-            auto_manage: true,
-            idempotency_key: `sig:${signal.id}:${leg}`,
-            signal_delivery_id: leg === 1 ? delivery.id : null,
-            strategy_id: strategy.id,
-            session,
-            htf_regime: regime,
-            near_news_event: news.near,
-            news_event_id: news.news_event_id,
-            strategy_name_at_entry: strategy.name,
-            origin_detail: "strategy_auto",
-            risk_defined: true,
-            entry_context: {
-              version: 2, captured_at: nowIso, origin: "strategy_auto",
-              strategy_name_at_entry: strategy.name, session_definition: "utc-v1",
-              regime_model: `adx14-${timeframe.toLowerCase()}-v1`, regime_quality: "strategy_grade",
-              risk_defined: true, timeframe, strategy_kind: strategy.kind,
-              canonical_symbol: symbol,
-              risk_percent_total: effectiveRiskPercent, risk_percent_leg: riskPercentPerLeg,
-              initial_atr: candidate.entryAtr, initial_risk_distance: candidate.initialRiskDistance,
-              entry_spread_points: bars[bars.length - 1].spread ?? null,
-            },
-          };
-          const { data: command, error: commandError } = await admin
-            .from("ea_commands")
-            .insert(commandRow)
-            .select("id")
-            .single();
-          if (commandError || !command) {
-            insertFailure = commandError?.message ?? "no command row returned";
-            break;
-          }
-          if (!firstCommandId) firstCommandId = command.id;
-          insertedLegs++;
-          commandsQueued++;
-        }
-
-        if (insertedLegs > 0 && firstCommandId) {
-          await admin
-            .from("signal_deliveries")
-            .update({ status: "auto_executed", acted_at: nowIso, ea_command_id: firstCommandId })
-            .eq("id", delivery.id);
-          recordEvaluation(strategy, symbol, "command_queued", sourceBarTime, candleAgeSeconds, { signal_id: signal.id, candidate_side: candidate.side, command_count: insertedLegs });
+          candidate = confirmed ? candidateFromSide(strategy, bars, externalSide, 0.68, news) : null;
         } else {
-          await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
-          recordEvaluation(strategy, symbol, "command_failed", sourceBarTime, candleAgeSeconds, { stage: "command_insert", error: insertFailure ?? "no_position_capacity" });
+          candidate = evaluateStrategy(strategy, barsByTimeframe, news);
         }
-        if (insertFailure) {
-          console.error(`strategy-signal-engine: command insert failed for signal ${signal.id} after ${insertedLegs} legs: ${insertFailure}`);
+        if (!candidate) {
+          recordEvaluation(strategy, symbol, "no_setup", sourceBarTime, candleAgeSeconds, {
+            reason: externalEvent ? "external_signal_failed_confirmation" : "indicator_conditions_not_met",
+            external_event_id: externalEvent?.id ?? null,
+          });
+          continue;
         }
+        const pipelineResult = await processSignalCandidate(admin, {
+          strategy, symbol, timeframe, bars, candidate, news, regime, session,
+          sourceBarTime, candleAgeSeconds, now, nowIso,
+          eaVersion: eaVersionByTerminal.get(strategy.terminal_id), budgets,
+          sourceKind: strategy.signal_source ?? "internal",
+          externalEventId: externalEvent ? String(externalEvent.id) : null,
+          recordEvaluation: (status, detail = {}) =>
+            recordEvaluation(strategy, symbol, status, sourceBarTime, candleAgeSeconds, detail),
+        });
+        signalsGenerated += pipelineResult.signalGenerated;
+        commandsQueued += pipelineResult.commandsQueued;
+        if (externalEvent) externalPipelineResult = pipelineResult;
+        continue;
+
       }
     }
 
     commandsQueued += await manageOpenStrategyPositions(
       admin,
-      activeStrategies as StrategyRow[],
+      externalEvent ? [] : activeStrategies as StrategyRow[],
       eaVersionByTerminal,
       nowIso,
     );
+
+    if (externalEventId && externalEvent) {
+      const evaluation = [...evaluationStates.values()][0] as Record<string, unknown> | undefined;
+      const evaluationStatus = externalPipelineResult?.evaluationStatus ?? String(evaluation?.status ?? "command_failed") as EvaluationStatus;
+      const reason = externalPipelineResult?.reason ??
+        (evaluation?.detail && typeof evaluation.detail === "object"
+          ? String((evaluation.detail as Record<string, unknown>).reason ?? evaluationStatus)
+          : evaluationStatus);
+      const eventStatus = reason === "external_signal_expired_in_queue" ? "expired"
+        : evaluationStatus === "shadow_signal" ? "shadow_recorded"
+        : evaluationStatus === "manual_signal" ? "manual_pending"
+        : evaluationStatus === "command_queued" ? "command_queued"
+        : evaluationStatus === "duplicate_bar" ? "duplicate"
+        : evaluationStatus === "command_failed" && !externalPipelineResult?.signalId ? "processing_failed"
+        : "blocked";
+      await admin.from("external_signal_events").update({
+        status: eventStatus,
+        block_reason: ["shadow_recorded", "manual_pending", "command_queued"].includes(eventStatus) ? null : reason,
+        signal_id: externalPipelineResult?.signalId ?? null,
+        processed_at: nowIso,
+      }).eq("id", externalEventId);
+      const endpointUpdate: Record<string, unknown> = { last_status: eventStatus };
+      if (["shadow_recorded", "manual_pending", "command_queued"].includes(eventStatus)) {
+        endpointUpdate.last_accepted_at = nowIso;
+      }
+      await admin.from("external_signal_endpoints").update(endpointUpdate).eq("id", externalEvent.endpoint_id);
+    }
     let evaluationStatesWritten = 0;
     if (evaluationStates.size > 0) {
       const { data, error } = await admin.rpc("record_strategy_evaluation_states", {

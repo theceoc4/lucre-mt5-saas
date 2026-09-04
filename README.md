@@ -10,9 +10,9 @@ was synchronized from production on **2026-08-21**.
 
 | Component | Location in repo | Live location | Version |
 |---|---|---|---|
-| Backend (Supabase) | [`supabase/`](./supabase) | [qxlfnscmrhwfcpattqxa.supabase.co](https://qxlfnscmrhwfcpattqxa.supabase.co) | local-day risk controls v1.0.57 |
-| Dashboard (frontend) | [`dashboard/`](./dashboard) | [mt5dashboardui.vercel.app](https://mt5dashboardui.vercel.app) | v1.0.57 |
-| EA (MetaTrader 5) | [`ea/`](./ea) | Runs on MT5 terminal / VPS | v1.0.48 (single-file) |
+| Backend (Supabase) | [`supabase/`](./supabase) | [qxlfnscmrhwfcpattqxa.supabase.co](https://qxlfnscmrhwfcpattqxa.supabase.co) | external signals v1.0.61 |
+| Dashboard (frontend) | [`dashboard/`](./dashboard) | [mt5dashboardui.vercel.app](https://mt5dashboardui.vercel.app) | v1.0.61 |
+| EA (MetaTrader 5) | [`ea/`](./ea) | Runs on MT5 terminal / VPS | v1.0.49 (single-file) |
 
 ## Important caveats
 
@@ -44,6 +44,9 @@ ea/
   mt5_ea/LucreHubEA.mq5   Single-file consolidated EA source
   CHANGELOG.md
 ```
+
+See [`EXTERNAL_SIGNALS.md`](./EXTERNAL_SIGNALS.md) for the TradingView,
+generic webhook, and MT5 custom-indicator setup and payload contract.
 
 ## Going forward
 
