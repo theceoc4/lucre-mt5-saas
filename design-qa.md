@@ -1,62 +1,60 @@
-# Soleau Gold design QA
+# Soleau Gold semantic-color design QA
 
-- Source visual truth: `/Users/rayevelyn/Downloads/black-to-gold.png`
-- Rendered implementation: `/private/tmp/soleau-gold-desktop-v2.png`
-- Mobile implementation: `/private/tmp/soleau-gold-mobile-viewport.png`
-- Combined comparison: `/private/tmp/soleau-gold-comparison.png`
-- Desktop viewport: 1440 x 1000 CSS px; screenshot 1440 x 1013 px; device pixel ratio 1.
-- Mobile viewport: 390 x 844 CSS px; screenshot 390 x 844 px; device pixel ratio 1.
-- State: Soleau Gold selected, dark mode; light-mode token state also exercised.
+- Source visual truth: `/Users/rayevelyn/.codex/generated_images/01a02ffc-090a-7373-8d71-3aeedabdfb9b/exec-66dfd66f-8b89-47ad-a072-7fa28b8541b0.png`
+- Rendered implementation: `/private/tmp/soleau-theme-implementation.png`
+- Combined comparison: `/private/tmp/soleau-theme-comparison.png`
+- Source dimensions: 1411 x 1115 px.
+- Implementation capture: 1280 x 774 px from a 1280 x 720 CSS viewport; browser-reported device pixel ratio 2 and normalized screenshot density 1.
+- State: Soleau Gold, dark mode, representative Pair card, positive Lock In state, P/L heatmap, notifications, status badges, and destructive action.
 
 ## Full-view comparison evidence
 
-The supplied six-step scale is reproduced exactly in the Appearance picker and
-mapped in order through the dashboard shell: `#1B1B1B`, `#423416`, `#694D10`,
-`#8F670B`, `#B68005`, and `#DD9900`. The implementation preserves the existing
-Lucre layout, type hierarchy, glass surfaces, radii, and trading-semantic green
-and red while replacing the general brand accent and ambient shell color.
+The approved mockup and browser-rendered implementation were opened together in
+`/private/tmp/soleau-theme-comparison.png`. Both use near-black warm surfaces,
+dark-brown bearish controls, vibrant-gold bullish controls, warm ivory text, and
+restrained bronze borders. The implementation intentionally adds the requested
+Daily P/L, heatmap, Lock In, notification, and status states around the selected
+Pair-card direction.
 
 ## Focused-region evidence
 
-A separate crop was not needed because the full desktop comparison keeps the
-source swatches and the complete Appearance picker legible in the same image.
-The palette preview shows all six source colors directly. Desktop and mobile
-captures confirm card borders, selected state, text hierarchy, and accent use.
+The Pair card was inspected separately in the browser capture. Its meter runs
+from `#423416` through the neutral sunken surface to `#DD9900`; Sell renders as
+`#423416` with warm ivory text; Buy renders as `#DD9900` with `#1B1B1B` text.
+The positive Lock In button uses the same gold/ink pair. Heatmap loss cells use
+dark-brown opacity and profit cells use gold opacity, with transparent zero cells.
 
 ## Interaction and responsive checks
 
-- Switching Lucre Sage to Soleau Gold changed `data-palette` from `lucre` to
-  `soleau-gold` and the computed accent from `#d7e64e` to `#dd9900`.
-- The light/dark control remained independent; Soleau Gold light mode computed
-  the expected warm page background `#e9dcc0`.
-- The 390px mobile state reported equal document and viewport widths with no
-  horizontal overflow; palette options collapsed into the intended stacked layout.
-- No application-origin console errors were observed in the rendered QA page.
-- Contrast checks: light primary 15.83:1, light muted 7.23:1, dark primary
-  15.70:1, dark muted 9.79:1, and dark text on the gold accent 7.08:1.
+- Theme-change handling still redraws the volume, P/L, strategy, and heatmap charts.
+- Semantic state tokens were verified from computed browser styles.
+- Buy and positive Lock In computed to `rgb(221, 153, 0)` with `rgb(27, 27, 27)` text.
+- Sell computed to `rgb(66, 52, 22)` with `rgb(255, 248, 232)` text.
+- Heatmap legend language changes from red/green to dark brown/gold under Soleau Gold.
+- No browser console warnings or errors were present in the QA fixture.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: existing Cabinet Grotesk and General Sans hierarchy is unchanged and legible.
-- Spacing and layout rhythm: existing component grid, padding, radii, and responsive stacking are unchanged.
-- Colors and visual tokens: source swatches are exact; derived warm neutrals maintain accessible text contrast.
-- Image quality and asset fidelity: the reference contains only flat color swatches; no missing raster assets exist.
-- Copy and content: `Soleau Gold` naming and the Appearance descriptions are consistent across desktop and mobile.
+- Fonts and typography: the existing Cabinet Grotesk and General Sans hierarchy is unchanged.
+- Spacing and layout rhythm: existing production component spacing, grids, radii, and sizing are unchanged.
+- Colors and visual tokens: positive, negative, danger, warning, soft-state, surface, and foreground tokens now inherit the Soleau Gold scale consistently.
+- Image quality and asset fidelity: no raster assets were introduced; the implementation is code-native UI using the approved palette.
+- Copy and content: Pair health and heatmap guidance no longer assumes that semantic states are always red or green.
 
 ## Comparison history
 
-The first fixture capture inherited the production authenticated-root hidden
-state and therefore displayed no dashboard content. The fixture-only root was
-made visible; the next desktop and mobile captures rendered the complete palette
-state. This did not require a production component change.
+The first semantic pass exposed insufficient contrast for small bearish text on
+the dark-brown surface. Bearish surfaces remained `#423416`, while dark-theme
+text and outlines moved to the palette's restrained bronze `#B99345`. The final
+browser capture confirms the distinction without reintroducing red or green.
 
 ## Findings
 
-No actionable P0, P1, or P2 visual differences remain for the palette target.
+No actionable P0, P1, or P2 visual differences remain for this theme update.
 
 ## Follow-up polish
 
-The source does not prescribe semantic profit/loss colors. They intentionally
-remain green/red so trading meaning is never replaced by decorative gold.
+P3: real production data may reveal unusually dense chart/notification states;
+the underlying semantic tokens will still apply without component-specific fixes.
 
 final result: passed

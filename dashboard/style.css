@@ -56,6 +56,14 @@
 
   --color-positive: #4c8a5e;
   --color-negative: #c3583f;
+  --color-positive-surface: var(--color-positive);
+  --color-negative-surface: var(--color-negative);
+  --color-positive-ink: #f7fbf4;
+  --color-negative-ink: #fff8f5;
+  --color-positive-soft: rgba(76, 138, 94, 0.16);
+  --color-negative-soft: rgba(195, 88, 63, 0.16);
+  --color-danger: var(--color-negative);
+  --color-warning: #d6a83e;
   --color-neutral-dot: #c7cec0;
 
   --shadow-card: 0 1px 2px rgba(30, 42, 34, 0.04), 0 12px 28px rgba(30, 42, 34, 0.08);
@@ -120,6 +128,14 @@
 
   --color-positive: #7bc98f;
   --color-negative: #e08268;
+  --color-positive-surface: var(--color-positive);
+  --color-negative-surface: var(--color-negative);
+  --color-positive-ink: #f7fbf4;
+  --color-negative-ink: #fff8f5;
+  --color-positive-soft: rgba(123, 201, 143, 0.16);
+  --color-negative-soft: rgba(224, 130, 104, 0.16);
+  --color-danger: var(--color-negative);
+  --color-warning: #d6a83e;
   --color-neutral-dot: #4a5346;
 
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 28px rgba(0, 0, 0, 0.35);
@@ -178,6 +194,16 @@
   --color-accent: #dd9900;
   --color-accent-strong: #b68005;
   --color-accent-ink: #1b1b1b;
+  --color-positive: #8f670b;
+  --color-positive-surface: #dd9900;
+  --color-positive-ink: #1b1b1b;
+  --color-positive-soft: rgba(221, 153, 0, 0.18);
+  --color-negative: #423416;
+  --color-negative-surface: #423416;
+  --color-negative-ink: #fff8e8;
+  --color-negative-soft: rgba(66, 52, 22, 0.16);
+  --color-danger: #423416;
+  --color-warning: #b68005;
   --color-neutral-dot: #bcae8d;
   --shadow-card: 0 1px 2px rgba(66, 52, 22, 0.08), 0 12px 28px rgba(66, 52, 22, 0.14);
   --shadow-card-lg: 0 4px 10px rgba(66, 52, 22, 0.1), 0 24px 48px rgba(66, 52, 22, 0.2);
@@ -213,6 +239,16 @@
   --color-accent: #dd9900;
   --color-accent-strong: #f0ae16;
   --color-accent-ink: #1b1b1b;
+  --color-positive: #dd9900;
+  --color-positive-surface: #dd9900;
+  --color-positive-ink: #1b1b1b;
+  --color-positive-soft: rgba(221, 153, 0, 0.18);
+  --color-negative: #b99345;
+  --color-negative-surface: #423416;
+  --color-negative-ink: #fff8e8;
+  --color-negative-soft: rgba(66, 52, 22, 0.44);
+  --color-danger: #b99345;
+  --color-warning: #b68005;
   --color-neutral-dot: #694d10;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.32), 0 12px 28px rgba(0, 0, 0, 0.4);
   --shadow-card-lg: 0 4px 10px rgba(0, 0, 0, 0.34), 0 24px 48px rgba(0, 0, 0, 0.52);
@@ -565,8 +601,8 @@ a {
   transition: filter 160ms ease, opacity 160ms ease, background 160ms ease;
 }
 
-.floating-pl-button.is-positive { background: var(--color-positive); color: #f7fbf4; }
-.floating-pl-button.is-negative { background: var(--color-negative); color: #fff8f5; }
+.floating-pl-button.is-positive { background: var(--color-positive-surface); color: var(--color-positive-ink); }
+.floating-pl-button.is-negative { background: var(--color-negative-surface); color: var(--color-negative-ink); }
 .floating-pl-button.is-flat { background: var(--color-surface-sunken); }
 .floating-pl-button:hover:not(:disabled) { filter: brightness(1.08); }
 .floating-pl-button:disabled { cursor: default; opacity: 0.62; }
@@ -811,8 +847,8 @@ a {
 }
 
 .daily-risk-override-button[aria-pressed='true'] {
-  background: var(--color-negative);
-  color: #fff;
+  background: var(--color-negative-surface);
+  color: var(--color-negative-ink);
 }
 
 .daily-risk-override-button:disabled {
@@ -1017,7 +1053,7 @@ a {
 }
 
 .tag-ok {
-  background: rgba(76, 138, 94, 0.16);
+  background: var(--color-positive-soft);
   color: var(--color-positive);
 }
 
@@ -1027,7 +1063,7 @@ a {
 }
 
 .tag-danger {
-  background: rgba(195, 88, 63, 0.16);
+  background: var(--color-negative-soft);
   color: var(--color-negative);
 }
 
@@ -1191,8 +1227,8 @@ a {
 }
 
 .btn-danger {
-  background: var(--color-negative);
-  color: #fff;
+  background: var(--color-negative-surface);
+  color: var(--color-negative-ink);
   font-weight: 600;
   font-size: var(--text-sm);
   padding: var(--space-2) var(--space-4);
@@ -1234,21 +1270,21 @@ a {
 }
 
 .side-buy {
-  background: rgba(76, 138, 94, 0.16);
+  background: var(--color-positive-soft);
   color: var(--color-positive);
 }
 
 .side-sell {
-  background: rgba(195, 88, 63, 0.16);
+  background: var(--color-negative-soft);
   color: var(--color-negative);
 }
 
 [data-theme='dark'] .side-buy {
-  background: rgba(123, 201, 143, 0.16);
+  background: var(--color-positive-soft);
 }
 
 [data-theme='dark'] .side-sell {
-  background: rgba(224, 130, 104, 0.16);
+  background: var(--color-negative-soft);
 }
 
 /* ---------------- Inline row actions (positions, signal queue) ---------------- */
@@ -2941,14 +2977,16 @@ body {
 }
 
 .pair-timeframe-status.is-available {
-  background: var(--color-positive);
-  box-shadow: 0 0 14px color-mix(in srgb, var(--color-positive) 30%, transparent);
+  background: var(--color-positive-surface);
+  color: var(--color-positive-ink);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--color-positive-surface) 30%, transparent);
   cursor: default;
 }
 
 .pair-timeframe-status.is-unavailable {
-  background: var(--color-negative);
-  box-shadow: 0 0 14px color-mix(in srgb, var(--color-negative) 26%, transparent);
+  background: var(--color-negative-surface);
+  color: var(--color-negative-ink);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--color-negative-surface) 26%, transparent);
 }
 
 .pair-timeframe-status.is-waiting {
@@ -2991,8 +3029,8 @@ body {
   border-radius: 50%;
 }
 
-.pair-feed-legend i.is-available { background: var(--color-positive); }
-.pair-feed-legend i.is-unavailable { background: var(--color-negative); }
+.pair-feed-legend i.is-available { background: var(--color-positive-surface); }
+.pair-feed-legend i.is-unavailable { background: var(--color-negative-surface); }
 
 .pair-winrate-panel {
   display: grid;
@@ -3075,7 +3113,7 @@ body {
   overflow: visible;
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-full);
-  background: linear-gradient(90deg, var(--color-negative) 0%, var(--color-surface-sunken) 50%, var(--color-positive) 100%);
+  background: linear-gradient(90deg, var(--color-negative-surface) 0%, var(--color-surface-sunken) 50%, var(--color-positive-surface) 100%);
   box-shadow: inset 0 1px 2px rgba(20, 32, 22, 0.16);
 }
 
@@ -3209,13 +3247,13 @@ body {
 }
 
 .btn-buy {
-  background: var(--color-positive);
-  color: var(--color-text-on-shell);
+  background: var(--color-positive-surface);
+  color: var(--color-positive-ink);
 }
 
 .btn-sell {
-  background: var(--color-negative);
-  color: var(--color-text-on-shell);
+  background: var(--color-negative-surface);
+  color: var(--color-negative-ink);
 }
 
 .btn-buy:hover,
@@ -3405,9 +3443,9 @@ body {
 .notification-item:last-child { border-bottom: 0; }
 .notification-item-dot { width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: var(--color-neutral-dot); }
 .notification-signal .notification-item-dot { background: var(--color-accent-strong); }
-.notification-success .notification-item-dot { background: var(--color-positive); }
-.notification-warn .notification-item-dot { background: #d6a83e; }
-.notification-error .notification-item-dot { background: var(--color-negative); }
+.notification-success .notification-item-dot { background: var(--color-positive-surface); }
+.notification-warn .notification-item-dot { background: var(--color-warning); }
+.notification-error .notification-item-dot { background: var(--color-negative-surface); }
 .notification-item strong { display: block; font-size: var(--text-sm); }
 .notification-item p { margin: 2px 0; color: var(--color-text-muted); font-size: var(--text-xs); line-height: 1.4; }
 

@@ -1,5 +1,15 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.62 — Soleau Gold semantic states (2026-09-04)
+
+- Replaces inherited green bullish/positive states with vibrant Soleau gold and
+  inherited red bearish/negative states with deep brown throughout the dashboard.
+- Applies the palette to Buy/Sell controls, Lock In and Daily P/L, price-feed
+  health, Trend Strength, P/L charts, heatmaps, notifications, badges, risk
+  states, position actions, and error/success messaging.
+- Gives charts theme-aware session bands and color-language legends while
+  preserving the original Lucre Sage colors when that palette is selected.
+
 ## v1.0.60 — Soleau Gold palette (2026-09-04)
 
 - Adds Soleau Gold as the first alternate dashboard palette, translating the

@@ -4029,7 +4029,7 @@ function renderPairsView() {
             <div class="pair-feed-section">
               <div class="pair-feed-heading">
                 <span class="pair-card-section-label">Timeframes</span>
-                <span>Tap red to repair</span>
+                <span>Tap flagged to repair</span>
               </div>
               <div class="pair-timeframe-row" aria-label="${s.symbol} candle feed availability">
                 ${timeframeButtons}
@@ -4044,7 +4044,7 @@ function renderPairsView() {
               ${perf.count > 0 ? `<small style="color:${plColor}">${perf.totalPl >= 0 ? '+' : ''}${perf.totalPl.toFixed(2)} realized P/L</small>` : ''}
             </div>
 
-            <p class="pair-card-back-note">Health uses closed broker candles stored for this terminal. A green timeframe has sufficient history and a current latest candle.</p>
+            <p class="pair-card-back-note">Health uses closed broker candles stored for this terminal. A current timeframe has sufficient history and an up-to-date latest candle.</p>
           </section>
         </div>
       </article>`;
@@ -5372,8 +5372,9 @@ function renderActivityHeatmap(containerId, legendId, signals, trades, mode) {
   const legend = document.getElementById(legendId);
   if (!container || !legend) return;
   const { values, maxMagnitude } = buildActivityHeatmap(signals, trades, mode);
-  const positive = cssVar('--color-positive') || '#4c8a5e';
-  const negative = cssVar('--color-negative') || '#c3583f';
+  const positive = cssVar('--color-positive-surface') || cssVar('--color-positive') || '#4c8a5e';
+  const negative = cssVar('--color-negative-surface') || cssVar('--color-negative') || '#c3583f';
+  const isSoleauGold = document.documentElement.dataset.palette === 'soleau-gold';
   const cells = ['<span class="heatmap-axis-corner" aria-hidden="true"></span>'];
   for (let hour = 0; hour < 24; hour += 1) cells.push(`<span class="heatmap-hour-label">${heatmapHourLabel(hour)}</span>`);
   values.forEach((hours, rowIndex) => {
@@ -5391,8 +5392,8 @@ function renderActivityHeatmap(containerId, legendId, signals, trades, mode) {
   });
   container.innerHTML = cells.join('');
   legend.textContent = mode === 'pl'
-    ? `Red = average broker loss · Green = average broker profit · 30 local calendar days · ${displayTimezone()}`
-    : `More green = more signals · 30 local calendar days · ${displayTimezone()}`;
+    ? `${isSoleauGold ? 'Dark brown' : 'Red'} = average broker loss · ${isSoleauGold ? 'Gold' : 'Green'} = average broker profit · 30 local calendar days · ${displayTimezone()}`
+    : `More ${isSoleauGold ? 'gold' : 'green'} = more signals · 30 local calendar days · ${displayTimezone()}`;
 }
 
 function renderDashboardHeatmap() {
@@ -5515,12 +5516,20 @@ function summarizeSignalsForRange(signals, deliveries, range) {
 }
 
 function sessionBandsPlugin(sessions, enabled) {
-  const colors = {
-    asia: 'rgba(74, 115, 148, 0.10)',
-    london: 'rgba(215, 230, 78, 0.075)',
-    overlap: 'rgba(195, 88, 63, 0.075)',
-    ny: 'rgba(76, 138, 94, 0.085)',
-  };
+  const isSoleauGold = document.documentElement.dataset.palette === 'soleau-gold';
+  const colors = isSoleauGold
+    ? {
+        asia: 'rgba(66, 52, 22, 0.18)',
+        london: 'rgba(105, 77, 16, 0.13)',
+        overlap: 'rgba(182, 128, 5, 0.10)',
+        ny: 'rgba(221, 153, 0, 0.085)',
+      }
+    : {
+        asia: 'rgba(74, 115, 148, 0.10)',
+        london: 'rgba(215, 230, 78, 0.075)',
+        overlap: 'rgba(195, 88, 63, 0.075)',
+        ny: 'rgba(76, 138, 94, 0.085)',
+      };
   return {
     id: `session-bands-${Math.random().toString(36).slice(2)}`,
     beforeDatasetsDraw(chart) {
@@ -5609,8 +5618,8 @@ function renderStrategyPlChart(trades) {
   const canvas = document.getElementById('strategyPlChart');
   if (!canvas || typeof Chart === 'undefined') return;
   if (strategyPlChartInstance) strategyPlChartInstance.destroy();
-  const positive = cssVar('--color-positive') || '#4c8a5e';
-  const negative = cssVar('--color-negative') || '#c3583f';
+  const positive = cssVar('--color-positive-surface') || cssVar('--color-positive') || '#4c8a5e';
+  const negative = cssVar('--color-negative-surface') || cssVar('--color-negative') || '#c3583f';
   const textFaint = cssVar('--color-text-faint') || '#99a496';
   const byDate = new Map();
   trades.slice().sort((a, b) => new Date(a.close_time) - new Date(b.close_time)).forEach((trade) => {
@@ -5930,8 +5939,8 @@ function renderPlChart() {
   if (!canvas || typeof Chart === 'undefined') return;
   if (plChartInstance) plChartInstance.destroy();
 
-  const positive = cssVar('--color-positive') || '#4c8a5e';
-  const negative = cssVar('--color-negative') || '#c3583f';
+  const positive = cssVar('--color-positive-surface') || cssVar('--color-positive') || '#4c8a5e';
+  const negative = cssVar('--color-negative-surface') || cssVar('--color-negative') || '#c3583f';
   const textFaint = cssVar('--color-text-faint') || '#99a496';
 
   const trades = getFilteredTradeHistoryForPl()
