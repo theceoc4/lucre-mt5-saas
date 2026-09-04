@@ -20,9 +20,25 @@ begin
     from pg_policies
     where schemaname = 'public'
       and (coalesce(qual, '') = 'true' or coalesce(with_check, '') = 'true')
-      and tablename not in ('calendar_events', 'market_feed_health', 'symbol_correlations')
   ) then
     raise exception 'privacy audit failed: tenant data has an unrestricted RLS policy';
+  end if;
+  if exists (
+    select 1
+    from (values
+      ('calendar_events'),
+      ('market_feed_health'),
+      ('symbol_correlations')
+    ) required(table_name)
+    where not exists (
+      select 1 from information_schema.columns column_info
+      where column_info.table_schema = 'public'
+        and column_info.table_name = required.table_name
+        and column_info.column_name = 'terminal_id'
+        and column_info.is_nullable = 'NO'
+    )
+  ) then
+    raise exception 'privacy audit failed: MT5 market data is not terminal-scoped';
   end if;
   if exists (
     select 1

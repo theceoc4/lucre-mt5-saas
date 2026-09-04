@@ -4732,6 +4732,11 @@ document.addEventListener('click', (e) => {
 });
 
 async function loadCalendarEvents() {
+  if (!state.activeTerminalId) {
+    state.calendarEvents = [];
+    renderNewsEventsTab();
+    return;
+  }
   // v1.0.17 -- shortened from 100 to 30: the tab now shows a short, most-
   // recent-first list in a fixed-height scrollable card (see #tab-news-
   // events-list in style.css) instead of a long unbounded page-stretching
@@ -4743,6 +4748,7 @@ async function loadCalendarEvents() {
       'id, event_time, country, currency, impact, title, affected_symbols, is_global, ' +
         'forecast, previous, actual, higher_is_bullish, source'
     )
+    .eq('terminal_id', state.activeTerminalId)
     .order('event_time', { ascending: false })
     .limit(30);
 

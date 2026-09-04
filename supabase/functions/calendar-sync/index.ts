@@ -9,13 +9,10 @@
 // (v1.0.0), reusing the same x-api-key terminal-auth model rather than a
 // second credential type.
 //
-// Any one authenticated terminal may push a calendar snapshot: the
-// underlying MetaQuotes calendar feed is not broker- or account-specific,
-// so this is global reference data (same as calendar_events always was),
-// not scoped to the pushing terminal. All writes go through the
-// service-role-only public.ingest_calendar_events() RPC (migration 028),
-// which validates and upserts each event individually — one malformed row
-// never fails the whole batch.
+// Every authenticated terminal owns its calendar snapshot. Even when two
+// terminals receive identical MetaQuotes events, their rows and feed-health
+// checkpoints remain isolated so one user's EA can never satisfy or influence
+// another user's news policy.
 //
 // Request body:
 // {
@@ -105,8 +102,8 @@ Deno.serve(async (req: Request) => {
   const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-  // Same terminal-key auth as ea-sync: any registered terminal may push a
-  // calendar snapshot (this is global reference data, not terminal-scoped).
+  // Same terminal-key auth as ea-sync. The resolved terminal id is carried
+  // through every write below; callers cannot choose another terminal.
   const keyHash = await sha256Hex(apiKey);
   const { data: terminal, error: terminalError } = await admin
     .from("mt5_terminals")
@@ -164,6 +161,7 @@ Deno.serve(async (req: Request) => {
   });
 
   const { data: result, error: ingestError } = await admin.rpc("ingest_calendar_events", {
+    p_terminal_id: terminal.id,
     p_events: preparedEvents,
   });
 
@@ -176,11 +174,11 @@ Deno.serve(async (req: Request) => {
   const actualTimes = preparedEvents.filter((event) => event.actual != null && event.event_time).map((event) => new Date(String(event.event_time)))
     .filter((value) => !Number.isNaN(value.getTime()));
   await admin.from("market_feed_health").upsert({
-    feed_name: "economic_calendar", last_received_at: new Date().toISOString(),
+    terminal_id: terminal.id, feed_name: "economic_calendar", last_received_at: new Date().toISOString(),
     last_event_time: validTimes.length ? new Date(Math.max(...validTimes.map((value) => value.getTime()))).toISOString() : null,
     last_actual_release_at: actualTimes.length ? new Date(Math.max(...actualTimes.map((value) => value.getTime()))).toISOString() : null,
     rows_received: preparedEvents.length, updated_at: new Date().toISOString(),
-  }, { onConflict: "feed_name" });
+  }, { onConflict: "terminal_id,feed_name" });
 
   return jsonResponse(result);
 });

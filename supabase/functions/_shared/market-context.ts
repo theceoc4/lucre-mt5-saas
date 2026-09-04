@@ -37,6 +37,7 @@ export async function captureMarketContext(admin: SupabaseAdminClient, input: Co
   const to = new Date(input.at.getTime() + 30 * 60_000).toISOString();
   const { data: events } = await admin.from("calendar_events")
     .select("id,title,currency,impact,event_time")
+    .eq("terminal_id", input.terminalId)
     .in("impact", ["medium", "high"]).gte("event_time", from).lte("event_time", to)
     .order("event_time", { ascending: true }).limit(1);
   const event = events?.[0] ?? null;

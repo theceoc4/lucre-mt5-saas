@@ -53,6 +53,7 @@ function sessionForNow(date: Date): "asia" | "london" | "ny" | "overlap" {
 
 async function nearNewsCheck(
   admin: ReturnType<typeof createClient>,
+  terminalId: string,
   at: Date,
   windowMinutes = 30,
 ): Promise<{ near: boolean; news_event_id: string | null }> {
@@ -61,6 +62,7 @@ async function nearNewsCheck(
   const { data } = await admin
     .from("calendar_events")
     .select("id")
+    .eq("terminal_id", terminalId)
     .in("impact", ["medium", "high"])
     .gte("event_time", from)
     .lte("event_time", to)

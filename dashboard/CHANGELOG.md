@@ -1,5 +1,14 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.58 — Terminal-private MT5 market feeds (2026-09-04)
+
+- Scopes MT5 economic-calendar rows, calendar feed health, and future symbol
+  correlations to the terminal whose authenticated EA supplied or derived them.
+- Keeps news-policy, manual-order context, strategy evaluation, and dashboard
+  news reads inside the selected terminal instead of a shared global feed.
+- Preserves existing calendar history for the current terminal while enforcing
+  composite terminal/event foreign keys against future cross-tenant linkage.
+
 ## v1.0.57 — Local trading day, daily override, and activity heatmaps (2026-09-04)
 
 - Enlarges and center-aligns the mobile navigation dock and theme control while

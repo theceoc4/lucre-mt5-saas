@@ -1127,10 +1127,21 @@ Deno.serve(async (req: Request) => {
     const now = new Date();
     const nowIso = now.toISOString();
     const session = sessionForNow(now);
-    const { data: calendarHealth } = await admin.from("market_feed_health")
-      .select("last_received_at").eq("feed_name", "economic_calendar").maybeSingle();
-    const calendarFresh = calendarHealth?.last_received_at &&
-      now.getTime() - new Date(calendarHealth.last_received_at).getTime() <= 15 * 60_000;
+    const { data: calendarHealthRows, error: calendarHealthError } = await admin
+      .from("market_feed_health")
+      .select("terminal_id,last_received_at")
+      .in("terminal_id", terminalIds)
+      .eq("feed_name", "economic_calendar");
+    if (calendarHealthError) {
+      return jsonResponse({ error: "calendar_health_fetch_failed", detail: calendarHealthError.message }, 500);
+    }
+    const calendarFreshByTerminal = new Map(
+      (calendarHealthRows ?? []).map((health) => [
+        health.terminal_id,
+        Boolean(health.last_received_at) &&
+          now.getTime() - new Date(health.last_received_at).getTime() <= 15 * 60_000,
+      ]),
+    );
     const budgets = new Map<string, TerminalPositionBudget>();
     let processed = 0;
     let signalsGenerated = 0;
@@ -1158,7 +1169,7 @@ Deno.serve(async (req: Request) => {
       const strategy = rawStrategy as StrategyRow;
       if (!Array.isArray(strategy.symbols)) continue;
       if (!supportedTimeframes.has(strategy.timeframe)) continue;
-      if (strategy.kind === "news_continuation" && !calendarFresh) continue;
+      if (strategy.kind === "news_continuation" && !calendarFreshByTerminal.get(strategy.terminal_id)) continue;
       if (Array.isArray(strategy.allowed_sessions) && !strategy.allowed_sessions.includes(session)) {
         for (const symbol of strategy.symbols) {
           if (typeof symbol === "string" && symbol.length > 0) {
