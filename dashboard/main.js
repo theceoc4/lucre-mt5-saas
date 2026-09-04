@@ -37,6 +37,10 @@ const state = {
   portfolioRisk: null,
   recentCommands: [],
   notifications: [],
+  socialProfiles: [],
+  socialPosts: [],
+  directMessages: [],
+  selectedRecipientId: null,
   activeView: 'dashboard',
   activeTab: 'overview',
   selectedStrategyId: null,
@@ -145,6 +149,7 @@ const riskGaugeArc = document.getElementById('risk-gauge-arc');
 const textRiskTrend = document.getElementById('text-risk-trend');
 
 const viewDashboard = document.getElementById('view-dashboard');
+const viewSocial = document.getElementById('view-social');
 const viewStrategies = document.getElementById('view-strategies');
 const viewPairs = document.getElementById('view-pairs');
 const pairGrid = document.getElementById('pair-grid');
@@ -184,10 +189,30 @@ const settingsModalSubtitle = document.getElementById('settings-modal-subtitle')
 const settingsBackButton = document.getElementById('button-settings-back');
 const paletteSettingsForm = document.getElementById('form-palette-settings');
 const paletteSettingsMessage = document.getElementById('palette-settings-message');
+const socialFeed = document.getElementById('social-feed');
+const socialCommunityList = document.getElementById('social-community-list');
+const socialAccountStrip = document.getElementById('social-account-strip');
+const socialBalance = document.getElementById('social-balance');
+const socialEquity = document.getElementById('social-equity');
+const socialMargin = document.getElementById('social-margin');
+const socialFloatingPl = document.getElementById('social-floating-pl');
+const socialFloatingPlButton = document.getElementById('social-floating-pl-button');
+const buttonInbox = document.getElementById('button-inbox');
+const inboxDot = document.getElementById('inbox-dot');
+const inboxRecipientSelect = document.getElementById('inbox-recipient-select');
+const inboxConversationList = document.getElementById('inbox-conversation-list');
+const inboxMessageList = document.getElementById('inbox-message-list');
+const inboxThreadHead = document.getElementById('inbox-thread-head');
+const inboxComposeForm = document.getElementById('inbox-compose-form');
+const inboxMessageInput = document.getElementById('inbox-message-input');
+const profilePhotoInput = document.getElementById('profile-photo-input');
+const profilePhotoPreview = document.getElementById('profile-photo-preview');
+const profileAvatarPath = document.getElementById('profile-avatar-path');
 const VAPID_PUBLIC_KEY = 'BJx7Y2wwbHI0Heyu_qooP7C2LYbUPgSd3chuPO_Rnc1PNXQqsldZ5wnkhhDoNyDBdQpA7Gz_eHLwYlTti4tdcaQ';
 let pushRegistration = null;
 let pushSubscription = null;
 let dailyRiskOverrideTimer = null;
+let socialRefreshTimer = null;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -209,6 +234,28 @@ function initials(text) {
   const parts = text.trim().split(/\s+/);
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+function avatarUrl(path, version = '') {
+  if (!path) return '';
+  const { data } = supabase.storage.from('profile-avatars').getPublicUrl(path);
+  if (!data?.publicUrl) return '';
+  return version ? `${data.publicUrl}?v=${encodeURIComponent(version)}` : data.publicUrl;
+}
+
+function avatarMarkup(profile, className = 'social-avatar') {
+  const name = profile?.display_name || 'Lucre trader';
+  const url = avatarUrl(profile?.avatar_path, profile?.updated_at);
+  return url
+    ? `<span class="${className} has-image"><img src="${escapeHtml(url)}" alt="" loading="lazy" /></span>`
+    : `<span class="${className}" aria-hidden="true">${escapeHtml(initials(name))}</span>`;
+}
+
+function setAvatarElement(element, profile) {
+  if (!element) return;
+  const url = avatarUrl(profile?.avatar_path, profile?.updated_at);
+  element.classList.toggle('has-image', Boolean(url));
+  element.innerHTML = url ? `<img src="${escapeHtml(url)}" alt="" />` : escapeHtml(initials(profile?.display_name || 'Lucre trader'));
 }
 
 function escapeHtml(value) {
@@ -741,6 +788,29 @@ document.getElementById('form-account-profile')?.addEventListener('submit', asyn
     await loadProfile();
   } catch (err) { if (message) { message.style.color = 'var(--color-negative)'; message.textContent = err.message; } }
 });
+
+profilePhotoInput?.addEventListener('change', async () => {
+  const file = profilePhotoInput.files?.[0];
+  const message = document.getElementById('account-profile-message');
+  if (!file) return;
+  if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type) || file.size > 5 * 1024 * 1024) {
+    if (message) message.textContent = 'Choose a JPG, PNG, WebP, or GIF no larger than 5 MB.';
+    profilePhotoInput.value = '';
+    return;
+  }
+  const objectPath = `${state.session.user.id}/avatar`;
+  if (message) { message.style.color = 'var(--color-accent)'; message.textContent = 'Uploading photo…'; }
+  const { error } = await supabase.storage.from('profile-avatars').upload(objectPath, file, {
+    upsert: true, contentType: file.type, cacheControl: '3600',
+  });
+  if (error) {
+    if (message) { message.style.color = 'var(--color-negative)'; message.textContent = error.message; }
+    return;
+  }
+  if (profileAvatarPath) profileAvatarPath.value = objectPath;
+  setAvatarElement(profilePhotoPreview, { display_name: state.profile?.display_name, avatar_path: objectPath });
+  if (message) message.textContent = 'Photo uploaded. Save profile to publish it.';
+});
 document.getElementById('button-reset-password')?.addEventListener('click', async () => {
   const message = document.getElementById('account-profile-message');
   const { error } = await supabase.auth.resetPasswordForEmail(state.session.user.email, { redirectTo: window.location.origin });
@@ -771,15 +841,249 @@ document.getElementById('button-confirm-account-action')?.addEventListener('clic
 });
 
 // ---------------------------------------------------------------------------
+// Social timeline and private inbox (v1.0.63)
+// ---------------------------------------------------------------------------
+function socialProfile(userId) {
+  return state.socialProfiles.find((profile) => profile.user_id === userId) || {
+    user_id: userId, display_name: 'Lucre trader', avatar_path: null,
+  };
+}
+
+async function loadSocialProfiles() {
+  const { data, error } = await supabase.from('social_profiles')
+    .select('user_id,display_name,avatar_path,updated_at')
+    .order('display_name', { ascending: true }).limit(200);
+  if (error) { console.error('loadSocialProfiles error', error); return; }
+  state.socialProfiles = data || [];
+  renderSocialIdentity();
+  renderInboxRecipients();
+}
+
+async function loadSocialPosts() {
+  const { data: posts, error } = await supabase.from('social_posts')
+    .select('id,user_id,body,created_at,updated_at')
+    .order('created_at', { ascending: false }).limit(100);
+  if (error) { console.error('loadSocialPosts error', error); return; }
+  const ids = (posts || []).map((post) => post.id);
+  let comments = [];
+  if (ids.length) {
+    const result = await supabase.from('social_comments')
+      .select('id,post_id,user_id,body,created_at,updated_at')
+      .in('post_id', ids).order('created_at', { ascending: true });
+    if (result.error) console.error('loadSocialComments error', result.error);
+    else comments = result.data || [];
+  }
+  state.socialPosts = (posts || []).map((post) => ({
+    ...post, comments: comments.filter((comment) => comment.post_id === post.id),
+  }));
+  renderSocialFeed();
+}
+
+async function loadDirectMessages() {
+  if (!state.session) return;
+  const { data, error } = await supabase.from('direct_messages')
+    .select('id,sender_id,recipient_id,body,read_at,created_at')
+    .order('created_at', { ascending: true }).limit(500);
+  if (error) { console.error('loadDirectMessages error', error); return; }
+  state.directMessages = data || [];
+  renderInbox();
+}
+
+async function refreshDirectMessages() {
+  if (!state.session) return;
+  const newestAt = state.directMessages[state.directMessages.length - 1]?.created_at;
+  if (!newestAt) { await loadDirectMessages(); return; }
+  const { data, error } = await supabase.from('direct_messages')
+    .select('id,sender_id,recipient_id,body,read_at,created_at')
+    .gte('created_at', newestAt).order('created_at', { ascending: true }).limit(100);
+  if (error) { console.error('refreshDirectMessages error', error); return; }
+  if (data?.length) {
+    const existing = new Set(state.directMessages.map((message) => message.id));
+    const newMessages = data.filter((message) => !existing.has(message.id));
+    if (!newMessages.length) return;
+    state.directMessages = [...state.directMessages, ...newMessages].slice(-500);
+    renderInbox();
+  }
+}
+
+async function loadSocialData() {
+  await loadSocialProfiles();
+  await Promise.all([loadSocialPosts(), loadDirectMessages()]);
+}
+
+function renderSocialIdentity() {
+  const own = socialProfile(state.session?.user?.id);
+  setAvatarElement(document.getElementById('social-composer-avatar'), own);
+  const name = document.getElementById('social-composer-name');
+  if (name) name.textContent = own.display_name;
+  if (socialCommunityList) {
+    const people = state.socialProfiles.filter((profile) => profile.user_id !== state.session?.user?.id).slice(0, 12);
+    socialCommunityList.innerHTML = people.length ? people.map((profile) => `
+      <button type="button" class="social-person" data-message-user="${profile.user_id}">
+        ${avatarMarkup(profile)}<span><strong>${escapeHtml(profile.display_name)}</strong><small>Message privately</small></span>
+      </button>`).join('') : '<p class="empty-state-text">Other traders will appear here as the community grows.</p>';
+  }
+}
+
+function renderSocialFeed() {
+  if (!socialFeed) return;
+  const ownId = state.session?.user?.id;
+  socialFeed.innerHTML = state.socialPosts.length ? state.socialPosts.map((post) => {
+    const author = socialProfile(post.user_id);
+    const comments = post.comments || [];
+    return `<article class="card card-pad social-post" data-post-id="${post.id}">
+      <header>${avatarMarkup(author)}<div><strong>${escapeHtml(author.display_name)}</strong><time>${escapeHtml(formatDateTime(post.created_at, { dateStyle: 'medium', timeStyle: 'short' }))}</time></div>${post.user_id === ownId ? `<button class="social-delete" type="button" data-delete-post="${post.id}" aria-label="Delete post">×</button>` : ''}</header>
+      <p class="social-post-body">${escapeHtml(post.body)}</p>
+      <div class="social-comments">${comments.map((comment) => {
+        const commenter = socialProfile(comment.user_id);
+        return `<div class="social-comment">${avatarMarkup(commenter, 'social-avatar social-avatar-sm')}<div><strong>${escapeHtml(commenter.display_name)}</strong><p>${escapeHtml(comment.body)}</p><time>${escapeHtml(formatDateTime(comment.created_at, { dateStyle: 'medium', timeStyle: 'short' }))}</time></div>${comment.user_id === ownId ? `<button class="social-delete" type="button" data-delete-comment="${comment.id}" aria-label="Delete comment">×</button>` : ''}</div>`;
+      }).join('')}</div>
+      <form class="social-comment-form" data-comment-form="${post.id}"><input maxlength="600" placeholder="Add a comment…" aria-label="Comment on ${escapeHtml(author.display_name)}'s post" /><button class="btn-secondary btn-xs" type="submit">Comment</button></form>
+    </article>`;
+  }).join('') : '<div class="card card-pad"><p class="empty-state-text">No posts yet. Drop the first one and get the timeline moving.</p></div>';
+}
+
+document.getElementById('social-post-input')?.addEventListener('input', (event) => {
+  const count = document.getElementById('social-post-count');
+  if (count) count.textContent = `${event.target.value.length} / 1200`;
+});
+
+document.getElementById('social-post-form')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const input = document.getElementById('social-post-input');
+  const status = document.getElementById('social-post-status');
+  const body = input.value.trim();
+  if (!body) return;
+  const { error } = await supabase.from('social_posts').insert({ user_id: state.session.user.id, body });
+  if (error) { status.textContent = error.message; return; }
+  input.value = '';
+  document.getElementById('social-post-count').textContent = '0 / 1200';
+  status.textContent = '';
+  await loadSocialPosts();
+});
+
+socialFeed?.addEventListener('submit', async (event) => {
+  const form = event.target.closest('[data-comment-form]');
+  if (!form) return;
+  event.preventDefault();
+  const input = form.querySelector('input');
+  const body = input.value.trim();
+  if (!body) return;
+  const { error } = await supabase.from('social_comments').insert({
+    post_id: form.dataset.commentForm, user_id: state.session.user.id, body,
+  });
+  if (!error) { input.value = ''; await loadSocialPosts(); }
+});
+
+socialFeed?.addEventListener('click', async (event) => {
+  const deletePost = event.target.closest('[data-delete-post]');
+  const deleteComment = event.target.closest('[data-delete-comment]');
+  if (deletePost) {
+    await supabase.from('social_posts').delete().eq('id', deletePost.dataset.deletePost);
+    await loadSocialPosts();
+  } else if (deleteComment) {
+    await supabase.from('social_comments').delete().eq('id', deleteComment.dataset.deleteComment);
+    await loadSocialPosts();
+  }
+});
+
+function renderInboxRecipients() {
+  if (!inboxRecipientSelect) return;
+  const others = state.socialProfiles.filter((profile) => profile.user_id !== state.session?.user?.id);
+  inboxRecipientSelect.innerHTML = '<option value="">Choose a user</option>' + others.map((profile) =>
+    `<option value="${profile.user_id}">${escapeHtml(profile.display_name)}</option>`).join('');
+  if (state.selectedRecipientId) inboxRecipientSelect.value = state.selectedRecipientId;
+}
+
+function conversationPartners() {
+  const ownId = state.session?.user?.id;
+  const latest = new Map();
+  state.directMessages.forEach((message) => {
+    const partnerId = message.sender_id === ownId ? message.recipient_id : message.sender_id;
+    latest.set(partnerId, message);
+  });
+  return [...latest.entries()].sort((a, b) => new Date(b[1].created_at) - new Date(a[1].created_at));
+}
+
+function renderInbox() {
+  if (!state.session) return;
+  const ownId = state.session.user.id;
+  const unread = state.directMessages.filter((message) => message.recipient_id === ownId && !message.read_at).length;
+  if (inboxDot) inboxDot.hidden = unread === 0;
+  const partners = conversationPartners();
+  if (inboxConversationList) inboxConversationList.innerHTML = partners.length ? partners.map(([partnerId, latest]) => {
+    const profile = socialProfile(partnerId);
+    const hasUnread = state.directMessages.some((message) => message.sender_id === partnerId && message.recipient_id === ownId && !message.read_at);
+    return `<button class="inbox-conversation${partnerId === state.selectedRecipientId ? ' active' : ''}" type="button" data-message-user="${partnerId}">${avatarMarkup(profile)}<span><strong>${escapeHtml(profile.display_name)}${hasUnread ? ' · New' : ''}</strong><small>${escapeHtml(latest.body)}</small></span></button>`;
+  }).join('') : '<p class="empty-state-text">No conversations yet.</p>';
+
+  const recipient = state.selectedRecipientId ? socialProfile(state.selectedRecipientId) : null;
+  if (inboxThreadHead) inboxThreadHead.innerHTML = recipient ? `${avatarMarkup(recipient)}<strong>${escapeHtml(recipient.display_name)}</strong>` : 'Choose a trader to start a conversation.';
+  if (inboxMessageInput) inboxMessageInput.disabled = !recipient;
+  const send = inboxComposeForm?.querySelector('button');
+  if (send) send.disabled = !recipient;
+  if (!inboxMessageList) return;
+  if (!recipient) { inboxMessageList.innerHTML = '<p class="empty-state-text">Your messages will appear here.</p>'; return; }
+  const messages = state.directMessages.filter((message) =>
+    (message.sender_id === ownId && message.recipient_id === recipient.user_id)
+      || (message.sender_id === recipient.user_id && message.recipient_id === ownId));
+  inboxMessageList.innerHTML = messages.length ? messages.map((message) =>
+    `<div class="inbox-message ${message.sender_id === ownId ? 'sent' : 'received'}"><p>${escapeHtml(message.body)}</p><time>${escapeHtml(formatDateTime(message.created_at, { dateStyle: 'medium', timeStyle: 'short' }))}</time></div>`
+  ).join('') : '<p class="empty-state-text">No messages yet. Say what’s up.</p>';
+  inboxMessageList.scrollTop = inboxMessageList.scrollHeight;
+}
+
+async function selectInboxRecipient(userId) {
+  if (!userId || userId === state.session?.user?.id) return;
+  state.selectedRecipientId = userId;
+  renderInboxRecipients();
+  renderInbox();
+  await supabase.from('direct_messages').update({ read_at: new Date().toISOString() })
+    .eq('sender_id', userId).eq('recipient_id', state.session.user.id).is('read_at', null);
+  await loadDirectMessages();
+}
+
+buttonInbox?.addEventListener('click', async () => {
+  await loadSocialData();
+  window.LucreUI?.openModal('modal-inbox');
+});
+inboxRecipientSelect?.addEventListener('change', (event) => selectInboxRecipient(event.target.value));
+document.getElementById('modal-inbox')?.addEventListener('click', (event) => {
+  const user = event.target.closest('[data-message-user]');
+  if (user) selectInboxRecipient(user.dataset.messageUser);
+});
+socialCommunityList?.addEventListener('click', async (event) => {
+  const user = event.target.closest('[data-message-user]');
+  if (!user) return;
+  await selectInboxRecipient(user.dataset.messageUser);
+  window.LucreUI?.openModal('modal-inbox');
+});
+inboxComposeForm?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const status = document.getElementById('inbox-message-status');
+  const body = inboxMessageInput.value.trim();
+  if (!body || !state.selectedRecipientId) return;
+  const { error } = await supabase.from('direct_messages').insert({
+    sender_id: state.session.user.id, recipient_id: state.selectedRecipientId, body,
+  });
+  if (error) { status.textContent = error.message; return; }
+  inboxMessageInput.value = '';
+  status.textContent = '';
+  await loadDirectMessages();
+});
+
+// ---------------------------------------------------------------------------
 // Primary workspaces: account dashboard, strategy analytics, and pairs.
 // ---------------------------------------------------------------------------
 function setActiveView(view) {
-  const nextView = ['dashboard', 'strategies', 'pairs'].includes(view) ? view : 'dashboard';
+  const nextView = ['social', 'dashboard', 'strategies', 'pairs'].includes(view) ? view : 'dashboard';
   state.activeView = nextView;
   const isPairs = nextView === 'pairs';
+  viewSocial.hidden = nextView !== 'social';
   viewPairs.hidden = nextView !== 'pairs';
   viewStrategies.hidden = nextView !== 'strategies';
   viewDashboard.hidden = nextView !== 'dashboard';
+  renderBalanceWidget();
   document.querySelectorAll('.nav-pill').forEach((pill) => {
     const pillView = pill.dataset.view || 'dashboard';
     pill.classList.toggle('active', pillView === nextView);
@@ -797,6 +1101,8 @@ function setActiveView(view) {
     Promise.all([loadPriceFeedStates(), loadTrendStates()]);
   } else if (nextView === 'strategies') {
     renderStrategyPage();
+  } else if (nextView === 'social') {
+    loadSocialData();
   }
 }
 
@@ -2893,7 +3199,7 @@ window.addEventListener('pagehide', releaseRealtimeLeadership);
 async function loadProfile() {
   const { data, error } = await supabase
     .from('profiles')
-    .select('display_name, bio, location, website, trading_style, timezone, dashboard_palette')
+    .select('display_name, bio, location, website, trading_style, timezone, dashboard_palette, avatar_path, updated_at')
     .eq('id', state.session.user.id)
     .maybeSingle();
 
@@ -2918,7 +3224,9 @@ async function loadProfile() {
   const displayName = data?.display_name || state.session.user.email?.split('@')[0] || 'there';
   textGreeting.textContent = `Hey, ${displayName}`;
   accountMenuEmail.textContent = state.session.user.email || '';
-  document.getElementById('account-menu-button').textContent = initials(displayName);
+  setAvatarElement(document.getElementById('account-menu-button'), data);
+  setAvatarElement(profilePhotoPreview, data);
+  if (profileAvatarPath) profileAvatarPath.value = data?.avatar_path || '';
   const profileForm = document.getElementById('form-account-profile');
   if (profileForm) {
     profileForm.display_name.value = data?.display_name || '';
@@ -3467,12 +3775,15 @@ function renderFloatingPl() {
     : durableIsCurrent ? Number(active.floating_pl) : derivedTotal;
   const source = streamIsCurrent ? 'Live · 2s' : durableIsCurrent ? 'Backup · 30s' : 'Derived · waiting';
   balanceWidgetFloatingPl.textContent = `${total >= 0 ? '+' : ''}${fmtUsd(total)}`;
+  if (socialFloatingPl) socialFloatingPl.textContent = `${total >= 0 ? '+' : ''}${fmtUsd(total)}`;
   if (floatingPlSource) floatingPlSource.textContent = source;
-  floatingPlButton.classList.toggle('is-positive', total > 0);
-  floatingPlButton.classList.toggle('is-negative', total < 0);
-  floatingPlButton.classList.toggle('is-flat', total === 0);
-  floatingPlButton.disabled = closeAllSubmitting || !state.activeTerminalId
-    || !state.positions.some((position) => position.status === 'open');
+  [floatingPlButton, socialFloatingPlButton].filter(Boolean).forEach((button) => {
+    button.classList.toggle('is-positive', total > 0);
+    button.classList.toggle('is-negative', total < 0);
+    button.classList.toggle('is-flat', total === 0);
+    button.disabled = closeAllSubmitting || !state.activeTerminalId
+      || !state.positions.some((position) => position.status === 'open');
+  });
 
   if (bannerPositionStream) {
     const hasOpenPosition = state.positions.some((position) => position.status === 'open');
@@ -5071,14 +5382,19 @@ function renderBalanceWidget() {
   const active = state.terminals.find((t) => t.id === state.activeTerminalId);
   if (!active) {
     balanceWidget.hidden = true;
+    if (socialAccountStrip) socialAccountStrip.hidden = true;
     bannerAutotrading.hidden = true;
     return;
   }
-  balanceWidget.hidden = false;
+  balanceWidget.hidden = state.activeView === 'social';
+  if (socialAccountStrip) socialAccountStrip.hidden = state.activeView !== 'social';
   balanceWidgetBalance.textContent = fmtUsd(active.balance);
   balanceWidgetEquity.textContent = fmtUsd(active.equity);
   balanceWidgetMargin.textContent =
     active.margin_level === null || active.margin_level === undefined ? '—' : `${fmtNum(active.margin_level)}%`;
+  if (socialBalance) socialBalance.textContent = fmtUsd(active.balance);
+  if (socialEquity) socialEquity.textContent = fmtUsd(active.equity);
+  if (socialMargin) socialMargin.textContent = active.margin_level == null ? '—' : `${fmtNum(active.margin_level)}%`;
   renderFloatingPl();
 }
 
@@ -6057,14 +6373,20 @@ window.addEventListener('lucre:theme-changed', () => {
 // ---------------------------------------------------------------------------
 async function bootDashboard() {
   await loadProfile();
-  await Promise.all([loadTerminals(), loadCalendarEvents()]);
+  await Promise.all([loadTerminals(), loadCalendarEvents(), loadSocialData()]);
   await loadPushNotificationSettings();
   const launch = new URLSearchParams(window.location.search);
   const launchView = launch.get('view');
   const launchTab = launch.get('tab');
-  if (['dashboard', 'strategies', 'pairs'].includes(launchView)) setActiveView(launchView);
+  if (['social', 'dashboard', 'strategies', 'pairs'].includes(launchView)) setActiveView(launchView);
   if (launchView === 'dashboard' && launchTab) setActiveTab(launchTab);
   startPositionPolling();
+  if (socialRefreshTimer) clearInterval(socialRefreshTimer);
+  socialRefreshTimer = setInterval(() => {
+    if (document.hidden) return;
+    if (state.activeView === 'social') loadSocialPosts();
+    refreshDirectMessages();
+  }, 20000);
 }
 
 function resetDashboardState() {
@@ -6079,6 +6401,10 @@ function resetDashboardState() {
   state.tradeHistory = [];
   state.recentCommands = [];
   state.notifications = [];
+  state.socialProfiles = [];
+  state.socialPosts = [];
+  state.directMessages = [];
+  state.selectedRecipientId = null;
   state.activeView = 'dashboard';
   state.selectedStrategyId = null;
   state.signalChartRange = '30d';
@@ -6114,6 +6440,8 @@ function resetDashboardState() {
   pushSubscription = null;
   if (dailyRiskOverrideTimer) clearTimeout(dailyRiskOverrideTimer);
   dailyRiskOverrideTimer = null;
+  if (socialRefreshTimer) clearInterval(socialRefreshTimer);
+  socialRefreshTimer = null;
   renderDailyRiskOverride();
   renderPushControls();
 }

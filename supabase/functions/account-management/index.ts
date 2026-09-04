@@ -31,11 +31,21 @@ Deno.serve(async (req) => {
   const userId = userData.user.id;
 
   if (body.action === "update_profile") {
+    const displayName = text(body.display_name, 80) || "Lucre trader";
+    const requestedAvatarPath = text(body.avatar_path, 300);
+    if (requestedAvatarPath && !requestedAvatarPath.startsWith(`${userId}/`)) {
+      return reply({ error: "invalid_avatar_path" }, 422);
+    }
+    const avatarPath = requestedAvatarPath;
     const { error } = await admin.from("profiles").update({
-      display_name: text(body.display_name, 80), bio: text(body.bio, 500), location: text(body.location, 100),
-      website: text(body.website, 300), trading_style: text(body.trading_style, 100),
+      display_name: displayName, bio: text(body.bio, 500), location: text(body.location, 100),
+      website: text(body.website, 300), trading_style: text(body.trading_style, 100), avatar_path: avatarPath,
     }).eq("id", userId);
     if (error) return reply({ error: "profile_update_failed", detail: error.message }, 500);
+    const { error: socialError } = await admin.from("social_profiles").upsert({
+      user_id: userId, display_name: displayName, avatar_path: avatarPath,
+    }, { onConflict: "user_id" });
+    if (socialError) return reply({ error: "social_profile_update_failed", detail: socialError.message }, 500);
     return reply({ ok: true });
   }
   if (body.action === "update_timezone") {

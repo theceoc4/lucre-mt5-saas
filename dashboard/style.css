@@ -2195,6 +2195,20 @@ body {
 .settings-modal-title-row { gap: var(--space-2); }
 .settings-back-button { flex: 0 0 38px; }
 
+/* Modal controls sit on an opaque card, not the gradient shell. In light mode
+   they therefore use card colors so the back/close glyph cannot wash out. */
+.modal-card .icon-btn {
+  background: var(--color-surface-sunken);
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+  box-shadow: var(--shadow-pill);
+}
+.modal-card .icon-btn:hover {
+  background: var(--color-surface-2);
+  color: var(--color-accent-ink);
+  border-color: var(--color-accent-strong);
+}
+
 .settings-category-list {
   display: grid;
   gap: var(--space-3);
@@ -3448,6 +3462,132 @@ body {
 .notification-error .notification-item-dot { background: var(--color-negative-surface); }
 .notification-item strong { display: block; font-size: var(--text-sm); }
 .notification-item p { margin: 2px 0; color: var(--color-text-muted); font-size: var(--text-xs); line-height: 1.4; }
+
+/* ==========================================================================
+   Social timeline, private inbox, and profile photos (v1.0.63)
+=========================================================================== */
+.avatar-badge.has-image,
+.social-avatar.has-image { overflow: hidden; padding: 0; }
+.avatar-badge img,
+.social-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.profile-photo-editor {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-sunken);
+}
+.profile-photo-editor > div:last-child { display: grid; gap: var(--space-2); justify-items: start; }
+.profile-photo-editor small { color: var(--color-text-faint); }
+.profile-photo-label { cursor: pointer; }
+
+.social-avatar {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  border: 1px solid var(--color-border-strong);
+  font-size: var(--text-xs);
+  font-weight: 800;
+}
+.social-avatar-lg { width: 68px; height: 68px; flex-basis: 68px; font-size: var(--text-base); }
+.social-avatar-sm { width: 30px; height: 30px; flex-basis: 30px; }
+
+.social-view { position: relative; }
+.social-account-strip {
+  position: sticky;
+  top: var(--space-3);
+  z-index: 35;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(170px, 1.1fr);
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+  padding: var(--space-2);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--color-surface-2) 88%, transparent);
+  box-shadow: var(--shadow-card-lg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+}
+.social-account-strip[hidden] { display: none; }
+.social-account-strip > div {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  padding: var(--space-3) var(--space-4);
+}
+.social-account-strip span { color: var(--color-text-muted); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .06em; }
+.social-account-strip strong { color: var(--color-text); font-size: var(--text-lg); overflow-wrap: anywhere; }
+.social-account-strip .floating-pl-button { min-height: 76px; }
+
+.social-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 320px); gap: var(--space-5); align-items: start; }
+.social-feed-column, .social-feed { display: grid; gap: var(--space-4); }
+.social-community-card { position: sticky; top: 116px; }
+.social-community-card h3 { margin-bottom: var(--space-2); }
+.social-community-card .desc { margin-bottom: var(--space-4); }
+.social-composer-identity { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3); }
+.social-composer-identity > div:last-child { display: grid; gap: 2px; }
+.social-composer-identity span { color: var(--color-text-muted); font-size: var(--text-xs); }
+.social-composer-card textarea,
+.social-comment-form input,
+.inbox-compose textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); background: var(--color-surface-sunken); color: var(--color-text); padding: var(--space-3); font: inherit; resize: vertical; }
+.social-composer-card form > div { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); margin-top: var(--space-2); }
+.social-composer-card small { color: var(--color-text-faint); }
+.social-post > header { display: flex; align-items: center; gap: var(--space-3); }
+.social-post > header > div { display: grid; gap: 2px; min-width: 0; }
+.social-post time { color: var(--color-text-faint); font-size: var(--text-xs); }
+.social-post-body { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; margin: var(--space-4) 0; }
+.social-delete { margin-left: auto; align-self: flex-start; color: var(--color-text-faint); font-size: var(--text-lg); line-height: 1; padding: var(--space-1); }
+.social-delete:hover { color: var(--color-negative); }
+.social-comments { display: grid; gap: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--color-border); }
+.social-comment { display: flex; align-items: flex-start; gap: var(--space-2); }
+.social-comment > div { min-width: 0; flex: 1; }
+.social-comment p { margin: 2px 0; color: var(--color-text-muted); overflow-wrap: anywhere; }
+.social-comment-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); margin-top: var(--space-3); }
+.social-person, .inbox-conversation { width: 100%; display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2); color: var(--color-text); border-radius: var(--radius-md); text-align: left; }
+.social-person:hover, .inbox-conversation:hover, .inbox-conversation.active { background: var(--color-surface-sunken); }
+.social-person > span:last-child, .inbox-conversation > span:last-child { min-width: 0; display: grid; gap: 2px; }
+.social-person small, .inbox-conversation small { color: var(--color-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.inbox-button .dot { background: var(--color-accent); }
+.inbox-modal-card { max-width: 980px; }
+.inbox-modal-card .modal-head > div { min-width: 0; }
+.inbox-modal-card .modal-sub { margin: 2px 0 0; }
+.inbox-layout { min-height: 520px; display: grid; grid-template-columns: minmax(220px, 32%) minmax(0, 1fr); border: 1px solid var(--color-border); border-radius: var(--radius-lg); overflow: hidden; }
+.inbox-conversations { padding: var(--space-3); border-right: 1px solid var(--color-border); background: var(--color-surface-sunken); overflow-y: auto; }
+.inbox-recipient-field { margin-bottom: var(--space-3); }
+.inbox-thread { min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; }
+.inbox-thread-head { min-height: 54px; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-border); }
+.inbox-message-list { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-4); }
+.inbox-message { max-width: 78%; padding: var(--space-2) var(--space-3); border-radius: var(--radius-lg); background: var(--color-surface-sunken); }
+.inbox-message.sent { align-self: flex-end; background: var(--color-accent); color: var(--color-accent-ink); }
+.inbox-message.received { align-self: flex-start; }
+.inbox-message p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.inbox-message time { display: block; margin-top: 3px; font-size: 10px; color: currentColor; opacity: .65; }
+.inbox-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); padding: var(--space-3); border-top: 1px solid var(--color-border); }
+.inbox-compose button { align-self: stretch; }
+#inbox-message-status { min-height: 0; margin: 0 var(--space-3) var(--space-2); }
+
+@media (max-width: 760px) {
+  .social-account-strip { position: relative; top: auto; grid-template-columns: 1fr; }
+  .social-account-strip > div { border-bottom: 1px solid var(--color-border); }
+  .social-layout { grid-template-columns: 1fr; }
+  .social-community-card { position: static; }
+  .inbox-modal-card { width: min(100% - 20px, 980px); max-height: calc(100dvh - 20px); }
+  .inbox-layout { min-height: 0; height: min(680px, calc(100dvh - 130px)); grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .inbox-conversations { max-height: 180px; border-right: 0; border-bottom: 1px solid var(--color-border); }
+}
 
 @media (max-width: 640px) {
   .notification-panel {

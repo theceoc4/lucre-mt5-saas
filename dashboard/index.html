@@ -18,7 +18,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.62" />
+<link rel="stylesheet" href="./style.css?v=1.0.63" />
 </head>
 <body>
 
@@ -468,8 +468,13 @@
 <div class="modal-overlay" id="modal-account-settings" aria-hidden="true">
   <div class="modal-card modal-card-wide">
     <div class="modal-head"><h3>Account & profile</h3><button class="icon-btn" type="button" data-modal-close aria-label="Close">×</button></div>
-    <p class="modal-sub">Profile information is private for now. It can be used when social sharing is introduced later.</p>
+    <p class="modal-sub">Your display name and profile photo appear in Social. Location, website, trading style, and account information remain private.</p>
     <form id="form-account-profile" novalidate>
+      <div class="profile-photo-editor">
+        <div class="social-avatar social-avatar-lg" id="profile-photo-preview" aria-hidden="true">?</div>
+        <div><label class="btn-secondary btn-xs profile-photo-label" for="profile-photo-input">Upload photo</label><input id="profile-photo-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden /><small>JPG, PNG, WebP, or GIF · up to 5 MB</small></div>
+      </div>
+      <input type="hidden" name="avatar_path" id="profile-avatar-path" />
       <div class="field-row"><div class="field"><label for="profile-display-name">Display name</label><input id="profile-display-name" name="display_name" maxlength="80" /></div><div class="field"><label for="profile-location">Location</label><input id="profile-location" name="location" maxlength="100" /></div></div>
       <div class="field-row"><div class="field"><label for="profile-website">Website</label><input id="profile-website" name="website" maxlength="300" placeholder="https://" /></div><div class="field"><label for="profile-trading-style">Trading style</label><input id="profile-trading-style" name="trading_style" maxlength="100" placeholder="e.g. discretionary crypto" /></div></div>
       <div class="field"><label for="profile-bio">About</label><textarea id="profile-bio" name="bio" maxlength="500" rows="3"></textarea></div>
@@ -479,6 +484,28 @@
     <div class="account-action-row"><div><strong>Password</strong><p>Receive a secure password-reset email.</p></div><button class="btn-secondary" type="button" id="button-reset-password">Send reset email</button></div>
     <div class="account-action-row"><div><strong>Reset trading data</strong><p>Erases all terminals, trades, sessions, strategies, signals and analytics. Your login and profile remain.</p></div><button class="btn-danger" type="button" id="button-reset-account-data">Reset data</button></div>
     <div class="account-action-row"><div><strong>Delete account</strong><p>Permanently deletes your login, profile and all associated information.</p></div><button class="btn-danger" type="button" id="button-delete-account">Delete account</button></div>
+  </div>
+</div>
+
+<!-- ============ Private inbox ============ -->
+<div class="modal-overlay" id="modal-inbox" aria-hidden="true">
+  <div class="modal-card modal-card-wide inbox-modal-card">
+    <div class="modal-head"><div><h3>Inbox</h3><p class="modal-sub">Private messages between Lucre users.</p></div><button class="icon-btn" type="button" data-modal-close aria-label="Close">×</button></div>
+    <div class="inbox-layout">
+      <aside class="inbox-conversations" aria-label="Conversations">
+        <label class="field inbox-recipient-field"><span>Message a trader</span><select id="inbox-recipient-select"><option value="">Choose a user</option></select></label>
+        <div id="inbox-conversation-list"><p class="empty-state-text">No conversations yet.</p></div>
+      </aside>
+      <section class="inbox-thread" aria-label="Message thread">
+        <div class="inbox-thread-head" id="inbox-thread-head">Choose a trader to start a conversation.</div>
+        <div class="inbox-message-list" id="inbox-message-list"><p class="empty-state-text">Your messages will appear here.</p></div>
+        <form class="inbox-compose" id="inbox-compose-form">
+          <textarea id="inbox-message-input" maxlength="2000" rows="2" placeholder="Write a private message…" disabled></textarea>
+          <button class="btn-accent" type="submit" disabled>Send</button>
+        </form>
+        <p class="auth-message" id="inbox-message-status" role="status"></p>
+      </section>
+    </div>
   </div>
 </div>
 
@@ -502,6 +529,7 @@
       </div>
 
       <nav class="nav-pills" id="nav-pills" aria-label="Primary">
+        <a class="nav-pill" href="#" data-view="social" data-testid="link-social">Social</a>
         <a class="nav-pill active" href="#" data-view="dashboard" data-testid="link-dashboard">Dashboard</a>
         <a class="nav-pill" href="#" data-view="strategies" data-testid="link-strategies">Strategies</a>
         <a class="nav-pill" href="#" data-view="pairs" data-testid="link-pairs">Pairs</a>
@@ -510,6 +538,10 @@
       <div class="nav-actions">
         <button class="icon-btn" id="button-settings" aria-label="Settings" data-testid="button-settings">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.64 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.64a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.36 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+        </button>
+        <button class="icon-btn inbox-button" id="button-inbox" aria-label="Inbox" aria-haspopup="dialog" data-testid="button-inbox">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v12H7l-3 3V5z"/><path d="M8 9h8M8 13h5"/></svg>
+          <span class="dot" id="inbox-dot" aria-hidden="true" hidden></span>
         </button>
         <div class="notification-wrap">
           <button class="icon-btn" id="button-notifications" aria-label="Notifications" aria-expanded="false" aria-controls="notification-panel" data-testid="button-notifications">
@@ -587,6 +619,29 @@
     </div>
     <div class="banner-warning" id="banner-command-status" hidden role="alert"></div>
     <div class="banner-warning" id="banner-position-stream" hidden role="status"></div>
+
+    <div class="view social-view" id="view-social" hidden>
+      <section class="social-account-strip" id="social-account-strip" hidden aria-label="Live account summary">
+        <div><span>Balance</span><strong id="social-balance">—</strong></div>
+        <div><span>Equity</span><strong id="social-equity">—</strong></div>
+        <div><span>Margin</span><strong id="social-margin">—</strong></div>
+        <button class="floating-pl-button is-flat" type="button" id="social-floating-pl-button" data-close-all-positions disabled>
+          <span class="balance-label">Floating P/L</span><span class="balance-value" id="social-floating-pl">—</span><span class="floating-pl-lock">Lock in</span>
+        </button>
+      </section>
+
+      <div class="social-layout">
+        <main class="social-feed-column">
+          <section class="card card-pad social-composer-card">
+            <div class="social-composer-identity"><div class="social-avatar" id="social-composer-avatar">?</div><div><strong id="social-composer-name">Lucre trader</strong><span>Share with the Lucre community</span></div></div>
+            <form id="social-post-form"><textarea id="social-post-input" maxlength="1200" rows="3" placeholder="What’s moving in your market today?"></textarea><div><small id="social-post-count">0 / 1200</small><button class="btn-accent" type="submit">Post</button></div></form>
+            <p class="auth-message" id="social-post-status" role="status"></p>
+          </section>
+          <section class="social-feed" id="social-feed" aria-live="polite"><div class="card card-pad"><p class="empty-state-text">Loading the timeline…</p></div></section>
+        </main>
+        <aside class="card card-pad social-community-card"><h3>Community</h3><p class="desc">Phase one keeps it clean: public posts and comments, private DMs, and no account metrics shared.</p><div id="social-community-list"></div></aside>
+      </div>
+    </div>
 
     <div class="view" id="view-dashboard">
 
@@ -959,7 +1014,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.62"></script>
-<script type="module" src="./main.js?v=1.0.62"></script>
+<script src="./app.js?v=1.0.63"></script>
+<script type="module" src="./main.js?v=1.0.63"></script>
 </body>
 </html>

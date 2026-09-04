@@ -1,5 +1,17 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.63 — Social foundation and private inbox (2026-09-04)
+
+- Adds Social as the first navigation item while keeping Dashboard as the
+  landing page, with a timeline composer, posts, comments, and community list.
+- Adds participant-only private messages, an Inbox action/unread badge, and a
+  lightweight visible-tab refresh that does not add another Realtime channel.
+- Adds profile-photo uploads through an owner-writable avatar bucket and keeps
+  all existing account/profile fields private except deliberate social identity.
+- Adds a sticky owner-only account strip to Social with live balance, equity,
+  margin, floating P/L, and the existing immediate Lock In action.
+- Corrects modal back and close button contrast across light-mode palettes.
+
 ## v1.0.62 — Soleau Gold semantic states (2026-09-04)
 
 - Replaces inherited green bullish/positive states with vibrant Soleau gold and
