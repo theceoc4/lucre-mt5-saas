@@ -1,77 +1,62 @@
-# Pair Card Performance Strip — Design QA
+# Soleau Gold design QA
 
-- Source visual truth: `/var/folders/s1/w5hdt7dn595dy2x09p26qf5r0000gn/T/TemporaryItems/NSIRD_screencaptureui_trOaAi/Screenshot 2026-09-02 at 3.32.43 PM.png`
-- Browser-rendered implementation: `/private/tmp/lucre-pair-card-implementation.png`
-- Mobile implementation: `/private/tmp/lucre-pair-card-mobile.png`
-- Normalized comparison: `/private/tmp/lucre-pair-card-comparison.png`
-- Desktop viewport: 956 x 756 CSS pixels, device pixel ratio 1
-- Source pixels: 956 x 756
-- Implementation pixels: 956 x 756
-- Component comparison: source and implementation card crops normalized to 930 x 745 pixels to account for the Retina source capture and the in-app browser's capture scaling
-- Mobile viewport: 390 x 844 CSS pixels
-- State: dark theme, AUDCAD trading/front face, enabled, Auto SL/TP off, representative populated performance values
+- Source visual truth: `/Users/rayevelyn/Downloads/black-to-gold.png`
+- Rendered implementation: `/private/tmp/soleau-gold-desktop-v2.png`
+- Mobile implementation: `/private/tmp/soleau-gold-mobile-viewport.png`
+- Combined comparison: `/private/tmp/soleau-gold-comparison.png`
+- Desktop viewport: 1440 x 1000 CSS px; screenshot 1440 x 1013 px; device pixel ratio 1.
+- Mobile viewport: 390 x 844 CSS px; screenshot 390 x 844 px; device pixel ratio 1.
+- State: Soleau Gold selected, dark mode; light-mode token state also exercised.
 
 ## Full-view comparison evidence
 
-The new three-column performance strip sits between Auto SL/TP and the bottom
-one-click buttons, using the card's existing sunken surface, border, type,
-positive color, and spacing tokens. The header, trend meter, Auto SL/TP row,
-card radius, glass treatment, and bottom-aligned Sell/Buy controls retain the
-source hierarchy and proportions. The inserted content uses previously empty
-vertical space instead of increasing the card footprint.
+The supplied six-step scale is reproduced exactly in the Appearance picker and
+mapped in order through the dashboard shell: `#1B1B1B`, `#423416`, `#694D10`,
+`#8F670B`, `#B68005`, and `#DD9900`. The implementation preserves the existing
+Lucre layout, type hierarchy, glass surfaces, radii, and trading-semantic green
+and red while replacing the general brand accent and ambient shell color.
 
-## Focused region comparison evidence
+## Focused-region evidence
 
-The normalized side-by-side card comparison makes the new labels and values
-readable at equivalent component size. Column dividers are subtle, values have
-more weight than labels, and the green Daily P/L remains the only new semantic
-color. No separate crop was needed beyond the normalized full-card comparison
-because the affected region occupies the middle of this single component and
-is legible there.
-
-## Required fidelity surfaces
-
-- Fonts and typography: existing Cabinet Grotesk and General Sans tokens are
-  preserved. Labels use compact uppercase tracking; values use the display
-  family and remain single-line.
-- Spacing and layout rhythm: the row uses three equal minmax columns, centered
-  alignment, existing radius and border tokens, and does not move the bottom
-  action buttons out of their anchored position.
-- Colors and visual tokens: all colors come from existing surface, border,
-  text, positive, and negative theme tokens in both light and dark modes.
-- Image quality and asset fidelity: no imagery or new icons were required; the
-  source card's existing visual assets and glass treatment are unchanged.
-- Copy and content: labels are exactly `Win %`, `Best Session`, and `Daily P/L`.
-  Empty historical values render as an em dash; Daily P/L remains a meaningful
-  $0.00 when there are no verified closes today.
+A separate crop was not needed because the full desktop comparison keeps the
+source swatches and the complete Appearance picker legible in the same image.
+The palette preview shows all six source colors directly. Desktop and mobile
+captures confirm card borders, selected state, text hierarchy, and accent use.
 
 ## Interaction and responsive checks
 
-- Desktop card rendered with all three values visible and no console warnings
-  or errors.
-- Mobile card rendered at 390 px with a 358 px card and 308 px performance
-  strip; document horizontal overflow was false.
-- The new row is informational and adds no interactive surface. Existing card
-  flip, enable, Auto SL/TP, Sell, and Buy event handlers were not changed.
-- The authenticated production data state was not reproduced locally; visual
-  QA used representative values while data correctness was checked directly
-  against the existing verified trade-history model.
+- Switching Lucre Sage to Soleau Gold changed `data-palette` from `lucre` to
+  `soleau-gold` and the computed accent from `#d7e64e` to `#dd9900`.
+- The light/dark control remained independent; Soleau Gold light mode computed
+  the expected warm page background `#e9dcc0`.
+- The 390px mobile state reported equal document and viewport widths with no
+  horizontal overflow; palette options collapsed into the intended stacked layout.
+- No application-origin console errors were observed in the rendered QA page.
+- Contrast checks: light primary 15.83:1, light muted 7.23:1, dark primary
+  15.70:1, dark muted 9.79:1, and dark text on the gold accent 7.08:1.
 
-## Findings
+## Required fidelity surfaces
 
-No actionable P0, P1, or P2 differences remain. The new row is intentionally
-absent from the source because it is the requested addition.
+- Fonts and typography: existing Cabinet Grotesk and General Sans hierarchy is unchanged and legible.
+- Spacing and layout rhythm: existing component grid, padding, radii, and responsive stacking are unchanged.
+- Colors and visual tokens: source swatches are exact; derived warm neutrals maintain accessible text contrast.
+- Image quality and asset fidelity: the reference contains only flat color swatches; no missing raster assets exist.
+- Copy and content: `Soleau Gold` naming and the Appearance descriptions are consistent across desktop and mobile.
 
 ## Comparison history
 
-The initial fixture used a wider-than-production card, so it was corrected to
-the source card's normalized 462 x 370 CSS proportions before the passing
-comparison. Post-fix evidence is recorded in the normalized comparison and the
-390 px mobile capture above.
+The first fixture capture inherited the production authenticated-root hidden
+state and therefore displayed no dashboard content. The fixture-only root was
+made visible; the next desktop and mobile captures rendered the complete palette
+state. This did not require a production component change.
+
+## Findings
+
+No actionable P0, P1, or P2 visual differences remain for the palette target.
 
 ## Follow-up polish
 
-No blocking polish remains. Longer localized session labels would use the
-existing single-line ellipsis behavior.
+The source does not prescribe semantic profit/loss colors. They intentionally
+remain green/red so trading meaning is never replaced by decorative gold.
 
 final result: passed
