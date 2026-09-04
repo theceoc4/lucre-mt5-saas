@@ -3237,16 +3237,6 @@ body {
   font-size: var(--text-xs);
 }
 
-.notification-mark-read {
-  border: 0;
-  background: transparent;
-  color: var(--color-text-muted);
-  font: inherit;
-  font-size: var(--text-xs);
-  font-weight: 700;
-  cursor: pointer;
-}
-
 .notification-list {
   min-width: 0;
   max-height: min(520px, 65vh);

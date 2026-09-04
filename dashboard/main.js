@@ -2386,6 +2386,14 @@ function notificationReadKey() {
   return `lucre:notifications-read:${state.session?.user?.id || 'guest'}:${state.activeTerminalId || 'none'}`;
 }
 
+function markVisibleNotificationsRead() {
+  const latestVisibleAt = state.notifications.reduce((latest, item) => {
+    const timestamp = new Date(item.at).getTime();
+    return Number.isFinite(timestamp) ? Math.max(latest, timestamp) : latest;
+  }, 0);
+  localStorage.setItem(notificationReadKey(), String(Math.max(Date.now(), latestVisibleAt)));
+}
+
 function applySignalDeliveryChange(payload) {
   const row = payload.new?.id ? payload.new : payload.old;
   if (!row?.id) return;
@@ -2545,11 +2553,10 @@ buttonNotifications?.addEventListener('click', () => {
   const willOpen = notificationPanel.hidden;
   notificationPanel.hidden = !willOpen;
   buttonNotifications.setAttribute('aria-expanded', String(willOpen));
-});
-
-document.getElementById('button-notifications-read')?.addEventListener('click', () => {
-  localStorage.setItem(notificationReadKey(), String(Date.now()));
-  renderNotifications();
+  if (willOpen) {
+    markVisibleNotificationsRead();
+    renderNotifications();
+  }
 });
 
 document.addEventListener('click', (event) => {

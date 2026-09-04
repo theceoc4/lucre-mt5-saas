@@ -1,5 +1,12 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.59 — Automatic notification reads (2026-09-04)
+
+- Marks the currently visible activity notifications as read whenever the user
+  opens the notification panel, immediately clearing the unread bell indicator.
+- Removes the redundant manual Mark read control while retaining per-user,
+  per-terminal, per-device read state for new notifications that arrive later.
+
 ## v1.0.58 — Terminal-private MT5 market feeds (2026-09-04)
 
 - Scopes MT5 economic-calendar rows, calendar feed health, and future symbol
