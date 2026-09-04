@@ -116,6 +116,7 @@ type TerminalPositionBudget = {
   remaining: number;
   max: number;
   initialOpenCount: number;
+  overrideActive: boolean;
 };
 
 const EPSILON = 1e-12;
@@ -851,12 +852,12 @@ async function reservePositionSlot(
 ): Promise<{ reserved: boolean; error?: string }> {
   let budget = budgets.get(terminalId);
   if (!budget) {
-    const { data: terminal, error: terminalError } = await admin
-      .from("mt5_terminals")
-      .select("max_open_positions")
-      .eq("id", terminalId)
-      .maybeSingle();
+    const [{ data: terminal, error: terminalError }, { data: overrideActive, error: overrideError }] = await Promise.all([
+      admin.from("mt5_terminals").select("max_open_positions").eq("id", terminalId).maybeSingle(),
+      admin.rpc("terminal_daily_risk_override_active", { p_terminal_id: terminalId }),
+    ]);
     if (terminalError || !terminal) return { reserved: false, error: terminalError?.message ?? "terminal_not_found" };
+    if (overrideError) return { reserved: false, error: overrideError.message };
 
     const { count: openCount, error: countError } = await admin
       .from("positions")
@@ -865,9 +866,12 @@ async function reservePositionSlot(
       .eq("status", "open");
     if (countError) return { reserved: false, error: countError.message };
 
-    const max = Math.max(0, Math.floor(numberValue(terminal.max_open_positions, 0)));
+    const isOverridden = overrideActive === true;
+    const max = isOverridden
+      ? Number.MAX_SAFE_INTEGER
+      : Math.max(0, Math.floor(numberValue(terminal.max_open_positions, 0)));
     const initialOpenCount = openCount ?? 0;
-    budget = { max, initialOpenCount, remaining: Math.max(0, max - initialOpenCount) };
+    budget = { max, initialOpenCount, remaining: Math.max(0, max - initialOpenCount), overrideActive: isOverridden };
     budgets.set(terminalId, budget);
   }
 

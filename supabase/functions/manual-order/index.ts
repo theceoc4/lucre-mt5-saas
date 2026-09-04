@@ -160,22 +160,34 @@ Deno.serve(async (req: Request) => {
     );
   }
 
-  // Risk cap 2: max daily realized loss (UTC calendar day). The open-position
-  // cap is enforced atomically by the ea_commands reservation trigger, which
-  // includes in-flight queued commands as well as reported positions.
-  const startOfDayUtc = new Date();
-  startOfDayUtc.setUTCHours(0, 0, 0, 0);
-  const { data: todaysTrades } = await admin
-    .from("trade_history")
-    .select("profit")
-    .eq("terminal_id", terminal.id)
-    .gte("close_time", startOfDayUtc.toISOString());
-  const realizedPl = (todaysTrades ?? []).reduce((sum, t) => sum + Number(t.profit), 0);
-  if (realizedPl <= -terminal.max_daily_loss_usd) {
-    return jsonResponse(
-      { error: "max_daily_loss_reached", max_daily_loss_usd: terminal.max_daily_loss_usd, realized_today: realizedPl },
-      422,
-    );
+  // Risk cap 2: max daily realized loss in the owner's saved local timezone.
+  // The same context also carries the explicit until-midnight account override.
+  // Lot size remains a hard request cap; broker, margin, market and EA checks
+  // remain authoritative even while the account guardrails are overridden.
+  const { data: dayRows, error: dayError } = await admin.rpc("terminal_local_day_context", {
+    p_terminal_id: terminal.id,
+    p_at: new Date().toISOString(),
+  });
+  if (dayError || !dayRows?.[0]) {
+    return jsonResponse({ error: "local_day_lookup_failed", detail: dayError?.message ?? "missing_context" }, 500);
+  }
+  const day = dayRows[0] as { starts_at: string; ends_at: string; override_active: boolean };
+  if (!day.override_active) {
+    const { data: todaysTrades, error: tradesError } = await admin
+      .from("trade_history")
+      .select("profit")
+      .eq("terminal_id", terminal.id)
+      .eq("profit_verified", true)
+      .gte("close_time", day.starts_at)
+      .lt("close_time", day.ends_at);
+    if (tradesError) return jsonResponse({ error: "daily_pl_lookup_failed", detail: tradesError.message }, 500);
+    const realizedPl = (todaysTrades ?? []).reduce((sum, t) => sum + Number(t.profit), 0);
+    if (realizedPl <= -terminal.max_daily_loss_usd) {
+      return jsonResponse(
+        { error: "max_daily_loss_reached", max_daily_loss_usd: terminal.max_daily_loss_usd, realized_today: realizedPl },
+        422,
+      );
+    }
   }
 
   const now = new Date();

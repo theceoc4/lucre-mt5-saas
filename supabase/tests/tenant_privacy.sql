@@ -59,9 +59,36 @@ begin
   if has_function_privilege('anon', 'public.promote_strategy_to_live(uuid)', 'execute') then
     raise exception 'privacy audit failed: anonymous strategy promotion is enabled';
   end if;
+  if has_function_privilege('anon', 'public.set_daily_risk_override(uuid,boolean)', 'execute')
+     or not has_function_privilege('authenticated', 'public.set_daily_risk_override(uuid,boolean)', 'execute') then
+    raise exception 'privacy audit failed: daily risk override role grants are incorrect';
+  end if;
+  if has_column_privilege('authenticated', 'public.portfolio_risk_settings', 'daily_override_until', 'update')
+     or has_column_privilege('authenticated', 'public.portfolio_risk_settings', 'daily_override_started_at', 'insert') then
+    raise exception 'privacy audit failed: override timestamps can be written outside the bounded RPC';
+  end if;
+  if has_function_privilege('anon', 'public.terminal_local_day_context(uuid,timestamp with time zone)', 'execute') then
+    raise exception 'privacy audit failed: anonymous local-day lookup is enabled';
+  end if;
+  if has_function_privilege('anon', 'public.terminal_daily_risk_override_active(uuid)', 'execute')
+     or has_function_privilege('authenticated', 'public.terminal_daily_risk_override_active(uuid)', 'execute') then
+    raise exception 'privacy audit failed: internal override status helper is browser-callable';
+  end if;
   if has_function_privilege('anon', 'public.broadcast_private_position_state(uuid,jsonb)', 'execute')
      or has_function_privilege('authenticated', 'public.broadcast_private_position_state(uuid,jsonb)', 'execute') then
     raise exception 'privacy audit failed: private position relay is browser-callable';
+  end if;
+  if has_function_privilege('anon', 'public.broadcast_private_terminal_event(uuid,text,jsonb)', 'execute')
+     or has_function_privilege('authenticated', 'public.broadcast_private_terminal_event(uuid,text,jsonb)', 'execute') then
+    raise exception 'privacy audit failed: private terminal event relay is browser-callable';
+  end if;
+  if exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename in ('price_feed_series_state', 'symbol_trend_state')
+  ) then
+    raise exception 'realtime efficiency audit failed: high-churn market state remains row-published';
   end if;
   if exists (
     select 1 from information_schema.columns

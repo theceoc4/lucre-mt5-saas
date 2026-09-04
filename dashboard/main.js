@@ -43,6 +43,8 @@ const state = {
   strategyChartRange: '30d',
   signalSessionBands: false,
   strategySessionBands: false,
+  dashboardHeatmapMode: 'signals',
+  strategyHeatmapMode: 'signals',
   signalFilter: { pair: 'all', period: '30d' },
   // v1.0.14 — item 3: P/L Over Time card filters (timeframe + manual/auto/all).
   plFilter: { timeframe: '30d', source: 'all' },
@@ -71,7 +73,17 @@ let positionStreamUiIntervalId = null;
 let streamedPositionFields = new Map();
 let streamedAccountState = null;
 let positionStreamStartedAt = 0;
-const POSITION_STREAM_TTL_MS = 10000;
+const POSITION_STREAM_TTL_MS = 15000;
+const POSITION_STREAM_LEASE_MS = 25000;
+const REALTIME_LEADER_TTL_MS = 9000;
+const REALTIME_LEADER_HEARTBEAT_MS = 3000;
+const realtimeTabId = crypto.randomUUID();
+const realtimeTabBus = typeof BroadcastChannel === 'function'
+  ? new BroadcastChannel('lucre-realtime-v1') : null;
+let realtimeLeaderIntervalId = null;
+let realtimeDesiredTerminalId = null;
+let realtimeIsLeader = false;
+let lastPositionLeaseAt = 0;
 // Rescan-in-flight poll — checks mt5_terminals.last_symbol_scan_at every 5s
 // (up to 60s) after "Rescan Symbols" is clicked, since report-symbols runs
 // asynchronously once the EA's next ea-sync poll picks up the flag.
@@ -159,6 +171,10 @@ const strategyChartRange = document.getElementById('strategy-chart-range');
 const signalSessionBands = document.getElementById('signal-session-bands');
 const strategySessionBands = document.getElementById('strategy-session-bands');
 const timezoneSelect = document.getElementById('timezone-select');
+const dashboardHeatmapMode = document.getElementById('dashboard-heatmap-mode');
+const strategyHeatmapMode = document.getElementById('strategy-heatmap-mode');
+const dailyRiskOverrideToggle = document.getElementById('daily-risk-override-toggle');
+const dailyRiskOverrideStatus = document.getElementById('daily-risk-override-status');
 const pushNotificationsButton = document.getElementById('button-push-notifications');
 const pushSettingsStatus = document.getElementById('push-settings-status');
 const pushPreferenceList = document.getElementById('push-preference-list');
@@ -168,6 +184,7 @@ const settingsBackButton = document.getElementById('button-settings-back');
 const VAPID_PUBLIC_KEY = 'BJx7Y2wwbHI0Heyu_qooP7C2LYbUPgSd3chuPO_Rnc1PNXQqsldZ5wnkhhDoNyDBdQpA7Gz_eHLwYlTti4tdcaQ';
 let pushRegistration = null;
 let pushSubscription = null;
+let dailyRiskOverrideTimer = null;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -356,6 +373,7 @@ function rerenderTimezoneSurfaces() {
   renderVolumeChart();
   renderPlChart();
   renderStrategyPage();
+  renderDashboardHeatmap();
   renderPairsView();
   renderSymbolMappingPanel();
   renderNotifications();
@@ -577,6 +595,15 @@ document.getElementById('form-timezone-settings')?.addEventListener('submit', as
   try {
     await accountManagement('update_timezone', { timezone });
     state.profile = { ...(state.profile || {}), timezone };
+    if (dailyRiskOverrideActive() && state.activeTerminalId) {
+      const { data: refreshedOverride, error: overrideError } = await supabase.rpc('set_daily_risk_override', {
+        p_terminal_id: state.activeTerminalId,
+        p_enabled: true,
+      });
+      if (overrideError) throw new Error(`Timezone saved, but the daily override could not be realigned: ${overrideError.message}`);
+      state.portfolioRisk = Array.isArray(refreshedOverride) ? refreshedOverride[0] : refreshedOverride;
+      renderDailyRiskOverride();
+    }
     if (message) { message.style.color = 'var(--color-accent)'; message.textContent = `Timezone saved as ${timezone}.`; }
     rerenderTimezoneSurfaces();
   } catch (error) {
@@ -588,14 +615,65 @@ document.getElementById('form-timezone-settings')?.addEventListener('submit', as
 
 async function loadPortfolioRiskSettings() {
   const form = document.getElementById('form-portfolio-risk');
-  if (!form || !state.activeTerminalId) return;
+  if (!form) return;
+  if (!state.activeTerminalId) {
+    state.portfolioRisk = null;
+    renderDailyRiskOverride();
+    return;
+  }
   const { data, error } = await supabase.from('portfolio_risk_settings').select('*').eq('terminal_id', state.activeTerminalId).maybeSingle();
   if (error) { console.error('portfolio risk settings load error', error); return; }
   state.portfolioRisk = data;
   const values = data || { enabled: true, max_total_open_risk_percent: 3, max_symbol_open_risk_percent: 1.5, max_positions_per_symbol: 2, max_daily_realized_loss_percent: 3 };
   form.enabled.checked = values.enabled !== false;
   for (const field of ['max_total_open_risk_percent','max_symbol_open_risk_percent','max_positions_per_symbol','max_daily_realized_loss_percent']) form[field].value = values[field];
+  renderDailyRiskOverride();
 }
+
+function dailyRiskOverrideActive() {
+  const until = state.portfolioRisk?.daily_override_until;
+  return Boolean(until && new Date(until).getTime() > Date.now());
+}
+
+function renderDailyRiskOverride() {
+  if (!dailyRiskOverrideToggle || !dailyRiskOverrideStatus) return;
+  if (dailyRiskOverrideTimer) clearTimeout(dailyRiskOverrideTimer);
+  dailyRiskOverrideTimer = null;
+  const active = dailyRiskOverrideActive();
+  dailyRiskOverrideToggle.disabled = !state.activeTerminalId;
+  dailyRiskOverrideToggle.setAttribute('aria-pressed', String(active));
+  dailyRiskOverrideToggle.textContent = active ? 'Disable override' : 'Enable for today';
+  if (!state.activeTerminalId) {
+    dailyRiskOverrideStatus.textContent = 'Connect an account to use the override.';
+  } else if (active) {
+    dailyRiskOverrideStatus.textContent = `Active until ${formatDateTime(state.portfolioRisk.daily_override_until, { dateStyle: undefined, timeStyle: 'short' })} · ${state.portfolioRisk.daily_override_timezone || displayTimezone()}`;
+  } else {
+    dailyRiskOverrideStatus.textContent = `Off · “today” follows ${displayTimezone()}.`;
+  }
+  if (active) {
+    const delay = Math.max(50, new Date(state.portfolioRisk.daily_override_until).getTime() - Date.now() + 50);
+    dailyRiskOverrideTimer = setTimeout(renderDailyRiskOverride, Math.min(delay, 2147483647));
+  }
+}
+
+dailyRiskOverrideToggle?.addEventListener('click', async () => {
+  if (!state.activeTerminalId) return;
+  dailyRiskOverrideToggle.disabled = true;
+  dailyRiskOverrideStatus.textContent = dailyRiskOverrideActive() ? 'Disabling override…' : 'Enabling override…';
+  const { data, error } = await supabase.rpc('set_daily_risk_override', {
+    p_terminal_id: state.activeTerminalId,
+    p_enabled: !dailyRiskOverrideActive(),
+  });
+  if (error) {
+    dailyRiskOverrideStatus.textContent = `Could not update override: ${error.message}`;
+    dailyRiskOverrideStatus.style.color = 'var(--color-negative)';
+    dailyRiskOverrideToggle.disabled = false;
+    return;
+  }
+  state.portfolioRisk = Array.isArray(data) ? data[0] : data;
+  dailyRiskOverrideStatus.style.color = '';
+  renderDailyRiskOverride();
+});
 
 document.getElementById('form-portfolio-risk')?.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -605,7 +683,7 @@ document.getElementById('form-portfolio-risk')?.addEventListener('submit', async
     max_positions_per_symbol: Number(form.max_positions_per_symbol.value), max_daily_realized_loss_percent: Number(form.max_daily_realized_loss_percent.value) };
   const { error } = await supabase.from('portfolio_risk_settings').upsert(payload, { onConflict: 'terminal_id' });
   if (message) { message.style.color = error ? 'var(--color-danger)' : 'var(--color-accent)'; message.textContent = error ? error.message : 'Risk limits saved.'; }
-  if (!error) state.portfolioRisk = payload;
+  if (!error) state.portfolioRisk = { ...(state.portfolioRisk || {}), ...payload };
 });
 document.getElementById('form-account-profile')?.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1754,7 +1832,7 @@ function startPositionPolling() {
   if (positionPollIntervalId) return;
   const pollMs = realtimeIsHealthy ? POSITION_POLL_HEALTHY_MS : POSITION_POLL_FALLBACK_MS;
   positionPollIntervalId = setInterval(() => {
-    if (!state.activeTerminalId) return;
+    if (!state.activeTerminalId || document.hidden) return;
     loadPositions();
     loadSignals();
     refreshActiveTerminalBalance();
@@ -1855,7 +1933,9 @@ function stopPositionStreamRequests() {
 }
 
 function requestPositionStream() {
-  if (!realtimeChannel) return;
+  if (!realtimeChannel || !realtimeIsLeader || document.hidden
+    || !state.positions.some((position) => position.status === 'open')) return;
+  lastPositionLeaseAt = Date.now();
   realtimeChannel
     // This event name deliberately does not contain the legacy public-stream
     // lease name. Pre-v1.0.46 EAs ignore it and therefore cannot accidentally
@@ -1867,7 +1947,7 @@ function requestPositionStream() {
 function startPositionStreamRequests() {
   stopPositionStreamRequests();
   requestPositionStream();
-  positionStreamRequestIntervalId = setInterval(requestPositionStream, 15000);
+  positionStreamRequestIntervalId = setInterval(requestPositionStream, POSITION_STREAM_LEASE_MS);
   // Re-evaluate stream freshness locally without adding any Supabase reads or
   // writes. This prevents a dead stream from looking "Live" until the next
   // durable reconciliation poll.
@@ -1875,17 +1955,149 @@ function startPositionStreamRequests() {
 }
 
 function maybeStartPositionStreamRequests() {
-  if (realtimeCommandSubscribed && realtimePositionSubscribed) {
+  if (realtimeIsLeader && realtimeCommandSubscribed && realtimePositionSubscribed) {
     startPositionStreamRequests();
   }
 }
 
+function transportIsHealthy() {
+  return realtimeCommandSubscribed && (!positionRealtimeChannel || realtimePositionSubscribed);
+}
+
+function publishTransportHealth(terminalId) {
+  const healthy = transportIsHealthy();
+  setRealtimeHealth(healthy);
+  publishRealtimeToTabs('health', terminalId, healthy);
+}
+
+function applyMarketState(terminalId, eventPayload) {
+  if (state.activeTerminalId !== terminalId) return;
+  const message = eventPayload?.payload?.feed_series || eventPayload?.payload?.trend_states
+    ? eventPayload.payload : eventPayload;
+  (message?.feed_series || []).forEach((next) => {
+    if (!next?.symbol || !next?.timeframe) return;
+    const index = state.priceFeedStates.findIndex(
+      (item) => item.symbol === next.symbol && item.timeframe === next.timeframe
+    );
+    if (next.desired_enabled === false) {
+      if (index >= 0) state.priceFeedStates.splice(index, 1);
+    } else if (index >= 0) state.priceFeedStates[index] = next;
+    else state.priceFeedStates.push(next);
+    pairRepairsInFlight.delete(`${next.symbol}:${next.timeframe}`);
+  });
+  (message?.trend_states || []).forEach((next) => {
+    if (!next?.symbol) return;
+    const index = state.trendStates.findIndex((item) => item.symbol === next.symbol);
+    if (index >= 0) state.trendStates[index] = next;
+    else state.trendStates.push(next);
+  });
+  if (!viewPairs.hidden) renderPairsView();
+}
+
+function applyStrategyEvaluationChange(terminalId, payload) {
+  const row = payload?.new;
+  if (!row?.strategy_id || state.activeTerminalId !== terminalId) return;
+  const strategy = state.strategies.find((item) => item.id === row.strategy_id);
+  if (!strategy) return;
+  const rows = strategy.evaluation_states || [];
+  const index = rows.findIndex((item) => item.symbol === row.symbol);
+  if (index >= 0) rows[index] = row;
+  else rows.push(row);
+  strategy.evaluation_states = rows;
+  renderStrategies();
+  renderStrategyWinRates();
+  renderStrategyStatusTab();
+  renderNotifications();
+}
+
+function realtimeLeaderKey(terminalId) {
+  return `lucre-realtime-leader:${state.session?.user?.id || 'signed-out'}:${terminalId}`;
+}
+
+function readRealtimeLeader(terminalId) {
+  try {
+    const value = JSON.parse(localStorage.getItem(realtimeLeaderKey(terminalId)) || 'null');
+    return value?.tabId && Number(value?.expiresAt) > Date.now() ? value : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function publishRealtimeToTabs(kind, terminalId, payload = null) {
+  realtimeTabBus?.postMessage({
+    userId: state.session?.user?.id,
+    terminalId,
+    kind,
+    payload,
+  });
+}
+
+function handleCoordinatedRealtimeEvent(message) {
+  if (!message || message.userId !== state.session?.user?.id
+    || message.terminalId !== state.activeTerminalId) return;
+  const payload = message.payload;
+  switch (message.kind) {
+    case 'health':
+      setRealtimeHealth(Boolean(payload));
+      break;
+    case 'leader_released':
+      setTimeout(evaluateRealtimeLeadership, 50);
+      break;
+    case 'position_state':
+      applyStreamedPositionState(message.terminalId, payload);
+      break;
+    case 'market_state':
+      applyMarketState(message.terminalId, payload);
+      break;
+    case 'positions':
+      loadPositions();
+      break;
+    case 'trend':
+      applyMarketState(message.terminalId, { trend_states: [payload?.new].filter(Boolean) });
+      break;
+    case 'feed':
+      applyMarketState(message.terminalId, { feed_series: [payload?.new].filter(Boolean) });
+      break;
+    case 'signal_delivery':
+      applySignalDeliveryChange(payload);
+      break;
+    case 'signal':
+      applySignalChange(payload);
+      break;
+    case 'terminal': {
+      const index = state.terminals.findIndex((terminal) => terminal.id === message.terminalId);
+      if (index >= 0 && payload?.new) {
+        state.terminals[index] = { ...state.terminals[index], ...payload.new };
+        renderBalanceWidget();
+        checkAutotradingBanner();
+      }
+      break;
+    }
+    case 'command':
+      checkAutotradingBanner();
+      handleCommandStatus(payload?.new);
+      applyRecentCommand(payload?.new);
+      break;
+    case 'strategy':
+      applyStrategyEvaluationChange(message.terminalId, payload);
+      break;
+    case 'trade_history':
+      loadTradeHistory();
+      break;
+    case 'account_history':
+      loadAccountHistory();
+      break;
+  }
+}
+
+realtimeTabBus?.addEventListener('message', (event) => handleCoordinatedRealtimeEvent(event.data));
+
 function scheduleRealtimeReconnect(terminalId) {
   stopPositionStreamRequests();
-  if (realtimeReconnectTimer) return;
+  if (!realtimeIsLeader || realtimeReconnectTimer) return;
   realtimeReconnectTimer = setTimeout(() => {
     realtimeReconnectTimer = null;
-    if (state.activeTerminalId === terminalId) startRealtime(terminalId);
+    if (state.activeTerminalId === terminalId && realtimeIsLeader) startRealtimeTransport(terminalId);
   }, 3000);
 }
 
@@ -1918,8 +2130,8 @@ async function refreshActiveTerminalBalance() {
 // terminal. Falls back on the reduced-frequency poll above for anything
 // missed (reconnect gaps, etc).
 // ---------------------------------------------------------------------------
-function startRealtime(terminalId) {
-  stopRealtime();
+function startRealtimeTransport(terminalId) {
+  stopRealtimeTransport();
   streamedPositionFields = new Map();
   streamedAccountState = null;
   positionStreamStartedAt = Date.now();
@@ -1936,72 +2148,67 @@ function startRealtime(terminalId) {
   // realtime.messages verifies that the signed-in user owns this terminal.
   // Durable position rows and all modify/close controls remain unchanged.
   if (positionChannelName) {
-    positionRealtimeChannel = supabase
+    const nextPositionChannel = supabase
       .channel(positionChannelName, {
         config: { private: true, broadcast: { ack: false, self: false } },
       })
       .on(
         'broadcast',
         { event: 'position_state' },
-        (payload) => applyStreamedPositionState(terminalId, payload)
+        (payload) => {
+          applyStreamedPositionState(terminalId, payload);
+          publishRealtimeToTabs('position_state', terminalId, payload);
+        }
+      )
+      .on(
+        'broadcast',
+        { event: 'market_state' },
+        (payload) => {
+          applyMarketState(terminalId, payload);
+          publishRealtimeToTabs('market_state', terminalId, payload);
+        }
       )
       .subscribe((status) => {
+        if (positionRealtimeChannel !== nextPositionChannel) return;
         console.log('[position-realtime]', status, 'terminal', terminalId);
         if (status === 'SUBSCRIBED') {
           realtimePositionSubscribed = true;
+          publishTransportHealth(terminalId);
           maybeStartPositionStreamRequests();
         }
         if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
           realtimePositionSubscribed = false;
+          publishTransportHealth(terminalId);
           scheduleRealtimeReconnect(terminalId);
         }
       });
+    positionRealtimeChannel = nextPositionChannel;
   }
-  realtimeChannel = supabase
+  const nextRealtimeChannel = supabase
     .channel(channelName)
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'positions', filter: `terminal_id=eq.${terminalId}` },
-      () => loadPositions()
-    )
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'symbol_trend_state', filter: `terminal_id=eq.${terminalId}` },
       (payload) => {
-        const next = payload.new;
-        if (!next?.symbol || state.activeTerminalId !== terminalId) return;
-        const index = state.trendStates.findIndex((item) => item.symbol === next.symbol);
-        if (index >= 0) state.trendStates[index] = next;
-        else state.trendStates.push(next);
-        if (!viewPairs.hidden) renderPairsView();
-      }
-    )
-    .on(
-      'postgres_changes',
-      { event: '*', schema: 'public', table: 'price_feed_series_state', filter: `terminal_id=eq.${terminalId}` },
-      (payload) => {
-        const next = payload.new;
-        if (!next?.symbol || !next?.timeframe || state.activeTerminalId !== terminalId) return;
-        const index = state.priceFeedStates.findIndex(
-          (item) => item.symbol === next.symbol && item.timeframe === next.timeframe
-        );
-        if (next.desired_enabled === false) {
-          if (index >= 0) state.priceFeedStates.splice(index, 1);
-        } else if (index >= 0) state.priceFeedStates[index] = next;
-        else state.priceFeedStates.push(next);
-        pairRepairsInFlight.delete(`${next.symbol}:${next.timeframe}`);
-        if (!viewPairs.hidden) renderPairsView();
+        loadPositions();
+        publishRealtimeToTabs('positions', terminalId, payload);
       }
     )
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'signal_deliveries', filter: `terminal_id=eq.${terminalId}` },
-      (payload) => applySignalDeliveryChange(payload)
+      (payload) => {
+        applySignalDeliveryChange(payload);
+        publishRealtimeToTabs('signal_delivery', terminalId, payload);
+      }
     )
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'signals', filter: `terminal_id=eq.${terminalId}` },
-      (payload) => applySignalChange(payload)
+      (payload) => {
+        applySignalChange(payload);
+        publishRealtimeToTabs('signal', terminalId, payload);
+      }
     )
     // v1.0.11 -- balance/equity/margin_level widget and the AutoTrading
     // banner now update live instead of only on load/terminal-switch.
@@ -2019,6 +2226,7 @@ function startRealtime(terminalId) {
           renderBalanceWidget();
           checkAutotradingBanner();
         }
+        publishRealtimeToTabs('terminal', terminalId, payload);
       }
     )
     .on(
@@ -2028,25 +2236,15 @@ function startRealtime(terminalId) {
         checkAutotradingBanner();
         handleCommandStatus(payload.new);
         applyRecentCommand(payload.new);
+        publishRealtimeToTabs('command', terminalId, payload);
       }
     )
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'strategy_evaluation_state', filter: `terminal_id=eq.${terminalId}` },
       (payload) => {
-        const row = payload.new;
-        if (!row?.strategy_id || state.activeTerminalId !== terminalId) return;
-        const strategy = state.strategies.find((item) => item.id === row.strategy_id);
-        if (!strategy) return;
-        const rows = strategy.evaluation_states || [];
-        const index = rows.findIndex((item) => item.symbol === row.symbol);
-        if (index >= 0) rows[index] = row;
-        else rows.push(row);
-        strategy.evaluation_states = rows;
-        renderStrategies();
-        renderStrategyWinRates();
-        renderStrategyStatusTab();
-        renderNotifications();
+        applyStrategyEvaluationChange(terminalId, payload);
+        publishRealtimeToTabs('strategy', terminalId, payload);
       }
     )
     // v1.0.17 -- trade_history was never in the supabase_realtime publication
@@ -2059,12 +2257,18 @@ function startRealtime(terminalId) {
     .on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'trade_history', filter: `terminal_id=eq.${terminalId}` },
-      () => loadTradeHistory()
+      (payload) => {
+        loadTradeHistory();
+        publishRealtimeToTabs('trade_history', terminalId, payload);
+      }
     )
     .on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'mt5_account_history', filter: `terminal_id=eq.${terminalId}` },
-      () => loadAccountHistory()
+      (payload) => {
+        loadAccountHistory();
+        publishRealtimeToTabs('account_history', terminalId, payload);
+      }
     )
     // v1.0.12 -- previously had no status callback at all, so a dropped/
     // failed channel (network blip, token refresh, etc.) silently fell
@@ -2073,18 +2277,20 @@ function startRealtime(terminalId) {
     // CHANNEL_ERROR/TIMED_OUT/CLOSED so live updates recover on their own
     // instead of requiring a manual page reload.
     .subscribe((status) => {
+      if (realtimeChannel !== nextRealtimeChannel) return;
       console.log('[realtime]', status, 'terminal', terminalId);
       if (status === 'SUBSCRIBED') {
         realtimeCommandSubscribed = true;
-        setRealtimeHealth(true);
+        publishTransportHealth(terminalId);
         maybeStartPositionStreamRequests();
       }
       if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
         realtimeCommandSubscribed = false;
-        setRealtimeHealth(false);
+        publishTransportHealth(terminalId);
         scheduleRealtimeReconnect(terminalId);
       }
     });
+  realtimeChannel = nextRealtimeChannel;
 }
 
 // v1.0.11 -- surfaces a top-of-dashboard warning when the most recent
@@ -2359,7 +2565,7 @@ document.addEventListener('keydown', (event) => {
   buttonNotifications?.focus();
 });
 
-function stopRealtime() {
+function stopRealtimeTransport() {
   stopPositionStreamRequests();
   realtimeCommandSubscribed = false;
   realtimePositionSubscribed = false;
@@ -2379,6 +2585,85 @@ function stopRealtime() {
   }
 }
 
+function releaseRealtimeLeadership() {
+  const terminalId = realtimeDesiredTerminalId;
+  if (!terminalId || !realtimeIsLeader) return;
+  try {
+    const leader = readRealtimeLeader(terminalId);
+    if (leader?.tabId === realtimeTabId) localStorage.removeItem(realtimeLeaderKey(terminalId));
+  } catch (_) {
+    // Storage can be unavailable in strict private-browsing modes. Transport
+    // cleanup below still prevents this tab from retaining a live socket.
+  }
+  realtimeIsLeader = false;
+  stopRealtimeTransport();
+  publishRealtimeToTabs('leader_released', terminalId);
+}
+
+function evaluateRealtimeLeadership() {
+  const terminalId = realtimeDesiredTerminalId;
+  if (!terminalId || !state.session || document.hidden) {
+    releaseRealtimeLeadership();
+    setRealtimeHealth(false);
+    return;
+  }
+
+  const current = readRealtimeLeader(terminalId);
+  if (current && current.tabId !== realtimeTabId) {
+    if (realtimeIsLeader) {
+      realtimeIsLeader = false;
+      stopRealtimeTransport();
+    }
+    setRealtimeHealth(Boolean(current.healthy));
+    return;
+  }
+
+  try {
+    localStorage.setItem(realtimeLeaderKey(terminalId), JSON.stringify({
+      tabId: realtimeTabId,
+      expiresAt: Date.now() + REALTIME_LEADER_TTL_MS,
+      healthy: transportIsHealthy(),
+    }));
+  } catch (_) {
+    // If storage is blocked, fall back to this tab owning its connection.
+  }
+  const claimed = readRealtimeLeader(terminalId);
+  if (claimed && claimed.tabId !== realtimeTabId) return;
+  if (!realtimeIsLeader) {
+    realtimeIsLeader = true;
+    startRealtimeTransport(terminalId);
+  }
+}
+
+function startRealtime(terminalId) {
+  stopRealtime();
+  realtimeDesiredTerminalId = terminalId;
+  positionStreamStartedAt = terminalId ? Date.now() : 0;
+  if (!terminalId) return;
+  evaluateRealtimeLeadership();
+  realtimeLeaderIntervalId = setInterval(evaluateRealtimeLeadership, REALTIME_LEADER_HEARTBEAT_MS);
+}
+
+function stopRealtime() {
+  if (realtimeLeaderIntervalId) clearInterval(realtimeLeaderIntervalId);
+  realtimeLeaderIntervalId = null;
+  releaseRealtimeLeadership();
+  stopRealtimeTransport();
+  realtimeDesiredTerminalId = null;
+  realtimeIsLeader = false;
+}
+
+document.addEventListener('visibilitychange', () => {
+  evaluateRealtimeLeadership();
+  if (!document.hidden) requestPositionStream();
+});
+window.addEventListener('storage', (event) => {
+  if (realtimeDesiredTerminalId && event.key === realtimeLeaderKey(realtimeDesiredTerminalId)) {
+    evaluateRealtimeLeadership();
+  }
+});
+window.addEventListener('pagehide', releaseRealtimeLeadership);
+
 // ---------------------------------------------------------------------------
 // Data loaders
 // ---------------------------------------------------------------------------
@@ -2394,6 +2679,15 @@ async function loadProfile() {
     return;
   }
   state.profile = data;
+  if (!state.profile?.timezone) {
+    const timezone = deviceTimezone();
+    try {
+      await accountManagement('update_timezone', { timezone });
+      state.profile = { ...(state.profile || {}), timezone };
+    } catch (timezoneError) {
+      console.warn('Could not persist the detected timezone; backend daily boundaries will use UTC until saved.', timezoneError);
+    }
+  }
   renderTimezoneSettings();
 
   const displayName = data?.display_name || state.session.user.email?.split('@')[0] || 'there';
@@ -2516,6 +2810,7 @@ async function loadStrategies() {
     renderStrategies();
     renderStrategyStatusTab();
     renderStrategyPage();
+    renderDashboardHeatmap();
     renderNotifications();
     return;
   }
@@ -2551,6 +2846,7 @@ async function loadStrategies() {
   renderStrategyWinRates();
   renderStrategyStatusTab();
   renderStrategyPage();
+  renderDashboardHeatmap();
   renderNotifications();
 }
 
@@ -2684,6 +2980,7 @@ async function handleStrategyToggle(input, strategyId) {
     renderStrategyWinRates();
     renderStrategyStatusTab();
     renderStrategyPage();
+    renderDashboardHeatmap();
     renderNotifications();
   } catch (error) {
     if (strategy) strategy.enabled = previous;
@@ -2743,6 +3040,7 @@ async function loadSignals() {
     renderRiskEngine();
     renderSignalsTab();
     renderStrategyPage();
+    renderDashboardHeatmap();
     renderNotifications();
     return;
   }
@@ -2771,6 +3069,7 @@ async function loadSignals() {
   renderRiskEngine();
   renderSignalsTab();
   renderStrategyPage();
+  renderDashboardHeatmap();
   renderNotifications();
 }
 
@@ -2810,6 +3109,8 @@ async function loadPositions() {
   state.positions = mergeStreamedPositionFields(data || []);
   renderPositions();
   renderPositionsTab();
+  if (state.positions.some((position) => position.status === 'open')
+    && Date.now() - lastPositionLeaseAt > 5000) requestPositionStream();
 }
 
 function getPositionInitiator(position) {
@@ -2951,10 +3252,10 @@ function renderFloatingPl() {
     const supportsAccountStream = normalizedVersion.length === 3
       && (normalizedVersion[0] > 1
         || (normalizedVersion[0] === 1 && normalizedVersion[1] > 0)
-        || (normalizedVersion[0] === 1 && normalizedVersion[1] === 0 && normalizedVersion[2] >= 47));
+        || (normalizedVersion[0] === 1 && normalizedVersion[1] === 0 && normalizedVersion[2] >= 48));
     const streamGraceElapsed = positionStreamStartedAt > 0 && now - positionStreamStartedAt > 12000;
     if (active?.status === 'connected' && !supportsAccountStream) {
-      bannerPositionStream.textContent = `EA ${active.ea_version || 'unknown'} does not provide broker-authoritative live P/L. Install LucreHubEA-v1.47.mq5 to enable it.`;
+      bannerPositionStream.textContent = `EA ${active.ea_version || 'unknown'} does not provide broker-authoritative live P/L. Install LucreHubEA-v1.48.mq5 to enable it.`;
       bannerPositionStream.hidden = false;
     } else if (hasOpenPosition && supportsAccountStream && streamGraceElapsed && !streamIsCurrent) {
       bannerPositionStream.textContent = 'The private MT5 P/L stream is unavailable. Displaying the durable 30-second account snapshot until it reconnects.';
@@ -3886,6 +4187,7 @@ async function loadTradeHistory() {
     renderWinRateTab();
     renderDurationTab();
     renderStrategyPage();
+    renderDashboardHeatmap();
     renderNotifications();
     return;
   }
@@ -3910,6 +4212,7 @@ async function loadTradeHistory() {
   renderDurationTab();
   renderStrategyStatusTab();
   renderStrategyPage();
+  renderDashboardHeatmap();
   renderNotifications();
   if (!viewPairs.hidden) renderPairsView();
 }
@@ -4787,6 +5090,85 @@ function dateOrdinal(parts) {
   return Date.UTC(parts.year, parts.month - 1, parts.day);
 }
 
+const HEATMAP_WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+function heatmapHourLabel(hour) {
+  if (hour === 0) return '12a';
+  if (hour === 12) return '12p';
+  return hour < 12 ? `${hour}a` : `${hour - 12}p`;
+}
+
+function localThirtyDayWindow() {
+  const todayParts = zonedDateParts(new Date());
+  const todayOrdinal = dateOrdinal(todayParts);
+  const dateKeys = new Set();
+  const weekdayOccurrences = new Array(7).fill(0);
+  for (let offset = 0; offset < 30; offset += 1) {
+    const date = new Date(todayOrdinal - offset * 86400000);
+    const key = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+    const row = (date.getUTCDay() + 6) % 7;
+    dateKeys.add(key);
+    weekdayOccurrences[row] += 1;
+  }
+  return { dateKeys, weekdayOccurrences };
+}
+
+function buildActivityHeatmap(signals, trades, mode) {
+  const { dateKeys, weekdayOccurrences } = localThirtyDayWindow();
+  const totals = Array.from({ length: 7 }, () => new Array(24).fill(0));
+  const source = mode === 'pl' ? trades : signals;
+  source.forEach((item) => {
+    const timestamp = mode === 'pl' ? item.close_time : item.generated_at;
+    const parts = zonedDateParts(timestamp);
+    const dateKey = zonedDateKey(timestamp);
+    if (!parts || !dateKey || !dateKeys.has(dateKey)) return;
+    const ordinal = Date.UTC(parts.year, parts.month - 1, parts.day);
+    const row = (new Date(ordinal).getUTCDay() + 6) % 7;
+    totals[row][parts.hour] += mode === 'pl' ? Number(item.profit ?? 0) : 1;
+  });
+  const values = totals.map((row, rowIndex) => row.map((total) => total / Math.max(1, weekdayOccurrences[rowIndex])));
+  const maxMagnitude = Math.max(0, ...values.flat().map((value) => Math.abs(value)));
+  return { values, maxMagnitude };
+}
+
+function renderActivityHeatmap(containerId, legendId, signals, trades, mode) {
+  const container = document.getElementById(containerId);
+  const legend = document.getElementById(legendId);
+  if (!container || !legend) return;
+  const { values, maxMagnitude } = buildActivityHeatmap(signals, trades, mode);
+  const positive = cssVar('--color-positive') || '#4c8a5e';
+  const negative = cssVar('--color-negative') || '#c3583f';
+  const cells = ['<span class="heatmap-axis-corner" aria-hidden="true"></span>'];
+  for (let hour = 0; hour < 24; hour += 1) cells.push(`<span class="heatmap-hour-label">${heatmapHourLabel(hour)}</span>`);
+  values.forEach((hours, rowIndex) => {
+    cells.push(`<span class="heatmap-day-label">${HEATMAP_WEEKDAYS[rowIndex]}</span>`);
+    hours.forEach((value, hour) => {
+      const empty = Math.abs(value) < 0.000001;
+      const alpha = empty || maxMagnitude === 0 ? 0 : 0.14 + 0.76 * Math.min(1, Math.abs(value) / maxMagnitude);
+      const color = mode === 'pl' && value < 0 ? negative : positive;
+      const valueLabel = mode === 'pl'
+        ? `${value >= 0 ? '+' : '−'}$${Math.abs(value).toFixed(2)} average broker P/L`
+        : `${value.toFixed(2)} average signal${Math.abs(value - 1) < 0.001 ? '' : 's'}`;
+      const title = `${HEATMAP_WEEKDAYS[rowIndex]} ${heatmapHourLabel(hour)} · ${valueLabel}`;
+      cells.push(`<span class="heatmap-cell" style="background-color:${empty ? 'transparent' : hexToRgba(color, alpha)}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"></span>`);
+    });
+  });
+  container.innerHTML = cells.join('');
+  legend.textContent = mode === 'pl'
+    ? `Red = average broker loss · Green = average broker profit · 30 local calendar days · ${displayTimezone()}`
+    : `More green = more signals · 30 local calendar days · ${displayTimezone()}`;
+}
+
+function renderDashboardHeatmap() {
+  renderActivityHeatmap(
+    'dashboard-heatmap',
+    'dashboard-heatmap-legend',
+    state.signals,
+    getVerifiedTradeHistory().filter((trade) => trade.close_time),
+    state.dashboardHeatmapMode,
+  );
+}
+
 function chartDateLabel(ordinal) {
   return new Intl.DateTimeFormat(undefined, { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(new Date(ordinal));
 }
@@ -5063,6 +5445,7 @@ function renderStrategyPage() {
     strategyPageEdit.disabled = true;
     empty.hidden = false;
     content.hidden = true;
+    renderActivityHeatmap('strategy-heatmap', 'strategy-heatmap-legend', [], [], state.strategyHeatmapMode);
     return;
   }
 
@@ -5167,6 +5550,7 @@ function renderStrategyPage() {
 
   renderStrategyVolumeChart(scoped);
   renderStrategyPlChart(scoped.trades);
+  renderActivityHeatmap('strategy-heatmap', 'strategy-heatmap-legend', scoped.signals, scoped.trades, state.strategyHeatmapMode);
   renderStrategyNewsPolicy(strategy);
 }
 
@@ -5206,6 +5590,14 @@ strategySessionBands?.addEventListener('change', (event) => {
     state.strategyChartRange = 'today';
     if (strategyChartRange) strategyChartRange.value = 'today';
   }
+  renderStrategyPage();
+});
+dashboardHeatmapMode?.addEventListener('change', (event) => {
+  state.dashboardHeatmapMode = event.target.value;
+  renderDashboardHeatmap();
+});
+strategyHeatmapMode?.addEventListener('change', (event) => {
+  state.strategyHeatmapMode = event.target.value;
   renderStrategyPage();
 });
 strategyPageEdit?.addEventListener('click', () => {
@@ -5411,6 +5803,7 @@ plSourceSelect?.addEventListener('change', (e) => {
 window.addEventListener('lucre:theme-changed', () => {
   renderVolumeChart();
   renderPlChart();
+  renderDashboardHeatmap();
   if (state.activeView === 'strategies') renderStrategyPage();
 });
 
@@ -5431,6 +5824,7 @@ async function bootDashboard() {
 
 function resetDashboardState() {
   state.profile = null;
+  state.portfolioRisk = null;
   state.terminals = [];
   state.activeTerminalId = null;
   state.strategies = [];
@@ -5445,6 +5839,8 @@ function resetDashboardState() {
   state.strategyChartRange = '30d';
   state.signalSessionBands = false;
   state.strategySessionBands = false;
+  state.dashboardHeatmapMode = 'signals';
+  state.strategyHeatmapMode = 'signals';
   state.agentPolicies = [];
   state.positions = [];
   streamedAccountState = null;
@@ -5460,6 +5856,8 @@ function resetDashboardState() {
   if (strategyChartRange) strategyChartRange.value = '30d';
   if (signalSessionBands) signalSessionBands.checked = false;
   if (strategySessionBands) strategySessionBands.checked = false;
+  if (dashboardHeatmapMode) dashboardHeatmapMode.value = 'signals';
+  if (strategyHeatmapMode) strategyHeatmapMode.value = 'signals';
   if (notificationPanel) notificationPanel.hidden = true;
   renderNotifications();
   setActiveView('dashboard');
@@ -5468,6 +5866,9 @@ function resetDashboardState() {
   stopRealtime();
   stopSymbolRescanPoll();
   pushSubscription = null;
+  if (dailyRiskOverrideTimer) clearTimeout(dailyRiskOverrideTimer);
+  dailyRiskOverrideTimer = null;
+  renderDailyRiskOverride();
   renderPushControls();
 }
 

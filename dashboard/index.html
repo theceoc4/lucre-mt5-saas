@@ -18,7 +18,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.55" />
+<link rel="stylesheet" href="./style.css?v=1.0.57" />
 </head>
 <body>
 
@@ -376,6 +376,17 @@
           <button class="btn-accent btn-xs" type="submit">Save risk limits</button>
         </form>
       </section>
+      <section class="symbol-settings-section daily-risk-override-section" aria-labelledby="daily-risk-override-title">
+        <div class="symbol-settings-heading">
+          <div>
+            <h4 id="daily-risk-override-title">Daily risk override</h4>
+            <p class="desc" id="daily-risk-override-description">Temporarily bypass account risk guardrails until midnight in your local timezone.</p>
+          </div>
+        </div>
+        <button class="btn-danger-outline daily-risk-override-button" type="button" id="daily-risk-override-toggle" aria-pressed="false" disabled>Enable for today</button>
+        <p class="field-hint" id="daily-risk-override-status" role="status">Connect an account to use the override.</p>
+        <p class="field-hint">Broker, market, margin, lot-size, AutoTrading, and EA hard-safety checks still apply.</p>
+      </section>
     </div>
 
     <div class="settings-page" data-settings-page="symbols" hidden>
@@ -554,6 +565,15 @@
         </div>
       </section>
     </div>
+
+    <section class="card card-pad activity-heatmap-card" aria-label="Thirty day activity heatmap">
+      <div class="card-title-row">
+        <div><h3>Activity Heatmap</h3><p class="desc">30-day local-time averages by weekday and hour.</p></div>
+        <select class="chart-range-select" id="dashboard-heatmap-mode" aria-label="Dashboard heatmap metric"><option value="signals">Average signals</option><option value="pl">Average P/L</option></select>
+      </div>
+      <div class="activity-heatmap-scroll"><div class="activity-heatmap" id="dashboard-heatmap"></div></div>
+      <div class="activity-heatmap-legend" id="dashboard-heatmap-legend"></div>
+    </section>
 
     <!-- Tabs -->
     <div class="tab-row-wrap">
@@ -811,6 +831,15 @@
           </section>
         </div>
 
+        <section class="card card-pad activity-heatmap-card" aria-label="Selected strategy thirty day activity heatmap">
+          <div class="card-title-row">
+            <div><h3>Activity Heatmap</h3><p class="desc">30-day local-time averages for the selected strategy.</p></div>
+            <select class="chart-range-select" id="strategy-heatmap-mode" aria-label="Strategy heatmap metric"><option value="signals">Average signals</option><option value="pl">Average P/L</option></select>
+          </div>
+          <div class="activity-heatmap-scroll"><div class="activity-heatmap" id="strategy-heatmap"></div></div>
+          <div class="activity-heatmap-legend" id="strategy-heatmap-legend"></div>
+        </section>
+
         <div class="strategy-primary-metrics">
           <section class="card card-pad strategy-pl-card" aria-label="Selected strategy profit and loss">
             <div class="card-title-row"><h3>P/L</h3><span class="strategy-kpi-period">Verified closed trades</span></div>
@@ -870,7 +899,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.55"></script>
-<script type="module" src="./main.js?v=1.0.55"></script>
+<script src="./app.js?v=1.0.57"></script>
+<script type="module" src="./main.js?v=1.0.57"></script>
 </body>
 </html>

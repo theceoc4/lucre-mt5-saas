@@ -1,8 +1,9 @@
-// v1.0.47 — authoritative account floating P/L plus durable reconciliation.
+// v1.0.56 — quiet EA leases, authoritative floating P/L, and durable reconciliation.
 // v1.0.2 — ea-sync
 //
-// The MQL5 EA polls this every 1-2s. It is the ONLY function EAs talk to and the
-// only inbound path for account/position state and command execution results.
+// The MQL5 EA uses this for compact command exchange and periodic durable
+// account/position reconciliation. High-frequency floating P/L uses the
+// separate authenticated report-position-state relay.
 // Auth is a plaintext API key (header: x-api-key), hashed and matched against
 // mt5_terminals.api_key_hash — NOT a Supabase JWT, so this function is deployed
 // with verify_jwt = false and does all authorization itself via the service role.
@@ -78,6 +79,13 @@ const CLOSE_REASONS = new Set(["sl", "tp", "manual", "agent", "stop_out", "rollo
 
 function closeReason(value?: string | null): string | null {
   return value && CLOSE_REASONS.has(value) ? value : null;
+}
+
+function sameNumber(left: unknown, right: unknown, epsilon = 1e-8): boolean {
+  if (left == null && right == null) return true;
+  const a = Number(left);
+  const b = Number(right);
+  return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= epsilon;
 }
 
 function realizedR(position: Record<string, unknown>, closePrice: number): number | null {
@@ -234,8 +242,8 @@ Deno.serve(async (req: Request) => {
   const commandOnly = body.mode === "commands";
 
   // 1. Heartbeat + account state. The command-only lane deliberately skips
-  // this durable snapshot work; claim_terminal_ea_instance above still renews
-  // the active-EA lease on every authenticated command exchange.
+  // this durable snapshot work; claim_terminal_ea_instance above still checks
+  // the active-EA lease on every exchange and persists at most once per 15s.
   const accountUpdate: Record<string, unknown> = {
     last_heartbeat_at: nowIso,
     status: "connected",
@@ -602,7 +610,7 @@ Deno.serve(async (req: Request) => {
     reportedTickets.add(p.mt5_ticket);
     const { data: existing } = await admin
       .from("positions")
-      .select("id, side, open_price, initial_sl, initial_risk_distance, mfe_price_distance, mae_price_distance, mfe_r, mae_r, max_unrealized_pl, min_unrealized_pl")
+      .select("id, side, open_price, current_price, sl, tp, unrealized_pl, swap, status, closing_since, updated_at, initial_sl, initial_risk_distance, mfe_price_distance, mae_price_distance, mfe_r, mae_r, max_unrealized_pl, min_unrealized_pl")
       .eq("terminal_id", terminal.id)
       .eq("mt5_ticket", p.mt5_ticket)
       .maybeSingle();
@@ -615,6 +623,26 @@ Deno.serve(async (req: Request) => {
       const adverseDistance = Math.max(0, p.side === "buy" ? openPrice - p.current_price : p.current_price - openPrice);
       const mfeDistance = Math.max(Number(existing.mfe_price_distance ?? 0), favorableDistance);
       const maeDistance = Math.max(Number(existing.mae_price_distance ?? 0), adverseDistance);
+      const nextMfeR = riskDistance > 0 ? mfeDistance / riskDistance : null;
+      const nextMaeR = riskDistance > 0 ? maeDistance / riskDistance : null;
+      const nextMaxPl = Math.max(Number(existing.max_unrealized_pl ?? p.unrealized_pl), p.unrealized_pl);
+      const nextMinPl = Math.min(Number(existing.min_unrealized_pl ?? p.unrealized_pl), p.unrealized_pl);
+      const lastDurableUpdate = Date.parse(String(existing.updated_at ?? ""));
+      const refreshDue = !Number.isFinite(lastDurableUpdate) || Date.now() - lastDurableUpdate >= 120_000;
+      const positionChanged = existing.status !== "open" || existing.closing_since != null ||
+        !sameNumber(existing.current_price, p.current_price) ||
+        !sameNumber(existing.sl, p.sl ?? null) ||
+        !sameNumber(existing.tp, p.tp ?? null) ||
+        !sameNumber(existing.unrealized_pl, p.unrealized_pl, 0.0049) ||
+        !sameNumber(existing.swap, p.swap ?? 0, 0.0049) ||
+        !sameNumber(existing.initial_risk_distance, riskDistance || null) ||
+        !sameNumber(existing.mfe_price_distance, mfeDistance) ||
+        !sameNumber(existing.mae_price_distance, maeDistance) ||
+        !sameNumber(existing.mfe_r, nextMfeR) ||
+        !sameNumber(existing.mae_r, nextMaeR) ||
+        !sameNumber(existing.max_unrealized_pl, nextMaxPl, 0.0049) ||
+        !sameNumber(existing.min_unrealized_pl, nextMinPl, 0.0049);
+      if (!positionChanged && !refreshDue) continue;
       await admin
         .from("positions")
         .update({
@@ -626,10 +654,10 @@ Deno.serve(async (req: Request) => {
           initial_risk_distance: riskDistance || null,
           mfe_price_distance: mfeDistance,
           mae_price_distance: maeDistance,
-          mfe_r: riskDistance > 0 ? mfeDistance / riskDistance : null,
-          mae_r: riskDistance > 0 ? maeDistance / riskDistance : null,
-          max_unrealized_pl: Math.max(Number(existing.max_unrealized_pl ?? p.unrealized_pl), p.unrealized_pl),
-          min_unrealized_pl: Math.min(Number(existing.min_unrealized_pl ?? p.unrealized_pl), p.unrealized_pl),
+          mfe_r: nextMfeR,
+          mae_r: nextMaeR,
+          max_unrealized_pl: nextMaxPl,
+          min_unrealized_pl: nextMinPl,
           status: "open",
           closing_since: null,
           updated_at: nowIso,

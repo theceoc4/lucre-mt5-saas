@@ -1,4 +1,4 @@
-// v1.0.47 -- EA-key-authenticated relay for private live position snapshots.
+// v1.0.56 -- EA-key-authenticated relay for authoritative private live position snapshots.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { authenticateTerminal } from "./_shared/auth.ts";
@@ -25,6 +25,7 @@ interface PositionState {
 }
 
 interface PositionStateBody {
+  instance_id?: string;
   positions: PositionState[];
   account_floating_pl?: number;
   account_credit?: number;
@@ -57,7 +58,7 @@ Deno.serve(async (req: Request) => {
   const admin = createClient(url, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  const auth = await authenticateTerminal(req, admin, "id");
+  const auth = await authenticateTerminal(req, admin, "id,active_ea_instance_id,active_ea_instance_seen_at");
   if (auth.error) {
     const status = auth.error === "missing_api_key" || auth.error === "invalid_api_key" ? 401 : 500;
     return reply({ error: auth.error, detail: auth.detail }, status);
@@ -73,6 +74,16 @@ Deno.serve(async (req: Request) => {
     return reply({ error: "invalid_position_state" }, 400);
   }
   const payload = body as Record<string, unknown>;
+  const activeInstanceId = typeof auth.terminal!.active_ea_instance_id === "string"
+    ? auth.terminal!.active_ea_instance_id : "";
+  const activeSeenMs = auth.terminal!.active_ea_instance_seen_at
+    ? new Date(String(auth.terminal!.active_ea_instance_seen_at)).getTime() : 0;
+  const activeLeaseFresh = Boolean(activeInstanceId) && Number.isFinite(activeSeenMs) &&
+    Date.now() - activeSeenMs < 60_000;
+  const reportingInstanceId = typeof payload.instance_id === "string" ? payload.instance_id.trim() : "";
+  if (activeLeaseFresh && reportingInstanceId !== activeInstanceId) {
+    return reply({ error: "ea_instance_standby", retry_after_seconds: 45 }, 409);
+  }
   const positions = payload.positions;
   if (!Array.isArray(positions) || positions.length > 100 || !positions.every(validPosition)) {
     return reply({ error: "invalid_position_state" }, 400);

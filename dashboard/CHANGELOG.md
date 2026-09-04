@@ -1,5 +1,28 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.57 — Local trading day, daily override, and activity heatmaps (2026-09-04)
+
+- Enlarges and center-aligns the mobile navigation dock and theme control while
+  preserving horizontal navigation scrolling on narrow screens.
+- Defines Today and Daily metrics from the saved account timezone across UI
+  charts, pair P/L, manual-order loss protection, and portfolio risk checks.
+- Adds an owner-controlled account-risk override that expires exactly at the
+  next local midnight; broker, margin, volume, market, AutoTrading, and EA hard
+  safety checks remain active.
+- Adds 30-day weekday-by-hour heatmaps to Dashboard and Strategies, with
+  average-signal and broker-P/L modes and strategy-specific filtering.
+
+## v1.0.56 — Realtime traffic and live P/L overhaul (2026-09-03)
+
+- Elects one visible browser tab per user/terminal to own Supabase Realtime;
+  sibling tabs receive the same events through the browser locally.
+- Replaces per-row price-feed and trend subscriptions with compact private
+  market-state batches while preserving the initial and on-demand snapshots.
+- Leases the broker-authoritative P/L stream only while positions are open and
+  a dashboard is visible, with a wider liveness window for quiet ticks.
+- Keeps the existing durable reconciliation poll as a reduced-frequency safety
+  net and pauses fallback reads while the browser is hidden.
+
 ## v1.0.55 — Mobile dock and focused settings (2026-09-03)
 
 - Replaces the mobile hamburger menu with a persistent, horizontally

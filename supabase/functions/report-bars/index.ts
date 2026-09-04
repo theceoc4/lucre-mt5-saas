@@ -1,4 +1,4 @@
-// v1.0.43 — bounded snapshots plus broker-session collector evidence.
+// v1.0.56 — bounded snapshots, compact market broadcasts, and quiet diagnostics.
 //
 // The MT5 EA posts newly closed bars for selected symbol/timeframe series.
 // This function reverse-resolves each broker-native spelling to the terminal's
@@ -74,27 +74,39 @@ interface IncomingCollectorDiagnostic {
   retry_after_seconds?: number;
 }
 
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
 async function updateTrendStates(
   // deno-lint-ignore no-explicit-any
   admin: any,
   terminalId: string,
   rows: Array<{ symbol: string; timeframe: string; bar_time: string; open: number; high: number; low: number; close: number; volume: number; real_volume?: number | null }>,
-): Promise<{ updated: number; warnings: string[] }> {
+): Promise<{ updated: number; states: Record<string, unknown>[]; warnings: string[] }> {
   // The meter is intentionally recalculated only when its M30 anchor or H1
   // context receives a newly closed candle. Faster charts no longer make the
   // day-trading score twitch, and slower charts no longer dilute it.
   const symbols = [...new Set(rows
     .filter((row) => row.timeframe === TREND_ANCHOR_TIMEFRAME || row.timeframe === TREND_CONTEXT_TIMEFRAME)
     .map((row) => row.symbol))];
-  if (symbols.length === 0) return { updated: 0, warnings: [] };
+  if (symbols.length === 0) return { updated: 0, states: [], warnings: [] };
   const warnings: string[] = [];
   const now = new Date().toISOString();
   const payload: Record<string, unknown>[] = [];
   const [{ data: windowRows, error: windowError }, { data: priorRows, error: priorError }] = await Promise.all([
     admin.rpc("get_trend_strength_bars", { p_terminal_id: terminalId, p_symbols: symbols }),
-    admin.from("symbol_trend_state").select("symbol,regime").eq("terminal_id", terminalId).in("symbol", symbols),
+    admin.from("symbol_trend_state")
+      .select("symbol,score,direction,strength,confidence,regime,timeframe_scores,components,source_bar_times,source_bar_time,model_version")
+      .eq("terminal_id", terminalId).in("symbol", symbols),
   ]);
-  if (windowError) return { updated: 0, warnings: [`Trend history window failed: ${windowError.message}`] };
+  if (windowError) return { updated: 0, states: [], warnings: [`Trend history window failed: ${windowError.message}`] };
   if (priorError) warnings.push(`Prior trend regime lookup failed: ${priorError.message}`);
   const barsBySeries = new Map<string, TrendV3Bar[]>();
   for (const bar of windowRows ?? []) {
@@ -105,12 +117,18 @@ async function updateTrendStates(
       close: Number(bar.close), volume: Number(bar.volume), real_volume: bar.real_volume == null ? null : Number(bar.real_volume),
     });
   }
-  const priorRegimeBySymbol = new Map((priorRows ?? []).map((row) => [String(row.symbol), String(row.regime)]));
+  const priorStateRows = (priorRows ?? []) as Record<string, unknown>[];
+  const priorBySymbol = new Map<string, Record<string, unknown>>(
+    priorStateRows.map((row) => [String(row.symbol), row]),
+  );
+  const priorRegimeBySymbol = new Map<string, string>(
+    priorStateRows.map((row) => [String(row.symbol), String(row.regime)]),
+  );
   for (const symbol of symbols) {
     const anchorBars = barsBySeries.get(`${symbol}:${TREND_ANCHOR_TIMEFRAME}`) ?? [];
     const contextBars = barsBySeries.get(`${symbol}:${TREND_CONTEXT_TIMEFRAME}`) ?? [];
     const composite = computeTrendStrengthV3(anchorBars, contextBars, priorRegimeBySymbol.get(symbol));
-    payload.push({
+    const nextState = {
       terminal_id: terminalId,
       symbol,
       score: composite.score,
@@ -124,8 +142,22 @@ async function updateTrendStates(
       source_bar_time: composite.source_bar_time,
       model_version: TREND_MODEL_VERSION,
       computed_at: now,
-    });
+    };
+    const prior = priorBySymbol.get(symbol);
+    const changed = !prior ||
+      String(prior.source_bar_time ?? "") !== String(nextState.source_bar_time ?? "") ||
+      String(prior.model_version ?? "") !== TREND_MODEL_VERSION ||
+      Number(prior.score) !== Number(nextState.score) ||
+      String(prior.direction ?? "") !== String(nextState.direction) ||
+      String(prior.strength ?? "") !== String(nextState.strength) ||
+      Number(prior.confidence) !== Number(nextState.confidence) ||
+      String(prior.regime ?? "") !== String(nextState.regime) ||
+      stableJson(prior.timeframe_scores ?? {}) !== stableJson(nextState.timeframe_scores ?? {}) ||
+      stableJson(prior.components ?? {}) !== stableJson(nextState.components ?? {}) ||
+      stableJson(prior.source_bar_times ?? {}) !== stableJson(nextState.source_bar_times ?? {});
+    if (changed) payload.push(nextState);
   }
+  if (payload.length === 0) return { updated: 0, states: [], warnings };
   const { error: upsertError } = await admin
     .from("symbol_trend_state")
     .upsert(payload, { onConflict: "terminal_id,symbol" });
@@ -142,10 +174,32 @@ async function updateTrendStates(
       if (historyError) warnings.push(`Trend history upsert failed: ${historyError.message}`);
     }
   }
-  return { updated: upsertError ? 0 : payload.length, warnings };
+  return { updated: upsertError ? 0 : payload.length, states: upsertError ? [] : payload, warnings };
+}
+
+async function broadcastMarketState(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  terminalId: string,
+  feedSeries: Record<string, unknown>[],
+  trendStates: Record<string, unknown>[],
+  warnings: string[],
+) {
+  if (feedSeries.length === 0 && trendStates.length === 0) return;
+  const { error } = await admin.rpc("broadcast_private_terminal_event", {
+    p_terminal_id: terminalId,
+    p_event: "market_state",
+    p_payload: {
+      feed_series: feedSeries,
+      trend_states: trendStates,
+      server_reported_at: new Date().toISOString(),
+    },
+  });
+  if (error) warnings.push(`Market-state broadcast failed: ${error.message}`);
 }
 
 const SUPPORTED_TIMEFRAMES = new Set(["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"]);
+const FEED_STATE_FIELDS = "symbol,timeframe,latest_bar_time,oldest_bar_time,history_bar_count,last_received_at,desired_enabled,bootstrap_required,status,last_error,repair_requested_at,collector_state,collector_attempt_count,collector_last_error,collector_reported_at,collector_next_retry_at,source_latest_bar_time,last_upload_status,last_success_at,expected_bar_time,source_tick_time,ingest_lag_seconds";
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -288,14 +342,16 @@ Deno.serve(async (req: Request) => {
         ? Math.max(0, Number(diagnostic.retry_after_seconds)) : 0,
     }];
   });
+  let diagnosticsRecorded = 0;
   if (collectorAttempts.length > 0) {
-    const { error: diagnosticError } = await admin.rpc("record_price_feed_attempts", {
+    const { data: diagnosticCount, error: diagnosticError } = await admin.rpc("record_price_feed_attempts", {
       p_terminal_id: terminal.id,
       p_attempts: collectorAttempts,
     });
     if (diagnosticError) {
       return jsonResponse({ error: "collector_diagnostic_failed", detail: diagnosticError.message }, 500);
     }
+    diagnosticsRecorded = Number(diagnosticCount) || 0;
   }
 
   const rows: Array<{
@@ -365,7 +421,15 @@ Deno.serve(async (req: Request) => {
   }
 
   if (rows.length === 0) {
-    return jsonResponse({ upserted: 0, diagnostics_recorded: collectorAttempts.length, warnings });
+    let feedSeries: Record<string, unknown>[] = [];
+    if (diagnosticsRecorded > 0) {
+      const keys = collectorAttempts.map((row) => `${row.symbol}:${row.timeframe}`);
+      const { data } = await admin.from("price_feed_series_state").select(FEED_STATE_FIELDS)
+        .eq("terminal_id", terminal.id).in("symbol", [...new Set(collectorAttempts.map((row) => row.symbol))]);
+      feedSeries = (data ?? []).filter((row) => keys.includes(`${row.symbol}:${row.timeframe}`));
+    }
+    await broadcastMarketState(admin, terminal.id, feedSeries, [], warnings);
+    return jsonResponse({ upserted: 0, diagnostics_recorded: diagnosticsRecorded, warnings });
   }
 
   const brokerByCanonical = new Map<string, string>();
@@ -428,12 +492,22 @@ Deno.serve(async (req: Request) => {
     row.timeframe === TREND_ANCHOR_TIMEFRAME || row.timeframe === TREND_CONTEXT_TIMEFRAME
   );
   let trendUpdated = 0;
+  let trendStates: Record<string, unknown>[] = [];
   if (hasTrendSourceBars) {
     const trendResult = await updateTrendStates(admin, terminal.id, rows);
     trendUpdated = trendResult.updated;
+    trendStates = trendResult.states;
     warnings.push(...trendResult.warnings);
-    if (trendUpdated > 0) dispatchPushInBackground(admin, [terminal.user_id]);
+    if (trendUpdated > 0) dispatchPushInBackground(admin, [String(terminal.user_id)]);
   }
+  const acceptedKeys = new Set(acceptedSeries.map((series) => `${series.symbol}:${series.timeframe}`));
+  const { data: feedRows, error: feedRowsError } = await admin
+    .from("price_feed_series_state").select(FEED_STATE_FIELDS)
+    .eq("terminal_id", terminal.id)
+    .in("symbol", [...new Set(acceptedSeries.map((series) => series.symbol))]);
+  if (feedRowsError) warnings.push(`Feed-state snapshot failed: ${feedRowsError.message}`);
+  const feedSeries = (feedRows ?? []).filter((row) => acceptedKeys.has(`${row.symbol}:${row.timeframe}`));
+  await broadcastMarketState(admin, terminal.id, feedSeries, trendStates, warnings);
   return jsonResponse({
     accepted: rows.length,
     // Keep the old field during the EA rollout; it historically meant rows
@@ -448,7 +522,7 @@ Deno.serve(async (req: Request) => {
     })),
     trend_update_scheduled: false,
     trend_updated: trendUpdated,
-    diagnostics_recorded: collectorAttempts.length,
+    diagnostics_recorded: diagnosticsRecorded,
     pruned: Number((ingestResult as { pruned?: number } | null)?.pruned) || 0,
     warnings,
   });

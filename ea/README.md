@@ -1,14 +1,19 @@
-# LucreHubEA — v1.0.47 (single-file build)
+# LucreHubEA — v1.0.48 (single-file build)
 
 ## What changed in this build
 
-Version 1.0.47 makes MT5's account-level `ACCOUNT_PROFIT` the authoritative
+Version 1.0.48 makes the Realtime and P/L lanes work together efficiently. A
+standby EA now pauses its HTTP data lanes after a lease rejection instead of
+retrying every second. Private P/L reports carry the EA instance ID, changed
+values retain their two-second cadence, and an eight-second unchanged heartbeat
+keeps quiet markets from being mistaken for a dead stream.
+
+Version 1.0.47 made MT5's account-level `ACCOUNT_PROFIT` the authoritative
 floating P/L value on the dashboard and private two-second stream. It also
 reports `ACCOUNT_CREDIT`, aggregate position profit, and cumulative open swap
 as reconciliation diagnostics, while retaining the durable 30-second snapshot
-as a fallback. The runtime payload now correctly reports `ea_version` 1.0.47.
-The install artifacts are explicitly versioned as `LucreHubEA-v1.47.mq5` and
-`LucreHubEA-v1.47.zip`.
+as a fallback. Version 1.0.48 retains that broker-authoritative value and ships
+explicitly versioned `LucreHubEA-v1.48.mq5` and `LucreHubEA-v1.48.zip` artifacts.
 
 Version 1.0.46 keeps the fast public Realtime lane limited to empty command
 wake-up hints and dashboard lease requests. Live position values now travel
@@ -57,7 +62,7 @@ between sections).
 
 ## Install (one file now)
 
-1. Copy **only** `releases/LucreHubEA-v1.47.mq5` into `MQL5/Experts/` on the
+1. Copy **only** `releases/LucreHubEA-v1.48.mq5` into `MQL5/Experts/` on the
    terminal (local **or** VPS-hosted).
 2. Open it in MetaEditor and compile (F7). No `.mqh` files to copy —
    there are no `#include` dependencies left to satisfy.

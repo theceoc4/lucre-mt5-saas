@@ -1,5 +1,17 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.48 — Quiet standby and resilient private P/L (2026-09-03)
+
+- Pauses every non-socket network lane for 45 seconds when the backend reports
+  that another EA owns the terminal lease, eliminating one-second 409 storms.
+- Includes the EA instance ID in private position snapshots so a standby copy
+  cannot overwrite the authoritative VPS account P/L stream.
+- Sends changed broker P/L at the existing two-second cadence and one compact
+  unchanged heartbeat every eight seconds, separating stream liveness from
+  market movement without returning to per-tick writes.
+- Extends the dashboard stream lease to 45 seconds for safe 25-second renewal
+  and reports runtime version 1.0.48.
+
 ## v1.0.47 — Broker-authoritative live floating P/L (2026-09-03)
 
 - Reports MT5 `ACCOUNT_PROFIT` as the authoritative account floating P/L in

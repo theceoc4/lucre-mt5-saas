@@ -1,6 +1,10 @@
-import { createClient } from "jsr:@supabase/supabase-js@2";
-
 type ContextInput = { terminalId: string; symbol: string; at: Date; origin: string; strategyName?: string | null; riskDefined?: boolean };
+// Edge Functions use an ungenerated Supabase schema, so pinning this helper to
+// createClient's default `unknown` database generic makes every selected row
+// resolve to `never` with newer supabase-js releases. Keep the shared helper
+// client-agnostic until generated Database types are introduced project-wide.
+// deno-lint-ignore no-explicit-any
+type SupabaseAdminClient = any;
 
 function sessionFor(at: Date): "asia" | "london" | "ny" | "overlap" {
   const hour = at.getUTCHours();
@@ -13,11 +17,12 @@ function sessionFor(at: Date): "asia" | "london" | "ny" | "overlap" {
 // Kept intentionally deterministic and versioned. It gives manual/direct
 // orders a consistent regime tag while price bars warm up; 'unknown' is never
 // masqueraded as a strategy-grade trending/ranging observation.
-async function regimeFor(admin: ReturnType<typeof createClient>, terminalId: string, symbol: string) {
+async function regimeFor(admin: SupabaseAdminClient, terminalId: string, symbol: string) {
   const { data } = await admin.from("price_bars").select("close")
     .eq("terminal_id", terminalId).eq("symbol", symbol).eq("timeframe", "M5")
     .order("bar_time", { ascending: false }).limit(30);
-  const closes = (data ?? []).map((b) => Number(b.close)).filter(Number.isFinite);
+  const closes: number[] = ((data ?? []) as Array<{ close: unknown }>)
+    .map((bar) => Number(bar.close)).filter(Number.isFinite);
   if (closes.length < 20) return { regime: null, quality: "missing_market_data" };
   const latest = closes[0];
   const mean = closes.reduce((a, b) => a + b, 0) / closes.length;
@@ -25,7 +30,7 @@ async function regimeFor(admin: ReturnType<typeof createClient>, terminalId: str
   return { regime: deviation > 0 && Math.abs(latest - mean) / deviation >= 0.75 ? "trending" : "ranging", quality: "estimated" };
 }
 
-export async function captureMarketContext(admin: ReturnType<typeof createClient>, input: ContextInput) {
+export async function captureMarketContext(admin: SupabaseAdminClient, input: ContextInput) {
   const session = sessionFor(input.at);
   const { regime, quality } = await regimeFor(admin, input.terminalId, input.symbol);
   const from = new Date(input.at.getTime() - 30 * 60_000).toISOString();
