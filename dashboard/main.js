@@ -3053,7 +3053,11 @@ function buildNotifications() {
 
   state.strategies.forEach((strategy) => {
     (strategy.evaluation_states || [])
-      .filter((row) => ['command_failed', 'ea_version_blocked', 'broker_mapping_failed', 'stale_candles', 'missing_bars'].includes(row.status))
+      // Candle freshness is displayed where it can be acted on: the Pairs
+      // card health dot and its timeframe detail view. Keep the notification
+      // center focused on trading/system failures instead of repeating feed
+      // state for every strategy-symbol combination.
+      .filter((row) => ['command_failed', 'ea_version_blocked', 'broker_mapping_failed'].includes(row.status))
       .forEach((row) => items.push({
         id: `strategy-health:${strategy.id}:${row.symbol}:${row.status}`,
         tone: 'error',
@@ -4308,8 +4312,16 @@ function renderPairsView() {
           ? 'var(--color-negative)'
           : 'var(--color-text)';
       const dailyPlLabel = `${perf.dailyPl > 0 ? '+' : ''}${fmtUsd(perf.dailyPl)}`;
+      const timeframeFeeds = new Map(PRICE_TIMEFRAMES.map((timeframe) => [
+        timeframe,
+        priceFeedPresentation(s.symbol, timeframe),
+      ]));
+      const allTimeframesCurrent = PRICE_TIMEFRAMES.every((timeframe) => timeframeFeeds.get(timeframe)?.available);
+      const feedHealthLabel = allTimeframesCurrent
+        ? `All ${s.symbol} candle timeframes are current`
+        : `${s.symbol} candle history needs attention`;
       const timeframeButtons = PRICE_TIMEFRAMES.map((timeframe) => {
-        const feed = priceFeedPresentation(s.symbol, timeframe);
+        const feed = timeframeFeeds.get(timeframe);
         const key = `${s.symbol}:${timeframe}`;
         const loading = pairRepairsInFlight.has(key) || Boolean(feed.repairing);
         const feedDetail = escapeHtml(feed.detail);
@@ -4328,6 +4340,7 @@ function renderPairsView() {
             <div class="pair-card-header">
               <span class="pair-card-name">${s.symbol}</span>
               <div class="pair-card-head-actions">
+                <span class="pair-feed-health-dot ${allTimeframesCurrent ? 'is-current' : 'needs-attention'}" role="img" aria-label="${feedHealthLabel}" title="${feedHealthLabel}"></span>
                 <label class="strategy-toggle">
                   <input type="checkbox" class="strategy-toggle-input" data-pair-enable="${s.symbol}" checked />
                   <span>On</span>

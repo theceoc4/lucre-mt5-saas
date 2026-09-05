@@ -1,5 +1,13 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.69 — Quiet candle-health status (2026-09-04)
+
+- Removes stale and missing candle-history events from the notification center
+  while preserving genuine trading, EA-version, and broker-mapping errors.
+- Adds a compact, accessible health dot beside every visible pair toggle: green
+  when all eight timeframes are current and red when any timeframe needs
+  attention. Detailed repair controls remain on the card's back.
+
 ## v1.0.68 — Pair performance sorting (2026-09-04)
 
 - Adds a responsive Pairs-page sort control for alphabetical order, win rate in

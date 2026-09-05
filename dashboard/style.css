@@ -3104,6 +3104,21 @@ body {
   gap: var(--space-2);
 }
 
+.pair-feed-health-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  align-self: center;
+  border-radius: 50%;
+  background: var(--color-negative-surface);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--color-negative-surface) 45%, transparent);
+}
+
+.pair-feed-health-dot.is-current {
+  background: var(--color-positive-surface);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--color-positive-surface) 45%, transparent);
+}
+
 .pair-flip-button {
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-full);
