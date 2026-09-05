@@ -1,5 +1,14 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.65 — Zero-flash themes and view motion (2026-09-04)
+
+- Applies the last selected light/dark mode and palette in the document head
+  before CSS paints, eliminating the default-theme flash when the saved PWA opens.
+- Reconciles the local first-paint cache with the user's private Supabase profile
+  before revealing the authenticated dashboard.
+- Adds subtle shell and page enter/exit motion with rapid-navigation protection
+  and full support for the device's reduced-motion preference.
+
 ## v1.0.64 — Focused Social timeline (2026-09-04)
 
 - Removes both multi-metric account summaries from the Social experience.

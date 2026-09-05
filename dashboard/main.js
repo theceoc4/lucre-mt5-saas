@@ -210,6 +210,8 @@ let pushRegistration = null;
 let pushSubscription = null;
 let dailyRiskOverrideTimer = null;
 let socialRefreshTimer = null;
+let viewTransitionId = 0;
+let dashboardBootSessionId = null;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -326,6 +328,10 @@ function showDashboard() {
   authGate.classList.remove('is-open');
   dashboardRoot.setAttribute('aria-hidden', 'false');
   dashboardRoot.style.display = 'flex';
+  dashboardRoot.classList.remove('app-entering');
+  void dashboardRoot.offsetWidth;
+  dashboardRoot.classList.add('app-entering');
+  setTimeout(() => dashboardRoot.classList.remove('app-entering'), 360);
   // Tab strip is hidden (display:none ancestor) until now, so re-measure the
   // scroll-fade affordance once it actually has layout dimensions.
   requestAnimationFrame(() => window.updateTabRowOverflow?.());
@@ -1076,10 +1082,30 @@ function setActiveView(view) {
   const nextView = ['social', 'dashboard', 'strategies', 'pairs'].includes(view) ? view : 'dashboard';
   state.activeView = nextView;
   const isPairs = nextView === 'pairs';
-  viewSocial.hidden = nextView !== 'social';
-  viewPairs.hidden = nextView !== 'pairs';
-  viewStrategies.hidden = nextView !== 'strategies';
-  viewDashboard.hidden = nextView !== 'dashboard';
+  const views = { social: viewSocial, dashboard: viewDashboard, strategies: viewStrategies, pairs: viewPairs };
+  const targetView = views[nextView];
+  const visibleView = Object.values(views).find((element) => !element.hidden);
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const revealTarget = () => {
+    Object.values(views).forEach((element) => {
+      element.hidden = element !== targetView;
+      element.classList.remove('view-leaving', 'view-entering');
+    });
+    if (!reducedMotion) {
+      void targetView.offsetWidth;
+      targetView.classList.add('view-entering');
+      setTimeout(() => targetView.classList.remove('view-entering'), 240);
+    }
+  };
+  if (visibleView && visibleView !== targetView && !reducedMotion) {
+    const transition = ++viewTransitionId;
+    visibleView.classList.remove('view-entering');
+    visibleView.classList.add('view-leaving');
+    setTimeout(() => { if (transition === viewTransitionId) revealTarget(); }, 120);
+  } else {
+    viewTransitionId += 1;
+    revealTarget();
+  }
   renderBalanceWidget();
   document.querySelectorAll('.nav-pill').forEach((pill) => {
     const pillView = pill.dataset.view || 'dashboard';
@@ -6366,7 +6392,11 @@ window.addEventListener('lucre:theme-changed', () => {
 // Boot
 // ---------------------------------------------------------------------------
 async function bootDashboard() {
+  const sessionId = state.session?.user?.id;
+  if (!sessionId || dashboardBootSessionId === sessionId) return;
+  dashboardBootSessionId = sessionId;
   await loadProfile();
+  showDashboard();
   await Promise.all([loadTerminals(), loadCalendarEvents(), loadSocialData()]);
   await loadPushNotificationSettings();
   const launch = new URLSearchParams(window.location.search);
@@ -6384,8 +6414,8 @@ async function bootDashboard() {
 }
 
 function resetDashboardState() {
+  dashboardBootSessionId = null;
   state.profile = null;
-  window.LucreTheme?.applyPalette('lucre');
   state.portfolioRisk = null;
   state.terminals = [];
   state.activeTerminalId = null;
@@ -6471,7 +6501,6 @@ function reattachAuthForm() {
 supabase.auth.onAuthStateChange((_event, session) => {
   state.session = session;
   if (session) {
-    showDashboard();
     setAuthMessage('');
     authForm?.reset();
     detachAuthForm();
@@ -6486,7 +6515,6 @@ supabase.auth.onAuthStateChange((_event, session) => {
 supabase.auth.getSession().then(({ data }) => {
   state.session = data.session;
   if (data.session) {
-    showDashboard();
     detachAuthForm();
     bootDashboard();
   } else {

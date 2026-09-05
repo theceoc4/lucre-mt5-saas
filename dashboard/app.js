@@ -1,10 +1,15 @@
 (function () {
-  // ---- Theme toggle (no localStorage — sandboxed iframes block it) ----
+  // ---- Theme toggle. The head bootstrap already applied these attributes
+  // before first paint; app.js owns subsequent interaction and persistence. ----
   const toggle = document.querySelector('[data-theme-toggle]');
   const root = document.documentElement;
-  let theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  let theme = root.dataset.theme === 'dark' ? 'dark' : 'light';
   let palette = root.dataset.palette || 'lucre';
   root.setAttribute('data-theme', theme);
+
+  function remember(key, value) {
+    try { localStorage.setItem(key, value); } catch (_) { /* Embedded previews may block storage. */ }
+  }
 
   function updateBrowserThemeColor() {
     const color = getComputedStyle(root).getPropertyValue('--color-page-bg').trim();
@@ -26,6 +31,7 @@
   function applyPalette(nextPalette, { notify = true } = {}) {
     palette = nextPalette === 'soleau-gold' ? 'soleau-gold' : 'lucre';
     root.setAttribute('data-palette', palette);
+    remember('lucre:palette', palette);
     updateBrowserThemeColor();
     if (notify) window.dispatchEvent(new CustomEvent('lucre:theme-changed', { detail: { theme, palette } }));
   }
@@ -38,6 +44,7 @@
   toggle?.addEventListener('click', () => {
     theme = theme === 'dark' ? 'light' : 'dark';
     root.setAttribute('data-theme', theme);
+    remember('lucre:theme', theme);
     applyToggleIcon();
     updateBrowserThemeColor();
     // Let main.js know it should re-render charts with the new CSS colors.

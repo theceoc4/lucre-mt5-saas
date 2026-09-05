@@ -12,13 +12,32 @@
 <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png" />
 <link rel="manifest" href="./manifest.webmanifest" />
 <meta name="theme-color" content="#17251a" />
+<script>
+  // Apply the last selected appearance before CSS paints. Supabase remains the
+  // cross-device source of truth; this tiny local cache prevents PWA theme flash.
+  (() => {
+    const root = document.documentElement;
+    let theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    let palette = 'lucre';
+    try {
+      const savedTheme = localStorage.getItem('lucre:theme');
+      const savedPalette = localStorage.getItem('lucre:palette');
+      if (savedTheme === 'light' || savedTheme === 'dark') theme = savedTheme;
+      if (savedPalette === 'lucre' || savedPalette === 'soleau-gold') palette = savedPalette;
+    } catch (_) { /* Storage may be unavailable in an embedded preview. */ }
+    root.dataset.theme = theme;
+    root.dataset.palette = palette;
+    const colors = { 'light:lucre': '#dfe6d9', 'dark:lucre': '#10130f', 'light:soleau-gold': '#e9dcc0', 'dark:soleau-gold': '#1b1b1b' };
+    document.querySelector('meta[name="theme-color"]').setAttribute('content', colors[`${theme}:${palette}`]);
+  })();
+</script>
 
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.64" />
+<link rel="stylesheet" href="./style.css?v=1.0.65" />
 </head>
 <body>
 
@@ -513,7 +532,7 @@
   <div class="modal-card"><div class="modal-head"><h3 id="account-confirm-title">Confirm action</h3><button class="icon-btn" type="button" data-modal-close aria-label="Close">×</button></div><p class="modal-sub" id="account-confirm-copy"></p><label class="field" for="account-confirmation-input">Type the confirmation phrase exactly<input id="account-confirmation-input" autocomplete="off" /></label><p class="auth-message" id="account-confirm-message" role="status"></p><button class="btn-danger" type="button" id="button-confirm-account-action">Confirm</button></div>
 </div>
 
-<div class="page" id="dashboard-root">
+<div class="page" id="dashboard-root" aria-hidden="true" style="display:none">
   <div class="shell">
 
     <!-- Top nav -->
@@ -1011,7 +1030,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.64"></script>
-<script type="module" src="./main.js?v=1.0.64"></script>
+<script src="./app.js?v=1.0.65"></script>
+<script type="module" src="./main.js?v=1.0.65"></script>
 </body>
 </html>
