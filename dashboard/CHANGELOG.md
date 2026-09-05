@@ -1,5 +1,12 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.68 — Pair performance sorting (2026-09-04)
+
+- Adds a responsive Pairs-page sort control for alphabetical order, win rate in
+  either direction, and local-day P/L in either direction.
+- Keeps symbols without verified win-rate history at the end of both win-rate
+  modes and uses alphabetical order as the stable tie-breaker.
+
 ## v1.0.67 — Focused Social P/L action (2026-09-04)
 
 - Reliably hides the shared Balance, Equity, Margin Level, and Floating P/L

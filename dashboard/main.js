@@ -50,6 +50,7 @@ const state = {
   strategySessionBands: false,
   dashboardHeatmapMode: 'signals',
   strategyHeatmapMode: 'signals',
+  pairSort: 'alphabetical',
   signalFilter: { pair: 'all', period: '30d' },
   // v1.0.14 — item 3: P/L Over Time card filters (timeframe + manual/auto/all).
   plFilter: { timeframe: '30d', source: 'all' },
@@ -153,6 +154,7 @@ const viewSocial = document.getElementById('view-social');
 const viewStrategies = document.getElementById('view-strategies');
 const viewPairs = document.getElementById('view-pairs');
 const pairGrid = document.getElementById('pair-grid');
+const pairSortSelect = document.getElementById('pair-sort-select');
 const buttonRescanSymbols = document.getElementById('button-rescan-symbols');
 const symbolSearchForm = document.getElementById('form-symbol-search');
 const symbolSearchInput = document.getElementById('symbol-settings-search');
@@ -4266,9 +4268,30 @@ function renderPairsView() {
     return;
   }
 
-  pairGrid.innerHTML = visibleSettings
-    .map((s) => {
-      const perf = computeSymbolPerformance(s.symbol);
+  const compareMetric = (left, right, direction) => {
+    const leftMissing = left === null || left === undefined || !Number.isFinite(Number(left));
+    const rightMissing = right === null || right === undefined || !Number.isFinite(Number(right));
+    if (leftMissing || rightMissing) {
+      if (leftMissing && rightMissing) return 0;
+      return leftMissing ? 1 : -1;
+    }
+    return direction === 'desc' ? Number(right) - Number(left) : Number(left) - Number(right);
+  };
+  const pairRows = visibleSettings.map((setting) => ({
+    setting,
+    performance: computeSymbolPerformance(setting.symbol),
+  }));
+  pairRows.sort((left, right) => {
+    let metricOrder = 0;
+    if (state.pairSort === 'win-desc') metricOrder = compareMetric(left.performance.winRate, right.performance.winRate, 'desc');
+    if (state.pairSort === 'win-asc') metricOrder = compareMetric(left.performance.winRate, right.performance.winRate, 'asc');
+    if (state.pairSort === 'pl-desc') metricOrder = compareMetric(left.performance.dailyPl, right.performance.dailyPl, 'desc');
+    if (state.pairSort === 'pl-asc') metricOrder = compareMetric(left.performance.dailyPl, right.performance.dailyPl, 'asc');
+    return metricOrder || left.setting.symbol.localeCompare(right.setting.symbol);
+  });
+
+  pairGrid.innerHTML = pairRows
+    .map(({ setting: s, performance: perf }) => {
       const trend = trendMeterPresentation(s.symbol);
       const plColor =
         perf.totalPl > 0 ? 'var(--color-positive)' : perf.totalPl < 0 ? 'var(--color-negative)' : 'var(--color-text-muted)';
@@ -4473,6 +4496,11 @@ function renderPairsView() {
     btn.addEventListener('click', () => handleQuickOrder(btn.dataset.quickSell, 'sell', btn));
   });
 }
+
+pairSortSelect?.addEventListener('change', (event) => {
+  state.pairSort = event.target.value;
+  renderPairsView();
+});
 
 // ---------------------------------------------------------------------------
 // Broker symbol mapping (v1.0.12+) — canonical symbol <-> broker-native

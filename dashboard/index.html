@@ -41,7 +41,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.67" />
+<link rel="stylesheet" href="./style.css?v=1.0.68" />
 </head>
 <body>
 
@@ -1026,8 +1026,20 @@
 
     <div class="view" id="view-pairs" hidden>
       <div class="pairs-view-head">
-        <h2>Pairs</h2>
-        <p class="desc">Tap a pair card to flip between trading controls and live price-history health.</p>
+        <div>
+          <h2>Pairs</h2>
+          <p class="desc">Tap a pair card to flip between trading controls and live price-history health.</p>
+        </div>
+        <label class="pair-sort-control" for="pair-sort-select">
+          <span>Sort by</span>
+          <select class="chart-range-select" id="pair-sort-select" aria-label="Sort pairs">
+            <option value="alphabetical">Alphabetical</option>
+            <option value="win-desc">Win rate: high to low</option>
+            <option value="win-asc">Win rate: low to high</option>
+            <option value="pl-desc">Daily P/L: high to low</option>
+            <option value="pl-asc">Daily P/L: low to high</option>
+          </select>
+        </label>
       </div>
 
       <div class="pair-grid" id="pair-grid"></div>
@@ -1041,7 +1053,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.67"></script>
-<script type="module" src="./main.js?v=1.0.67"></script>
+<script src="./app.js?v=1.0.68"></script>
+<script type="module" src="./main.js?v=1.0.68"></script>
 </body>
 </html>

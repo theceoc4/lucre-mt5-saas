@@ -2831,6 +2831,10 @@ body {
 }
 
 .pairs-view-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
   margin-bottom: var(--space-4);
 }
 
@@ -2846,6 +2850,29 @@ body {
   color: var(--color-text-on-shell-muted);
   font-size: var(--text-sm);
   margin: 0;
+}
+
+.pair-sort-control {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+  color: var(--color-text-on-shell-muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.pair-sort-control .chart-range-select {
+  min-width: 210px;
+  color: var(--color-text-on-shell);
+  background-color: var(--glass-pill-bg);
+  border-color: var(--glass-border-soft);
+  box-shadow: var(--glass-inset-top), var(--glass-shadow-pill);
+}
+
+.pair-sort-control option {
+  color: var(--color-text);
+  background: var(--color-surface);
 }
 
 .symbol-mapping-card {
@@ -3444,6 +3471,21 @@ body {
 }
 
 @media (max-width: 640px) {
+  .pairs-view-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pair-sort-control {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .pair-sort-control .chart-range-select {
+    min-width: 0;
+    width: min(72%, 260px);
+  }
+
   .pair-grid {
     grid-template-columns: 1fr;
   }
