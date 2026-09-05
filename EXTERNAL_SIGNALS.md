@@ -36,10 +36,15 @@ Send a JSON `POST` to the private URL:
 
 - `event_id` should stay identical when a provider retries the same alert.
 - `side` accepts `buy`, `sell`, `long`, `short`, `1`, or `-1`.
-- TradingView numeric intervals (`1`, `5`, `15`, `30`, `60`, `240`) are
-  normalized to Lucre timeframes.
-- The symbol and timeframe must be enabled on the strategy. An MT5 broker
-  suffix is resolved only inside the owning terminal's symbol map.
+- TradingView numeric intervals (`1`, `5`, `15`, `30`, `60`, `240`) and common
+  minute aliases (`1m`, `5m`, `15m`, `30m`) are normalized and retained as
+  provider metadata.
+- The timeframe configured on the Lucre strategy remains authoritative for
+  broker candles and confirmation indicators. A TradingView chart interval may
+  differ without rejecting the trigger. MT5 indicator adapters stay strict
+  because the EA reads the strategy's configured chart series directly.
+- The symbol must be enabled on the strategy. An MT5 broker suffix is resolved
+  only inside the owning terminal's symbol map.
 - `occurred_at` is checked against the strategy's TTL. Use TradingView's
   `{{timenow}}` for this field; `{{time}}` is appropriate for a stable candle
   identity in `event_id`.

@@ -1,4 +1,4 @@
-// v1.0.49 -- Authenticated, durable ingress for TradingView, generic webhooks,
+// v1.0.50 -- Authenticated, durable ingress for TradingView, generic webhooks,
 // and Lucre EA indicator adapters. This endpoint only admits a candidate. It
 // never accepts account identity, volume, risk, stops, or execution mode from
 // the caller; those are loaded from the terminal-owned strategy by the engine.
@@ -47,11 +47,17 @@ function normalizeTimeframe(value: unknown): string | null {
   const raw = String(value ?? "").trim().toUpperCase();
   const aliases: Record<string, string> = {
     "1": "M1",
+    "1M": "M1",
     "5": "M5",
+    "5M": "M5",
     "15": "M15",
+    "15M": "M15",
     "30": "M30",
+    "30M": "M30",
     "60": "H1",
+    "60M": "H1",
     "240": "H4",
+    "240M": "H4",
     "1H": "H1",
     "4H": "H4",
     "1D": "D1",
@@ -86,17 +92,6 @@ Deno.serve(async (req: Request) => {
     return respond({ error: "payload_too_large" }, 413);
   }
 
-  const rawBody = await req.text();
-  if (rawBody.length > 16_384) {
-    return respond({ error: "payload_too_large" }, 413);
-  }
-  let body: Record<string, unknown>;
-  try {
-    body = JSON.parse(rawBody);
-  } catch {
-    return respond({ error: "invalid_json_body" }, 400);
-  }
-
   const url = new URL(req.url);
   const pathParts = url.pathname.split("/").filter(Boolean);
   const pathToken = pathParts[pathParts.length - 1] === "external-signal"
@@ -110,24 +105,80 @@ Deno.serve(async (req: Request) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const admin = createClient(supabaseUrl, serviceKey);
-
+  const receivedAt = new Date();
   let endpoint: Record<string, unknown> | null = null;
+
+  // Authenticate URL-based providers before parsing their body. This lets us
+  // record malformed TradingView attempts against the correct endpoint without
+  // ever logging or storing the private URL token.
   if (pathToken) {
     const tokenHash = await sha256Hex(pathToken);
     const { data } = await admin.from("external_signal_endpoints")
       .select(
-        "id,terminal_id,strategy_id,provider,enabled,rate_limit_per_minute",
+        "id,public_id,terminal_id,strategy_id,provider,enabled,rate_limit_per_minute",
       )
       .eq("token_hash", tokenHash).maybeSingle();
     endpoint = data;
-  } else {
+    if (!endpoint) {
+      console.warn(JSON.stringify({
+        event: "external_signal_rejected",
+        error: "invalid_endpoint_credential",
+        credential_kind: "url_token",
+      }));
+      return respond({ error: "invalid_endpoint_credential" }, 401);
+    }
+  }
+
+  const reject = async (
+    error: string,
+    status: number,
+    detail: Record<string, unknown> = {},
+  ) => {
+    const safeDetail = Object.fromEntries(
+      Object.entries(detail).map(([key, value]) => [
+        key,
+        String(value ?? "").slice(0, 80),
+      ]),
+    );
+    if (endpoint) {
+      const statusDetail = Object.entries(safeDetail)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(":");
+      await admin.from("external_signal_endpoints").update({
+        last_received_at: receivedAt.toISOString(),
+        last_status: `rejected:${error}${statusDetail ? `:${statusDetail}` : ""}`
+          .slice(0, 240),
+      }).eq("id", endpoint.id);
+      console.warn(JSON.stringify({
+        event: "external_signal_rejected",
+        endpoint_public_id: endpoint.public_id,
+        provider: endpoint.provider,
+        error,
+        ...safeDetail,
+      }));
+    }
+    return respond({ error, ...detail }, status);
+  };
+
+  const rawBody = await req.text();
+  if (rawBody.length > 16_384) {
+    return await reject("payload_too_large", 413);
+  }
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return await reject("invalid_json_body", 400);
+  }
+
+  if (!pathToken) {
     const keyHash = await sha256Hex(eaKey);
     const { data: terminal } = await admin.from("mt5_terminals").select("id")
       .eq("api_key_hash", keyHash).maybeSingle();
     if (terminal && body.strategy_id) {
       const { data } = await admin.from("external_signal_endpoints")
         .select(
-          "id,terminal_id,strategy_id,provider,enabled,rate_limit_per_minute",
+          "id,public_id,terminal_id,strategy_id,provider,enabled,rate_limit_per_minute",
         )
         .eq("terminal_id", terminal.id).eq("strategy_id", body.strategy_id)
         .eq("provider", "mt5_indicator").maybeSingle();
@@ -135,7 +186,7 @@ Deno.serve(async (req: Request) => {
     }
   }
   if (!endpoint) return respond({ error: "invalid_endpoint_credential" }, 401);
-  if (!endpoint.enabled) return respond({ error: "endpoint_disabled" }, 410);
+  if (!endpoint.enabled) return await reject("endpoint_disabled", 410);
 
   const { data: strategy } = await admin.from("strategies")
     .select(
@@ -144,23 +195,43 @@ Deno.serve(async (req: Request) => {
     .eq("id", endpoint.strategy_id).eq("terminal_id", endpoint.terminal_id)
     .maybeSingle();
   if (!strategy || strategy.signal_source !== endpoint.provider) {
-    return respond({ error: "strategy_source_mismatch" }, 409);
+    return await reject("strategy_source_mismatch", 409);
   }
-  if (!strategy.enabled) return respond({ error: "strategy_disabled" }, 409);
+  if (!strategy.enabled) return await reject("strategy_disabled", 409);
 
   const side = normalizeSide(body.side ?? body.action ?? body.direction);
-  const timeframe = normalizeTimeframe(
-    body.timeframe ?? body.interval ?? strategy.timeframe,
-  );
+  const rawTimeframe = body.timeframe ?? body.interval ?? null;
+  const providerTimeframe = rawTimeframe === null
+    ? null
+    : normalizeTimeframe(rawTimeframe);
+  const timeframe = normalizeTimeframe(strategy.timeframe);
   const symbolReceived = normalizeProviderSymbol(body.symbol ?? body.ticker);
-  if (!side) return respond({ error: "invalid_side" }, 422);
-  if (!timeframe || timeframe !== strategy.timeframe) {
-    return respond({
-      error: "timeframe_not_allowed",
-      expected: strategy.timeframe,
-    }, 422);
+  if (!side) {
+    return await reject("invalid_side", 422, {
+      received_side: body.side ?? body.action ?? body.direction ?? "missing",
+    });
   }
-  if (!symbolReceived) return respond({ error: "symbol_required" }, 422);
+  if (!timeframe) {
+    return await reject("strategy_timeframe_invalid", 409, {
+      configured: strategy.timeframe,
+    });
+  }
+  // The terminal-owned strategy controls which broker candles and confirmation
+  // indicators the engine evaluates. A provider interval is useful audit
+  // metadata, but it must not override or block that configured timeframe.
+  // MT5 indicator adapters are the exception because the EA is explicitly
+  // reading that strategy's configured chart series.
+  if (
+    endpoint.provider === "mt5_indicator" &&
+    providerTimeframe !== null &&
+    providerTimeframe !== timeframe
+  ) {
+    return await reject("timeframe_not_allowed", 422, {
+      received: rawTimeframe,
+      expected: timeframe,
+    });
+  }
+  if (!symbolReceived) return await reject("symbol_required", 422);
 
   let canonicalSymbol = (strategy.symbols as string[]).find((symbol) =>
     symbol.toUpperCase() === symbolReceived
@@ -181,15 +252,22 @@ Deno.serve(async (req: Request) => {
     }
   }
   if (!canonicalSymbol) {
-    return respond({ error: "symbol_not_allowed" }, 422);
+    return await reject("symbol_not_allowed", 422, {
+      received: symbolReceived,
+    });
   }
 
   if (body.test === true) {
+    await admin.from("external_signal_endpoints").update({
+      last_received_at: receivedAt.toISOString(),
+      last_status: "test_valid",
+    }).eq("id", endpoint.id);
     return respond({
       valid: true,
       strategy_id: strategy.id,
       symbol: canonicalSymbol,
       timeframe,
+      provider_timeframe: providerTimeframe,
       side,
     });
   }
@@ -198,25 +276,18 @@ Deno.serve(async (req: Request) => {
     String(body.occurred_at ?? body.time ?? new Date().toISOString()),
   );
   if (!Number.isFinite(occurredAt.getTime())) {
-    return respond({
-      error: "invalid_occurred_at",
-    }, 422);
+    return await reject("invalid_occurred_at", 422);
   }
-  const now = new Date();
+  const now = receivedAt;
   if (occurredAt.getTime() > now.getTime() + 30_000) {
-    return respond({
-      error: "occurred_at_in_future",
-    }, 422);
+    return await reject("occurred_at_in_future", 422);
   }
   const ttlSeconds = Math.max(
     1,
     Math.min(86_400, Number(strategy.signal_ttl_seconds) || 60),
   );
   if (now.getTime() - occurredAt.getTime() > ttlSeconds * 1000) {
-    return respond(
-      { error: "signal_expired" },
-      410,
-    );
+    return await reject("signal_expired", 410);
   }
 
   const { count } = await admin.from("external_signal_events").select("id", {
@@ -244,6 +315,7 @@ Deno.serve(async (req: Request) => {
     event_id: providerEventId,
     symbol: symbolReceived,
     timeframe,
+    provider_timeframe: providerTimeframe,
     side,
     source_price: Number.isFinite(sourcePrice) ? sourcePrice : null,
     occurred_at: occurredAt.toISOString(),
