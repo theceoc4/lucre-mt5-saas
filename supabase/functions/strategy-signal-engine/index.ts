@@ -128,6 +128,17 @@ type CandidatePipelineResult = {
   reason?: string;
 };
 
+type TrendRiskAdjustment = {
+  enabled: boolean;
+  alignment: "disabled" | "unavailable" | "neutral" | "aligned" | "opposed";
+  multiplier: number;
+  score: number | null;
+  strength: "neutral" | "weak" | "moderate" | "strong" | null;
+  regime: string | null;
+  modelVersion: string | null;
+  sourceBarTime: string | null;
+};
+
 const EPSILON = 1e-12;
 
 function clamp01(value: number): number {
@@ -156,6 +167,57 @@ function versionAtLeast(actual: unknown, required: string): boolean {
 function positiveConfig(config: Record<string, unknown> | null, key: string, fallback: number): number {
   const value = numberValue(config?.[key], fallback);
   return value > 0 ? value : fallback;
+}
+
+async function trendRiskForCandidate(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  strategy: StrategyRow,
+  symbol: string,
+  side: Side,
+  now: Date,
+): Promise<TrendRiskAdjustment> {
+  const disabled: TrendRiskAdjustment = {
+    enabled: false, alignment: "disabled", multiplier: 1, score: null,
+    strength: null, regime: null, modelVersion: null, sourceBarTime: null,
+  };
+  if (strategy.config?.trend_filter_enabled !== true) return disabled;
+
+  const unavailable: TrendRiskAdjustment = { ...disabled, enabled: true, alignment: "unavailable" };
+  const { data, error } = await admin.from("symbol_trend_state")
+    .select("score,strength,regime,model_version,source_bar_time")
+    .eq("terminal_id", strategy.terminal_id).eq("symbol", symbol).maybeSingle();
+  if (error || !data) {
+    if (error) console.error(`strategy-signal-engine: trend lookup failed for ${strategy.id}/${symbol}: ${error.message}`);
+    return unavailable;
+  }
+
+  const score = numberValue(data.score, Number.NaN);
+  const sourceTime = data.source_bar_time ? new Date(data.source_bar_time).getTime() : Number.NaN;
+  // The model's anchor is a CLOSED M30 candle. Seventy-five minutes permits
+  // one delayed broker close, but never lets an old session increase risk.
+  if (!Number.isFinite(score) || !Number.isFinite(sourceTime) || now.getTime() - sourceTime > 75 * 60_000 || data.regime === "insufficient_data") {
+    return { ...unavailable, score: Number.isFinite(score) ? score : null, regime: data.regime ?? null,
+      modelVersion: data.model_version ?? null, sourceBarTime: data.source_bar_time ?? null };
+  }
+
+  const absolute = Math.abs(score);
+  const strength: TrendRiskAdjustment["strength"] = absolute < 15 ? "neutral" : absolute < 30 ? "weak" : absolute < 60 ? "moderate" : "strong";
+  if (absolute < 15) {
+    return { enabled: true, alignment: "neutral", multiplier: 1, score, strength, regime: data.regime,
+      modelVersion: data.model_version, sourceBarTime: data.source_bar_time };
+  }
+  const signalDirection = side === "buy" ? 1 : -1;
+  const aligned = Math.sign(score) === signalDirection;
+  const alignedFactor = strength === "weak" ? 1.10 : strength === "moderate" ? 1.20 : 1.35;
+  const opposedFactor = strength === "weak" ? 0.75 : strength === "moderate" ? 0.50 : 0.25;
+  // Only a confirmed trending regime may increase risk. Transition, range and
+  // shock states can still defend against an opposing move, but never amplify.
+  const multiplier = aligned ? (data.regime === "trending" ? alignedFactor : 1) : opposedFactor;
+  return {
+    enabled: true, alignment: aligned ? "aligned" : "opposed", multiplier, score, strength,
+    regime: data.regime, modelVersion: data.model_version, sourceBarTime: data.source_bar_time,
+  };
 }
 
 // Simplified UTC session bucketing, copied from signal-action/index.ts.
@@ -974,6 +1036,10 @@ async function processSignalCandidate(
   }
   if (recentSignal) return finish("duplicate_bar", { signal_id: recentSignal.id }, 0, 0, recentSignal.id, "duplicate_signal");
 
+  const trendRisk = await trendRiskForCandidate(admin, strategy, symbol, candidate.side, now);
+  const initialPolicyDecision: PolicyDecision = candidate.policyDecision === "block" ? "block"
+    : candidate.policyDecision === "downweight" || trendRisk.multiplier < 1 ? "downweight" : "ok";
+
   if (strategy.run_mode === "shadow") {
     const shadowBars = Math.max(5, Math.min(500, Math.floor(positiveConfig(strategy.config, "shadow_horizon_bars", 50))));
     const { error } = await admin.from("strategy_shadow_signals").insert({
@@ -986,6 +1052,7 @@ async function processSignalCandidate(
         version: 2, strategy_kind: strategy.kind, definition_version: strategy.rule_definition?.version ?? null,
         source_kind: sourceKind, external_event_id: externalEventId, regime, news,
         score: candidate.score, rule_definition: strategy.rule_definition ?? null,
+        trend_risk: trendRisk,
       },
     });
     if (error && error.code !== "23505") {
@@ -996,19 +1063,22 @@ async function processSignalCandidate(
 
   const baseVolume = Math.max(0, numberValue(strategy.max_lot_size, 0));
   const baseRiskPercent = Math.min(5, Math.max(0.01, numberValue(strategy.risk_percent, 0.5)));
+  const trendAdjustedRiskPercent = Math.min(5, baseRiskPercent * trendRisk.multiplier);
   if (baseVolume <= 0) return finish("risk_blocked", { reason: "non_positive_max_lot_size" }, 0, 0, null, "non_positive_max_lot_size");
 
   const { data: signal, error: signalError } = await admin.from("signals").insert({
     terminal_id: strategy.terminal_id, strategy_id: strategy.id, symbol, timeframe,
     source_bar_time: sourceBarTime, side: candidate.side, suggested_volume: baseVolume,
-    suggested_risk_percent: baseRiskPercent, suggested_sl: candidate.suggestedSl,
+    suggested_risk_percent: trendAdjustedRiskPercent, suggested_sl: candidate.suggestedSl,
     suggested_tp: candidate.suggestedTp, entry_atr: candidate.entryAtr,
     entry_spread_points: bars[bars.length - 1].spread ?? null,
     initial_risk_distance: candidate.initialRiskDistance, entry_price_ref: candidate.entryPrice,
     session, htf_regime: regime, near_news_event: news.near, news_event_id: news.news_event_id,
-    score: candidate.score, policy_decision: candidate.policyDecision, ttl_seconds: ttlSeconds,
+    score: candidate.score, policy_decision: initialPolicyDecision, ttl_seconds: ttlSeconds,
     generated_at: nowIso, expires_at: new Date(now.getTime() + ttlSeconds * 1000).toISOString(),
     source_kind: sourceKind, external_event_id: externalEventId,
+    trend_score: trendRisk.score, trend_alignment: trendRisk.alignment,
+    trend_risk_multiplier: trendRisk.multiplier, trend_model_version: trendRisk.modelVersion,
   }).select("id").single();
   if (signalError || !signal) {
     return finish("command_failed", { stage: "signal_insert", error: signalError?.message ?? "no row returned" }, 0, 0, null, "signal_insert_failed");
@@ -1022,7 +1092,7 @@ async function processSignalCandidate(
     return finish("command_failed", { stage: "delivery_insert", error: deliveryError?.message ?? "no row returned" }, 1, 0, signal.id, "delivery_insert_failed");
   }
   if (strategy.delivery_mode === "manual_confirm") {
-    return finish("manual_signal", { signal_id: signal.id, candidate_side: candidate.side, source_kind: sourceKind }, 1, 0, signal.id);
+    return finish("manual_signal", { signal_id: signal.id, candidate_side: candidate.side, source_kind: sourceKind, trend_risk: trendRisk }, 1, 0, signal.id);
   }
   if (!versionAtLeast(eaVersion, "1.0.29")) {
     await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
@@ -1032,7 +1102,7 @@ async function processSignalCandidate(
   const { data: persistedSignal } = await admin.from("signals")
     .select("policy_decision, near_news_event, block_reason").eq("id", signal.id).single();
   const persistedDecision: PolicyDecision = persistedSignal?.policy_decision === "block" || persistedSignal?.policy_decision === "downweight"
-    ? persistedSignal.policy_decision : candidate.policyDecision;
+    ? persistedSignal.policy_decision : initialPolicyDecision;
   const policy = await policyForCell(admin, strategy.terminal_id, strategy.id, symbol, session, regime, news.near);
   if (policy.error) {
     await admin.from("signals").update({ policy_decision: "block", block_reason: "Adaptive policy lookup failed" }).eq("id", signal.id);
@@ -1055,7 +1125,9 @@ async function processSignalCandidate(
   const exploitNewsFactor = news.has_direction && news.minutes_to_event != null && news.minutes_to_event <= 0 &&
       strategy.news_posture === "exploit" && news.implied_side === candidate.side
     ? Math.min(3, numberValue(strategy.news_exploit_size_multiplier, 1.5)) * (regime === "trending" ? 1.25 : 1) : 1;
-  const effectiveRiskPercent = baseRiskPercent * (policy.decision === "downweight" ? policy.factor : 1) * avoidNewsFactor * exploitNewsFactor;
+  const effectiveRiskPercent = Math.min(5,
+    trendAdjustedRiskPercent * (policy.decision === "downweight" ? policy.factor : 1) * avoidNewsFactor * exploitNewsFactor
+  );
   if (!Number.isFinite(effectiveRiskPercent) || effectiveRiskPercent <= 0) {
     await admin.from("signals").update({ policy_decision: "block", block_reason: "Calculated risk was not positive" }).eq("id", signal.id);
     await admin.from("signal_deliveries").update({ status: "cancelled", acted_at: nowIso }).eq("id", delivery.id);
@@ -1105,6 +1177,9 @@ async function processSignalCandidate(
         regime_quality: "strategy_grade", risk_defined: true, timeframe,
         strategy_kind: strategy.kind, canonical_symbol: symbol,
         risk_percent_total: effectiveRiskPercent, risk_percent_leg: riskPercentPerLeg,
+        trend_score: trendRisk.score, trend_alignment: trendRisk.alignment,
+        trend_risk_multiplier: trendRisk.multiplier, trend_model_version: trendRisk.modelVersion,
+        trend_source_bar_time: trendRisk.sourceBarTime,
         initial_atr: candidate.entryAtr, initial_risk_distance: candidate.initialRiskDistance,
         entry_spread_points: bars[bars.length - 1].spread ?? null,
       },
@@ -1115,7 +1190,7 @@ async function processSignalCandidate(
   }
   if (insertedLegs > 0 && firstCommandId) {
     await admin.from("signal_deliveries").update({ status: "auto_executed", acted_at: nowIso, ea_command_id: firstCommandId }).eq("id", delivery.id);
-    return finish("command_queued", { signal_id: signal.id, candidate_side: candidate.side, command_count: insertedLegs, source_kind: sourceKind }, 1, insertedLegs, signal.id);
+    return finish("command_queued", { signal_id: signal.id, candidate_side: candidate.side, command_count: insertedLegs, source_kind: sourceKind, trend_risk: trendRisk }, 1, insertedLegs, signal.id);
   }
   await admin.from("signal_deliveries").update({ status: "failed", acted_at: nowIso }).eq("id", delivery.id);
   return finish("command_failed", { stage: "command_insert", error: insertFailure ?? "no_position_capacity" }, 1, 0, signal.id, insertFailure ?? "no_position_capacity");

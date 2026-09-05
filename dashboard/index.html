@@ -41,7 +41,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.70" />
+<link rel="stylesheet" href="./style.css?v=1.0.71" />
 </head>
 <body>
 
@@ -183,6 +183,26 @@
           <label><input type="checkbox" name="allowed_sessions" value="ny" checked /> New York</label>
         </div>
       </div>
+
+      <section class="strategy-trend-filter" aria-labelledby="strategy-trend-filter-label">
+        <div class="strategy-trend-filter-head">
+          <div>
+            <h4 id="strategy-trend-filter-label">Trend alignment risk</h4>
+            <p class="field-hint">Use the live M30 Trend Strength score to resize risk. Agreement adds conviction; opposition reduces exposure.</p>
+          </div>
+          <label class="strategy-trend-switch">
+            <input type="checkbox" name="trend_filter_enabled" />
+            <span class="chart-session-switch" aria-hidden="true"></span>
+            <span>Enable</span>
+          </label>
+        </div>
+        <div class="strategy-trend-tiers" aria-label="Trend alignment risk tiers">
+          <span><strong>Weak</strong><small>1.10× aligned · 0.75× opposed</small></span>
+          <span><strong>Moderate</strong><small>1.20× aligned · 0.50× opposed</small></span>
+          <span><strong>Strong</strong><small>1.35× aligned · 0.25× opposed</small></span>
+        </div>
+        <p class="field-hint">Neutral or unavailable trend data stays at 1.00×. Maximum lot size and all portfolio guardrails still apply.</p>
+      </section>
 
       <section class="strategy-indicator-builder" aria-labelledby="strategy-indicators-label">
         <div class="strategy-section-heading">
@@ -562,6 +582,7 @@
         <a class="nav-pill active" href="#" data-view="dashboard" data-testid="link-dashboard">Dashboard</a>
         <a class="nav-pill" href="#" data-view="strategies" data-testid="link-strategies">Strategies</a>
         <a class="nav-pill" href="#" data-view="pairs" data-testid="link-pairs">Pairs</a>
+        <a class="nav-pill" href="#" data-view="news" data-testid="link-news">News</a>
       </nav>
 
       <div class="nav-actions">
@@ -730,7 +751,6 @@
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="sessions" data-testid="tab-sessions">Sessions</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="risk-score" data-testid="tab-risk-score">Risk Score</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="win-rate" data-testid="tab-win-rate">Win Rate</a>
-        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="news-events" data-testid="tab-news-events">News</a>
       </nav>
     </div>
 
@@ -913,18 +933,6 @@
       </section>
     </div>
 
-    <div class="tab-panel" data-tab-panel="news-events" role="tabpanel" hidden>
-      <section class="card card-pad" aria-label="Economic calendar">
-        <div class="card-title-row">
-          <h3>News</h3>
-        </div>
-        <p class="desc">Most recent high/medium/low-impact economic events the risk engine watches for news proximity. Scroll for older events.</p>
-        <div class="mini-table mini-table-scroll" id="tab-news-events-list">
-          <p class="empty-state-text">No calendar events loaded yet.</p>
-        </div>
-      </section>
-    </div>
-
     </div>
 
     <div class="view strategies-view" id="view-strategies" hidden>
@@ -939,6 +947,7 @@
           <button class="strategy-page-edit" type="button" id="strategy-page-edit" aria-label="Edit selected strategy">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.64 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.64a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.36 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15z"/></svg>
           </button>
+          <button class="btn-accent strategy-page-add-active" type="button" id="strategy-page-add-active" aria-label="Add a new strategy">+ New strategy</button>
         </div>
       </section>
 
@@ -1024,6 +1033,27 @@
       </div>
     </div>
 
+    <div class="view news-view" id="view-news" hidden>
+      <section class="news-view-head" aria-labelledby="news-page-title">
+        <div>
+          <h2 id="news-page-title">News</h2>
+          <p class="desc">Upcoming terminal-specific economic events watched by the strategy risk engine.</p>
+        </div>
+        <button class="btn-secondary btn-xs" type="button" id="button-refresh-news">Refresh</button>
+      </section>
+      <section class="card card-pad news-page-card" aria-label="Upcoming economic calendar">
+        <div class="card-title-row">
+          <div>
+            <h3>Upcoming Events</h3>
+            <p class="desc" id="news-page-status">Loading this terminal’s calendar…</p>
+          </div>
+        </div>
+        <div class="mini-table news-page-list" id="news-page-list">
+          <p class="empty-state-text">No upcoming calendar events loaded yet.</p>
+        </div>
+      </section>
+    </div>
+
     <div class="view" id="view-pairs" hidden>
       <div class="pairs-view-head">
         <div>
@@ -1053,7 +1083,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.70"></script>
-<script type="module" src="./main.js?v=1.0.70"></script>
+<script src="./app.js?v=1.0.71"></script>
+<script type="module" src="./main.js?v=1.0.71"></script>
 </body>
 </html>

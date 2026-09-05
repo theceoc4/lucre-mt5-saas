@@ -153,6 +153,7 @@ const viewDashboard = document.getElementById('view-dashboard');
 const viewSocial = document.getElementById('view-social');
 const viewStrategies = document.getElementById('view-strategies');
 const viewPairs = document.getElementById('view-pairs');
+const viewNews = document.getElementById('view-news');
 const pairGrid = document.getElementById('pair-grid');
 const pairSortSelect = document.getElementById('pair-sort-select');
 const buttonRescanSymbols = document.getElementById('button-rescan-symbols');
@@ -424,7 +425,7 @@ function rerenderTimezoneSurfaces() {
   renderPositionsTab();
   renderSignalsTab();
   renderAccountHistoryList();
-  renderNewsEventsTab();
+  renderNewsPage();
   renderVolumeChart();
   renderPlChart();
   renderStrategyPage();
@@ -1091,10 +1092,10 @@ inboxComposeForm?.addEventListener('submit', async (event) => {
 // Primary workspaces: account dashboard, strategy analytics, and pairs.
 // ---------------------------------------------------------------------------
 function setActiveView(view) {
-  const nextView = ['social', 'dashboard', 'strategies', 'pairs'].includes(view) ? view : 'dashboard';
+  const nextView = ['social', 'dashboard', 'strategies', 'pairs', 'news'].includes(view) ? view : 'dashboard';
   state.activeView = nextView;
   const isPairs = nextView === 'pairs';
-  const views = { social: viewSocial, dashboard: viewDashboard, strategies: viewStrategies, pairs: viewPairs };
+  const views = { social: viewSocial, dashboard: viewDashboard, strategies: viewStrategies, pairs: viewPairs, news: viewNews };
   const targetView = views[nextView];
   const visibleView = Object.values(views).find((element) => !element.hidden);
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -1138,6 +1139,9 @@ function setActiveView(view) {
     renderStrategyPage();
   } else if (nextView === 'social') {
     loadSocialData();
+  } else if (nextView === 'news') {
+    renderNewsPage();
+    loadCalendarEvents();
   }
 }
 
@@ -1715,6 +1719,7 @@ function openAddStrategyModal() {
   form.reset();
   form.signal_source.value = 'internal';
   form.execution_mode.value = 'shadow';
+  form.trend_filter_enabled.checked = false;
   strategyIndicatorRows = [];
   document.getElementById('strategy-indicator-composer').hidden = true;
   updateStrategyParameterVisibility();
@@ -1756,6 +1761,7 @@ function openEditStrategyModal(id) {
   const allowedSessions = strategy.allowed_sessions || ['asia', 'london', 'overlap', 'ny'];
   form.querySelectorAll('input[name="allowed_sessions"]').forEach((input) => { input.checked = allowedSessions.includes(input.value); });
   const config = strategy.config || {};
+  form.trend_filter_enabled.checked = config.trend_filter_enabled === true;
   form.mt5_indicator_name.value = config.mt5_indicator_name || '';
   form.mt5_buy_buffer.value = config.mt5_buy_buffer ?? 0;
   form.mt5_sell_buffer.value = config.mt5_sell_buffer ?? 1;
@@ -1797,6 +1803,8 @@ function strategyBacktestDraft(form, existingStrategy) {
       ...(existingStrategy.config || {}),
       stop_atr: numeric('stop_atr', 1.8),
       target_r: numeric('target_r', 2.2),
+      trend_filter_enabled: Boolean(form.trend_filter_enabled.checked),
+      trend_filter_version: 'trend-alignment-v1',
     },
     exit_config: {
       stop_atr: numeric('stop_atr', 1.8),
@@ -1940,6 +1948,8 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
   const config = {
     ...existingConfig,
     stop_atr: numeric('stop_atr', 1.8), target_r: numeric('target_r', 2.2),
+    trend_filter_enabled: Boolean(form.trend_filter_enabled.checked),
+    trend_filter_version: 'trend-alignment-v1',
     mt5_indicator_name: signalSource === 'mt5_indicator' ? form.mt5_indicator_name.value.trim() : undefined,
     mt5_buy_buffer: signalSource === 'mt5_indicator' ? Math.max(0, Math.min(31, Math.round(numeric('mt5_buy_buffer', 0)))) : undefined,
     mt5_sell_buffer: signalSource === 'mt5_indicator' ? Math.max(0, Math.min(31, Math.round(numeric('mt5_sell_buffer', 1)))) : undefined,
@@ -3312,6 +3322,7 @@ async function loadTerminals() {
     loadTrendStates(),
     loadPriceFeedStates(),
     loadScenarioStats(),
+    loadCalendarEvents(),
   ]);
   await loadRecentCommands();
 }
@@ -3372,6 +3383,7 @@ terminalSelect?.addEventListener('change', async (e) => {
     loadTrendStates(),
     loadPriceFeedStates(),
     loadScenarioStats(),
+    loadCalendarEvents(),
   ]);
   await loadRecentCommands();
 });
@@ -5349,14 +5361,9 @@ document.addEventListener('click', (e) => {
 async function loadCalendarEvents() {
   if (!state.activeTerminalId) {
     state.calendarEvents = [];
-    renderNewsEventsTab();
+    renderNewsPage();
     return;
   }
-  // v1.0.17 -- shortened from 100 to 30: the tab now shows a short, most-
-  // recent-first list in a fixed-height scrollable card (see #tab-news-
-  // events-list in style.css) instead of a long unbounded page-stretching
-  // list, so a smaller page of the truly newest events is both faster to
-  // load and matches the new bounded UI.
   const { data, error } = await supabase
     .from('calendar_events')
     .select(
@@ -5364,17 +5371,18 @@ async function loadCalendarEvents() {
         'forecast, previous, actual, higher_is_bullish, source'
     )
     .eq('terminal_id', state.activeTerminalId)
-    .order('event_time', { ascending: false })
-    .limit(30);
+    .gte('event_time', new Date().toISOString())
+    .order('event_time', { ascending: true })
+    .limit(100);
 
   if (error) {
     console.error('loadCalendarEvents error', error);
     state.calendarEvents = [];
-    renderNewsEventsTab();
+    renderNewsPage(error.message);
     return;
   }
   state.calendarEvents = data || [];
-  renderNewsEventsTab();
+  renderNewsPage();
 }
 
 // Client-side mirror of apply_news_policy()'s Phase 2 "has this released and
@@ -5393,25 +5401,31 @@ function calendarEventBias(ev) {
   return bullish ? 'bullish' : 'bearish';
 }
 
-function renderNewsEventsTab() {
-  const list = document.getElementById('tab-news-events-list');
+function renderNewsPage(errorMessage = '') {
+  const list = document.getElementById('news-page-list');
+  const status = document.getElementById('news-page-status');
   if (!list) return;
+  if (status) {
+    status.textContent = errorMessage
+      ? `Calendar unavailable: ${errorMessage}`
+      : `${state.calendarEvents.length} upcoming event${state.calendarEvents.length === 1 ? '' : 's'} · times shown in ${displayTimezone()}`;
+  }
   if (state.calendarEvents.length === 0) {
-    list.innerHTML = '<p class="empty-state-text">No calendar events loaded yet.</p>';
+    list.innerHTML = `<p class="empty-state-text">${errorMessage ? 'The calendar could not be loaded. Try refresh in a moment.' : 'No upcoming calendar events are currently scheduled for this terminal.'}</p>`;
     return;
   }
   list.innerHTML = state.calendarEvents
     .map((ev) => {
       const impactClass = ev.impact === 'high' ? 'tag-danger' : ev.impact === 'medium' ? 'tag-warn' : 'tag-neutral';
       const symbols = ev.is_global ? 'All symbols' : (ev.affected_symbols || []).join(' · ') || '—';
-      const currencyTag = ev.currency ? `<span class="tag-badge tag-neutral">${ev.currency}</span>` : '';
+      const currencyTag = ev.currency ? `<span class="tag-badge tag-neutral">${escapeHtml(ev.currency)}</span>` : '';
 
       const bias = calendarEventBias(ev);
       const biasTag =
         bias === 'bullish'
-          ? `<span class="tag-badge tag-ok">${ev.currency || 'Bullish'} bullish</span>`
+          ? `<span class="tag-badge tag-ok">${escapeHtml(ev.currency || 'Bullish')} bullish</span>`
           : bias === 'bearish'
-          ? `<span class="tag-badge tag-danger">${ev.currency || 'Bearish'} bearish</span>`
+          ? `<span class="tag-badge tag-danger">${escapeHtml(ev.currency || 'Bearish')} bearish</span>`
           : bias === 'neutral'
           ? '<span class="tag-badge tag-neutral">Neutral surprise</span>'
           : '';
@@ -5426,10 +5440,10 @@ function renderNewsEventsTab() {
       return `
         <div class="mini-table-row">
           <div class="mini-table-meta">
-            <div class="strategy-name">${ev.title}<span class="tag-badge ${impactClass}">${
-        IMPACT_LABELS[ev.impact] || ev.impact || '—'
+            <div class="strategy-name">${escapeHtml(ev.title)}<span class="tag-badge ${impactClass}">${
+        escapeHtml(IMPACT_LABELS[ev.impact] || ev.impact || '—')
       }</span>${currencyTag}${biasTag}</div>
-            <div class="strategy-sub">${ev.country || '—'} · ${symbols} · ${
+            <div class="strategy-sub">${escapeHtml(ev.country || '—')} · ${escapeHtml(symbols)} · ${
         formatDateTime(ev.event_time)
       }</div>
             ${figuresLine}
@@ -6250,6 +6264,8 @@ strategyPageEdit?.addEventListener('click', () => {
 document.getElementById('strategy-page-add')?.addEventListener('click', () => {
   openAddStrategyModal();
 });
+document.getElementById('strategy-page-add-active')?.addEventListener('click', openAddStrategyModal);
+document.getElementById('button-refresh-news')?.addEventListener('click', loadCalendarEvents);
 
 // ---------------------------------------------------------------------------
 // Charts (empty-safe — Chart.js renders a flat/blank series until real data exists)
@@ -6460,12 +6476,12 @@ async function bootDashboard() {
   dashboardBootSessionId = sessionId;
   await loadProfile();
   showDashboard();
-  await Promise.all([loadTerminals(), loadCalendarEvents(), loadSocialData()]);
+  await Promise.all([loadTerminals(), loadSocialData()]);
   await loadPushNotificationSettings();
   const launch = new URLSearchParams(window.location.search);
   const launchView = launch.get('view');
   const launchTab = launch.get('tab');
-  if (['social', 'dashboard', 'strategies', 'pairs'].includes(launchView)) setActiveView(launchView);
+  if (['social', 'dashboard', 'strategies', 'pairs', 'news'].includes(launchView)) setActiveView(launchView);
   if (launchView === 'dashboard' && launchTab) setActiveTab(launchTab);
   startPositionPolling();
   if (socialRefreshTimer) clearInterval(socialRefreshTimer);

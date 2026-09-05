@@ -1,5 +1,21 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.71 — Trend-aware strategy risk and News workspace (2026-09-05)
+
+- Adds an optional trend-alignment risk layer to the strategy builder, driven
+  by each terminal's existing M30 Trend Strength state. Weak, moderate, and
+  strong agreement can apply 1.10×, 1.20×, or 1.35× risk in a confirmed trend;
+  opposition defensively applies 0.75×, 0.50×, or 0.25×.
+- Keeps missing, stale, neutral, ranging, transition, and volatility-shock
+  states from increasing exposure; maximum lot size and portfolio limits remain
+  hard ceilings. Every signal captures the score, alignment, multiplier, and
+  model version for later audit.
+- Adds a persistent New Strategy action to the populated Strategies workspace.
+- Promotes News from the Dashboard's secondary tabs into a first-class main
+  workspace with an upcoming-event list and manual refresh.
+- Fixes the empty News experience by loading terminal-scoped calendar events
+  only after the active terminal is resolved and again whenever it changes.
+
 ## v1.0.70 — Uniform pair-card sizing (2026-09-05)
 
 - Locks both faces of every Pairs card to the compact 358px height so hidden
