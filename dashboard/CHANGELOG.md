@@ -1,5 +1,13 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.67 — Focused Social P/L action (2026-09-04)
+
+- Reliably hides the shared Balance, Equity, Margin Level, and Floating P/L
+  account strip whenever the Social page is active.
+- Removes the translucent backplate behind Social's sticky Floating P/L action.
+- Centers the action at roughly 30% desktop width, restores its Floating P/L
+  label above the live value, and keeps it comfortably sized on mobile.
+
 ## v1.0.66 — Seaside palette (2026-09-04)
 
 - Adds Seaside as the third private, cross-device dashboard palette using the

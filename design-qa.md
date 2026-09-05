@@ -1,74 +1,54 @@
-# Seaside palette design QA
+# Design QA — Social Floating P/L Cleanup
 
-- Source visual truth: `/Users/rayevelyn/Downloads/4225fd299619d4bdc86a151457bb7c76.png`
-- Dark implementation screenshot: `/private/tmp/seaside-theme-implementation.png`
-- Light implementation screenshot: `/private/tmp/seaside-theme-light-implementation.png`
-- Combined comparison: `/private/tmp/seaside-theme-comparison.png`
-- Source dimensions: 640 x 640 px.
-- Implementation capture: 1280 x 720 px from a 1280 x 720 CSS viewport;
-  browser-reported device pixel ratio 2 with a normalized 1280 x 720 screenshot.
-- Comparison crop: the representative 640 x 640 implementation region was
-  placed beside the 640 x 640 source palette without scaling.
-- State: Seaside light and dark modes with Trend Strength, positive and negative
-  P/L, Buy and Sell controls, P/L heatmap cells, and health-status treatments.
+## Evidence
 
-## Full-view comparison evidence
+- Source visual truth: `/var/folders/s1/w5hdt7dn595dy2x09p26qf5r0000gn/T/TemporaryItems/NSIRD_screencaptureui_0EUHhk/Screenshot 2026-09-04 at 10.22.04 PM.png`
+- Source dimensions: 2846 × 484 px.
+- Browser-rendered desktop implementation: `/private/tmp/social-page-cleanup-desktop.png`
+- Desktop viewport and capture: 1440 × 900 CSS px, device pixel ratio 1, 1440 × 900 px image.
+- Browser-rendered mobile implementation: `/private/tmp/social-page-cleanup-mobile.png`
+- Mobile viewport and capture: 390 × 844 CSS px, device pixel ratio 1, 390 × 844 px image.
+- Combined comparison image: `/private/tmp/social-page-cleanup-comparison.png`
+- State: Social page, Seaside dark palette, negative floating P/L.
 
-The supplied five-color palette and the browser-rendered dark implementation
-were opened together in `/private/tmp/seaside-theme-comparison.png`. The Lucre
-shell uses the source deep ink, ocean teal, cyan, sand, and sunset amber without
-introducing unrelated green or red. The sixth deep-ink color `#242234` was
-sampled from the reference artwork typography to support dark surfaces and
-high-contrast foregrounds.
+## Full-view comparison
 
-## Focused-region evidence
+The combined comparison confirms the reported duplicate account strip is absent from the corrected Social page. The Floating P/L control is centered at exactly 30% of its desktop dock width (386.88 px of 1289.61 px), and the dock no longer paints a translucent rectangular backplate or exterior drop shadow. The composer and timeline begin directly beneath the focused action.
 
-The browser-rendered Pair-card region was inspected in both themes. Trend
-Strength runs from amber through the neutral surface to teal. Sell and loss
-states use sunset amber with deep-ink text; Buy and profit states use a slightly
-deepened ocean teal with warm-white text. Heatmap zero cells remain transparent,
-while profit and loss intensity scales through teal and amber opacity.
+## Focused region comparison
 
-## Interaction, responsive, and console checks
-
-- Palette selection recognizes `seaside` across first-paint cache, runtime
-  switching, profile loading, backend validation, and database persistence.
-- Theme-change handling still redraws P/L, signal, strategy, session-overlay,
-  and heatmap surfaces from semantic CSS tokens.
-- The dark and light fixtures rendered at the production desktop viewport with
-  no browser console warnings or errors.
-- The Appearance option follows the existing responsive palette-card layout;
-  no component geometry or mobile breakpoint was changed.
+The Social page top region was compared directly because all requested changes live there. The button now contains the `Floating P/L` label above the dollar value, retains the existing Seaside negative-state token, and preserves the established pill radius and typography hierarchy. No additional focused crop was needed because the relevant controls and text are fully readable in the combined image.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: existing Cabinet Grotesk and General Sans hierarchy,
-  sizing, weight, and wrapping remain unchanged.
-- Spacing and layout rhythm: production grids, cards, controls, radii, and
-  responsive spacing remain unchanged; only theme tokens and one option row were added.
-- Colors and visual tokens: the supplied `#9FDDED`, `#2A90AB`, `#F7F6EE`,
-  `#FADA95`, and `#FFBA52` palette is present, supported by sampled deep ink
-  `#242234`; all positive/negative tokens inherit the Seaside semantics.
-- Image quality and asset fidelity: the source is a color reference rather than
-  an application asset, so no raster asset belongs in the production interface.
-- Copy and content: the Appearance description and palette-aware heatmap legend
-  name teal and amber rather than green and red.
-
-## Comparison history
-
-The first browser pass used source teal `#2A90AB` directly beneath warm-white
-button text and measured 3.41:1 contrast. The actionable positive surface was
-deepened to `#24768A`, preserving the ocean color while raising contrast to
-4.80:1. The second light/dark capture confirmed the revised controls and no
-console errors.
+- Fonts and typography: Existing General Sans/Cabinet Grotesk tokens remain intact. The restored label uses the dashboard's compact uppercase label treatment; the amount retains display weight and tabular readability.
+- Spacing and layout rhythm: Desktop action width is 30%, center delta is 0 px, and the 76 px button height leaves clear space before the composer. Mobile width expands to 326 px within its 326 px content area to remain tappable.
+- Colors and visual tokens: The control continues using Seaside semantic negative colors; no hard-coded palette values were introduced.
+- Image quality and asset fidelity: No image assets are part of this focused UI change, and no placeholder or substitute artwork was added.
+- Copy and content: `Floating P/L` appears above the live dollar amount exactly as requested. The shared Balance, Equity, Margin Level, and Floating P/L strip is not visible in Social.
 
 ## Findings
 
-No actionable P0, P1, or P2 visual differences remain for the Seaside palette.
+- No actionable P0, P1, or P2 visual mismatches remain.
+- P3: The source screenshot does not show the surrounding Social timeline, so fidelity judgment outside the corrected top region is intentionally limited to regression checking.
 
-## Follow-up polish
+## Interaction and runtime checks
 
-P3: unusually dense production charts may benefit from per-chart opacity tuning
-after forward use, but all chart primitives already inherit the correct tokens.
+- Confirmed the hidden shared account strip remains in the DOM for other pages but computes to `display: none` while hidden.
+- Confirmed the Social action retains the existing close-all hook and accessible label; no live trading command was sent during QA.
+- Confirmed desktop centering and the mobile responsive width.
+- Checked browser console output; no errors were reported by the QA fixture.
+
+## Comparison history
+
+- Pass 1: No P0/P1/P2 findings. The requested duplicate strip removal, transparent dock, centered 30% control, and restored label were all visible in the first corrected comparison. No design-QA repair iteration was required.
+
+## Implementation checklist
+
+- [x] Hide the shared account strip only when Social is active.
+- [x] Remove the Social dock backplate and excess shadow.
+- [x] Center the Floating P/L button at approximately 30% desktop width.
+- [x] Restore the Floating P/L label above the amount.
+- [x] Preserve a practical mobile tap target.
 
 final result: passed
