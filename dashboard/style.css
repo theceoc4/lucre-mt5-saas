@@ -3023,6 +3023,7 @@ body {
 }
 
 .pair-card-shell {
+  height: 358px;
   min-width: 0;
   perspective: 1200px;
   -webkit-perspective: 1200px;
@@ -3035,6 +3036,7 @@ body {
 
 .pair-card-inner {
   display: grid;
+  height: 100%;
   transform-style: preserve-3d;
   -webkit-transform-style: preserve-3d;
   transition: transform 560ms cubic-bezier(0.2, 0.75, 0.2, 1);
@@ -3048,12 +3050,17 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  min-height: 330px;
+  height: 100%;
+  min-height: 0;
 }
 
 .pair-card-face {
   grid-area: 1 / 1;
   width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
   cursor: pointer;
@@ -3093,8 +3100,8 @@ body {
 
 .pair-card-name {
   font-family: var(--font-display);
-  font-size: var(--text-base);
-  font-weight: 700;
+  font-size: var(--text-lg);
+  font-weight: 800;
   color: var(--color-text);
 }
 
@@ -3284,7 +3291,6 @@ body {
 
 @media (max-width: 480px) {
   .pair-grid { grid-template-columns: minmax(0, 1fr); }
-  .pair-card { min-height: 350px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

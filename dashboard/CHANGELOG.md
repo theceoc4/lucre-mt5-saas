@@ -1,5 +1,13 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.70 — Uniform pair-card sizing (2026-09-05)
+
+- Locks both faces of every Pairs card to the compact 358px height so hidden
+  back-face performance details cannot stretch individual cards or grid rows.
+- Keeps expanded Auto SL/TP controls and dense price-health details accessible
+  with contained per-card scrolling when necessary.
+- Increases pair names to the next display size with a heavier bold weight.
+
 ## v1.0.69 — Quiet candle-health status (2026-09-04)
 
 - Removes stale and missing candle-history events from the notification center
