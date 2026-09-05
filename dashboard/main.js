@@ -652,11 +652,21 @@ function renderPaletteSettings() {
   });
 }
 
+const DASHBOARD_PALETTES = {
+  lucre: 'Lucre Sage',
+  'soleau-gold': 'Soleau Gold',
+  seaside: 'Seaside',
+};
+
+function normalizeDashboardPalette(value) {
+  return Object.prototype.hasOwnProperty.call(DASHBOARD_PALETTES, value) ? value : 'lucre';
+}
+
 paletteSettingsForm?.addEventListener('change', async (event) => {
   const input = event.target.closest('input[name="dashboard_palette"]');
   if (!input) return;
   const previous = state.profile?.dashboard_palette || 'lucre';
-  const dashboardPalette = input.value === 'soleau-gold' ? 'soleau-gold' : 'lucre';
+  const dashboardPalette = normalizeDashboardPalette(input.value);
   paletteSettingsForm.querySelectorAll('input').forEach((option) => { option.disabled = true; });
   window.LucreTheme?.applyPalette(dashboardPalette);
   if (paletteSettingsMessage) {
@@ -668,7 +678,7 @@ paletteSettingsForm?.addEventListener('change', async (event) => {
     state.profile = { ...(state.profile || {}), dashboard_palette: dashboardPalette };
     if (paletteSettingsMessage) {
       paletteSettingsMessage.style.color = 'var(--color-accent-strong)';
-      paletteSettingsMessage.textContent = `${dashboardPalette === 'soleau-gold' ? 'Soleau Gold' : 'Lucre Sage'} applied.`;
+      paletteSettingsMessage.textContent = `${DASHBOARD_PALETTES[dashboardPalette]} applied.`;
     }
   } catch (error) {
     window.LucreTheme?.applyPalette(previous);
@@ -3240,7 +3250,7 @@ async function loadProfile() {
       console.warn('Could not persist the detected timezone; backend daily boundaries will use UTC until saved.', timezoneError);
     }
   }
-  window.LucreTheme?.applyPalette(data?.dashboard_palette || 'lucre');
+  window.LucreTheme?.applyPalette(normalizeDashboardPalette(data?.dashboard_palette));
   renderTimezoneSettings();
   renderPaletteSettings();
 
@@ -5710,7 +5720,12 @@ function renderActivityHeatmap(containerId, legendId, signals, trades, mode) {
   const { values, maxMagnitude } = buildActivityHeatmap(signals, trades, mode);
   const positive = cssVar('--color-positive-surface') || cssVar('--color-positive') || '#4c8a5e';
   const negative = cssVar('--color-negative-surface') || cssVar('--color-negative') || '#c3583f';
-  const isSoleauGold = document.documentElement.dataset.palette === 'soleau-gold';
+  const palette = document.documentElement.dataset.palette;
+  const semanticNames = palette === 'soleau-gold'
+    ? { negative: 'Dark brown', positive: 'Gold', volume: 'gold' }
+    : palette === 'seaside'
+      ? { negative: 'Amber', positive: 'Teal', volume: 'teal' }
+      : { negative: 'Red', positive: 'Green', volume: 'green' };
   const cells = ['<span class="heatmap-axis-corner" aria-hidden="true"></span>'];
   for (let hour = 0; hour < 24; hour += 1) cells.push(`<span class="heatmap-hour-label">${heatmapHourLabel(hour)}</span>`);
   values.forEach((hours, rowIndex) => {
@@ -5728,8 +5743,8 @@ function renderActivityHeatmap(containerId, legendId, signals, trades, mode) {
   });
   container.innerHTML = cells.join('');
   legend.textContent = mode === 'pl'
-    ? `${isSoleauGold ? 'Dark brown' : 'Red'} = average broker loss · ${isSoleauGold ? 'Gold' : 'Green'} = average broker profit · 30 local calendar days · ${displayTimezone()}`
-    : `More ${isSoleauGold ? 'gold' : 'green'} = more signals · 30 local calendar days · ${displayTimezone()}`;
+    ? `${semanticNames.negative} = average broker loss · ${semanticNames.positive} = average broker profit · 30 local calendar days · ${displayTimezone()}`
+    : `More ${semanticNames.volume} = more signals · 30 local calendar days · ${displayTimezone()}`;
 }
 
 function renderDashboardHeatmap() {
@@ -5852,14 +5867,21 @@ function summarizeSignalsForRange(signals, deliveries, range) {
 }
 
 function sessionBandsPlugin(sessions, enabled) {
-  const isSoleauGold = document.documentElement.dataset.palette === 'soleau-gold';
-  const colors = isSoleauGold
+  const palette = document.documentElement.dataset.palette;
+  const colors = palette === 'soleau-gold'
     ? {
         asia: 'rgba(66, 52, 22, 0.18)',
         london: 'rgba(105, 77, 16, 0.13)',
         overlap: 'rgba(182, 128, 5, 0.10)',
         ny: 'rgba(221, 153, 0, 0.085)',
       }
+    : palette === 'seaside'
+      ? {
+          asia: 'rgba(36, 34, 52, 0.14)',
+          london: 'rgba(42, 144, 171, 0.12)',
+          overlap: 'rgba(250, 218, 149, 0.11)',
+          ny: 'rgba(255, 186, 82, 0.09)',
+        }
     : {
         asia: 'rgba(74, 115, 148, 0.10)',
         london: 'rgba(215, 230, 78, 0.075)',

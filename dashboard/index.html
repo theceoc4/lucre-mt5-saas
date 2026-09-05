@@ -23,11 +23,15 @@
       const savedTheme = localStorage.getItem('lucre:theme');
       const savedPalette = localStorage.getItem('lucre:palette');
       if (savedTheme === 'light' || savedTheme === 'dark') theme = savedTheme;
-      if (savedPalette === 'lucre' || savedPalette === 'soleau-gold') palette = savedPalette;
+      if (['lucre', 'soleau-gold', 'seaside'].includes(savedPalette)) palette = savedPalette;
     } catch (_) { /* Storage may be unavailable in an embedded preview. */ }
     root.dataset.theme = theme;
     root.dataset.palette = palette;
-    const colors = { 'light:lucre': '#dfe6d9', 'dark:lucre': '#10130f', 'light:soleau-gold': '#e9dcc0', 'dark:soleau-gold': '#1b1b1b' };
+    const colors = {
+      'light:lucre': '#dfe6d9', 'dark:lucre': '#10130f',
+      'light:soleau-gold': '#e9dcc0', 'dark:soleau-gold': '#1b1b1b',
+      'light:seaside': '#f7f6ee', 'dark:seaside': '#242234',
+    };
     document.querySelector('meta[name="theme-color"]').setAttribute('content', colors[`${theme}:${palette}`]);
   })();
 </script>
@@ -37,7 +41,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.65" />
+<link rel="stylesheet" href="./style.css?v=1.0.66" />
 </head>
 <body>
 
@@ -409,6 +413,12 @@
             <input type="radio" name="dashboard_palette" value="soleau-gold" />
             <span class="palette-preview palette-preview-soleau" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
             <span class="palette-option-copy"><strong>Soleau Gold</strong><small>Charcoal, bronze, and polished-gold accents.</small></span>
+            <span class="palette-selected-label">Selected</span>
+          </label>
+          <label class="palette-option">
+            <input type="radio" name="dashboard_palette" value="seaside" />
+            <span class="palette-preview palette-preview-seaside" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+            <span class="palette-option-copy"><strong>Seaside</strong><small>Ocean teal, airy cyan, warm sand, and sunset amber.</small></span>
             <span class="palette-selected-label">Selected</span>
           </label>
         </form>
@@ -1030,7 +1040,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.65"></script>
-<script type="module" src="./main.js?v=1.0.65"></script>
+<script src="./app.js?v=1.0.66"></script>
+<script type="module" src="./main.js?v=1.0.66"></script>
 </body>
 </html>

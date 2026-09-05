@@ -29,7 +29,7 @@
   updateBrowserThemeColor();
 
   function applyPalette(nextPalette, { notify = true } = {}) {
-    palette = nextPalette === 'soleau-gold' ? 'soleau-gold' : 'lucre';
+    palette = ['lucre', 'soleau-gold', 'seaside'].includes(nextPalette) ? nextPalette : 'lucre';
     root.setAttribute('data-palette', palette);
     remember('lucre:palette', palette);
     updateBrowserThemeColor();

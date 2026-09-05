@@ -1,5 +1,15 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.66 — Seaside palette (2026-09-04)
+
+- Adds Seaside as the third private, cross-device dashboard palette using the
+  supplied ocean teal, cyan, warm sand, sunset amber, and deep-ink scale.
+- Maps bullish and positive states to teal/cyan, and bearish, negative, and
+  danger states to amber, including meters, trading controls, P/L, heatmaps,
+  status chips, notifications, and charts.
+- Provides coordinated light and dark variants, a six-swatch Appearance preview,
+  palette-aware session overlays, and zero-flash PWA startup support.
+
 ## v1.0.65 — Zero-flash themes and view motion (2026-09-04)
 
 - Applies the last selected light/dark mode and palette in the document head

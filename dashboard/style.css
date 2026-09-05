@@ -268,6 +268,98 @@
   --glass-tooltip-bg: rgba(27, 27, 27, 0.92);
 }
 
+/* Seaside — supplied ocean-to-sunset scale plus deep ink sampled from the
+   artwork typography: #242234, #9FDDED, #2A90AB, #F7F6EE, #FADA95, #FFBA52. */
+[data-palette='seaside'] {
+  --color-page-bg: #f7f6ee;
+  --gradient-shell: linear-gradient(135deg, #242234 0%, #2a90ab 42%, #9fdded 70%, #fada95 88%, #ffba52 100%);
+  --color-surface: #fbfbf5;
+  --color-surface-2: #ffffff;
+  --color-surface-sunken: #eaf3f2;
+  --color-border: #b8dadd;
+  --color-border-strong: #6ebccc;
+  --color-text: #242234;
+  --color-text-muted: #356d7a;
+  --color-text-faint: #6e9298;
+  --color-text-on-shell: #f7f6ee;
+  --color-text-on-shell-muted: #d9f1f5;
+  --color-accent: #24768a;
+  --color-accent-strong: #1f6577;
+  --color-accent-ink: #f7f6ee;
+  --color-positive: #247b91;
+  --color-positive-surface: #24768a;
+  --color-positive-ink: #f7f6ee;
+  --color-positive-soft: rgba(42, 144, 171, 0.17);
+  --color-negative: #925408;
+  --color-negative-surface: #ffba52;
+  --color-negative-ink: #242234;
+  --color-negative-soft: rgba(255, 186, 82, 0.24);
+  --color-danger: #925408;
+  --color-warning: #c47a12;
+  --color-neutral-dot: #9bb2b3;
+  --shadow-card: 0 1px 2px rgba(36, 34, 52, 0.07), 0 12px 28px rgba(42, 144, 171, 0.13);
+  --shadow-card-lg: 0 4px 10px rgba(36, 34, 52, 0.09), 0 24px 48px rgba(42, 144, 171, 0.2);
+  --shadow-pill: 0 1px 1px rgba(36, 34, 52, 0.1);
+  --glass-card-bg: rgba(247, 246, 238, 0.64);
+  --glass-pill-bg: rgba(247, 246, 238, 0.14);
+  --glass-pill-bg-strong: rgba(159, 221, 237, 0.25);
+  --glass-border: rgba(247, 246, 238, 0.54);
+  --glass-border-soft: rgba(159, 221, 237, 0.28);
+  --glass-sheen: linear-gradient(165deg, rgba(247, 246, 238, 0.58) 0%, rgba(159, 221, 237, 0.14) 32%, rgba(159, 221, 237, 0) 60%);
+  --glass-sheen-soft: linear-gradient(165deg, rgba(247, 246, 238, 0.38) 0%, rgba(159, 221, 237, 0.08) 42%, rgba(159, 221, 237, 0) 72%);
+  --glass-shell-sheen: linear-gradient(120deg, rgba(247, 246, 238, 0.18) 0%, transparent 24%, transparent 68%, rgba(250, 218, 149, 0.13) 100%);
+  --glass-inset-top: inset 0 1px 0 rgba(247, 246, 238, 0.7);
+  --glass-inset-bottom: inset 0 -1px 1px rgba(36, 34, 52, 0.08);
+  --glass-shadow-outer: 0 1px 1px rgba(36, 34, 52, 0.07), 0 18px 40px rgba(36, 34, 52, 0.2), 0 4px 12px rgba(42, 144, 171, 0.13);
+  --glass-shadow-pill: 0 1px 1px rgba(36, 34, 52, 0.08), 0 8px 20px rgba(42, 144, 171, 0.16);
+  --glass-tooltip-bg: rgba(36, 34, 52, 0.9);
+}
+
+[data-theme='dark'][data-palette='seaside'] {
+  --color-page-bg: #242234;
+  --gradient-shell: linear-gradient(135deg, #242234 0%, #203642 32%, #235d70 66%, #2a90ab 100%);
+  --color-surface: #2b293d;
+  --color-surface-2: #333047;
+  --color-surface-sunken: #1e1c2b;
+  --color-border: #315c68;
+  --color-border-strong: #2a90ab;
+  --color-text: #f7f6ee;
+  --color-text-muted: #b9dce1;
+  --color-text-faint: #7ca8b0;
+  --color-text-on-shell: #f7f6ee;
+  --color-text-on-shell-muted: #cceaf0;
+  --color-accent: #9fdded;
+  --color-accent-strong: #bcebf4;
+  --color-accent-ink: #242234;
+  --color-positive: #9fdded;
+  --color-positive-surface: #24768a;
+  --color-positive-ink: #f7f6ee;
+  --color-positive-soft: rgba(159, 221, 237, 0.18);
+  --color-negative: #ffba52;
+  --color-negative-surface: #ffba52;
+  --color-negative-ink: #242234;
+  --color-negative-soft: rgba(255, 186, 82, 0.19);
+  --color-danger: #ffba52;
+  --color-warning: #fada95;
+  --color-neutral-dot: #526b72;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.31), 0 12px 28px rgba(0, 0, 0, 0.38);
+  --shadow-card-lg: 0 4px 10px rgba(0, 0, 0, 0.34), 0 24px 48px rgba(0, 0, 0, 0.5);
+  --shadow-pill: 0 1px 1px rgba(0, 0, 0, 0.32);
+  --glass-card-bg: rgba(43, 41, 61, 0.64);
+  --glass-pill-bg: rgba(159, 221, 237, 0.07);
+  --glass-pill-bg-strong: rgba(159, 221, 237, 0.14);
+  --glass-border: rgba(159, 221, 237, 0.24);
+  --glass-border-soft: rgba(159, 221, 237, 0.13);
+  --glass-sheen: linear-gradient(165deg, rgba(159, 221, 237, 0.14) 0%, rgba(159, 221, 237, 0.04) 32%, rgba(159, 221, 237, 0) 60%);
+  --glass-sheen-soft: linear-gradient(165deg, rgba(159, 221, 237, 0.09) 0%, rgba(159, 221, 237, 0.025) 42%, rgba(159, 221, 237, 0) 72%);
+  --glass-shell-sheen: linear-gradient(120deg, rgba(159, 221, 237, 0.09) 0%, transparent 24%, transparent 68%, rgba(255, 186, 82, 0.07) 100%);
+  --glass-inset-top: inset 0 1px 0 rgba(159, 221, 237, 0.16);
+  --glass-inset-bottom: inset 0 -1px 1px rgba(0, 0, 0, 0.4);
+  --glass-shadow-outer: 0 1px 1px rgba(0, 0, 0, 0.33), 0 18px 40px rgba(0, 0, 0, 0.56), 0 4px 12px rgba(0, 0, 0, 0.39);
+  --glass-shadow-pill: 0 1px 1px rgba(0, 0, 0, 0.32), 0 8px 20px rgba(0, 0, 0, 0.42);
+  --glass-tooltip-bg: rgba(30, 28, 43, 0.94);
+}
+
 a {
   text-decoration: none;
   color: inherit;
@@ -2320,6 +2412,12 @@ body {
 .palette-preview-soleau i:nth-child(4) { background: #8f670b; }
 .palette-preview-soleau i:nth-child(5) { background: #b68005; }
 .palette-preview-soleau i:nth-child(6) { background: #dd9900; }
+.palette-preview-seaside i:nth-child(1) { background: #242234; }
+.palette-preview-seaside i:nth-child(2) { background: #2a90ab; }
+.palette-preview-seaside i:nth-child(3) { background: #9fdded; }
+.palette-preview-seaside i:nth-child(4) { background: #f7f6ee; }
+.palette-preview-seaside i:nth-child(5) { background: #fada95; }
+.palette-preview-seaside i:nth-child(6) { background: #ffba52; }
 .palette-settings-message { min-height: 1.25em; margin: 0; }
 
 @media (max-width: 560px) {

@@ -56,8 +56,9 @@ Deno.serve(async (req) => {
     return reply({ ok: true, timezone });
   }
   if (body.action === "update_dashboard_palette") {
-    const dashboardPalette = body.dashboard_palette === "soleau-gold" ? "soleau-gold"
-      : body.dashboard_palette === "lucre" ? "lucre" : null;
+    const requestedPalette = String(body.dashboard_palette ?? "");
+    const dashboardPalette = ["lucre", "soleau-gold", "seaside"].includes(requestedPalette)
+      ? requestedPalette : null;
     if (!dashboardPalette) return reply({ error: "invalid_dashboard_palette" }, 422);
     const { error } = await admin.from("profiles").update({ dashboard_palette: dashboardPalette }).eq("id", userId);
     if (error) return reply({ error: "dashboard_palette_update_failed", detail: error.message }, 500);

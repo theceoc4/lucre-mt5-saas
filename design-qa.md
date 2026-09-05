@@ -1,60 +1,74 @@
-# Soleau Gold semantic-color design QA
+# Seaside palette design QA
 
-- Source visual truth: `/Users/rayevelyn/.codex/generated_images/01a02ffc-090a-7373-8d71-3aeedabdfb9b/exec-66dfd66f-8b89-47ad-a072-7fa28b8541b0.png`
-- Rendered implementation: `/private/tmp/soleau-theme-implementation.png`
-- Combined comparison: `/private/tmp/soleau-theme-comparison.png`
-- Source dimensions: 1411 x 1115 px.
-- Implementation capture: 1280 x 774 px from a 1280 x 720 CSS viewport; browser-reported device pixel ratio 2 and normalized screenshot density 1.
-- State: Soleau Gold, dark mode, representative Pair card, positive Lock In state, P/L heatmap, notifications, status badges, and destructive action.
+- Source visual truth: `/Users/rayevelyn/Downloads/4225fd299619d4bdc86a151457bb7c76.png`
+- Dark implementation screenshot: `/private/tmp/seaside-theme-implementation.png`
+- Light implementation screenshot: `/private/tmp/seaside-theme-light-implementation.png`
+- Combined comparison: `/private/tmp/seaside-theme-comparison.png`
+- Source dimensions: 640 x 640 px.
+- Implementation capture: 1280 x 720 px from a 1280 x 720 CSS viewport;
+  browser-reported device pixel ratio 2 with a normalized 1280 x 720 screenshot.
+- Comparison crop: the representative 640 x 640 implementation region was
+  placed beside the 640 x 640 source palette without scaling.
+- State: Seaside light and dark modes with Trend Strength, positive and negative
+  P/L, Buy and Sell controls, P/L heatmap cells, and health-status treatments.
 
 ## Full-view comparison evidence
 
-The approved mockup and browser-rendered implementation were opened together in
-`/private/tmp/soleau-theme-comparison.png`. Both use near-black warm surfaces,
-dark-brown bearish controls, vibrant-gold bullish controls, warm ivory text, and
-restrained bronze borders. The implementation intentionally adds the requested
-Daily P/L, heatmap, Lock In, notification, and status states around the selected
-Pair-card direction.
+The supplied five-color palette and the browser-rendered dark implementation
+were opened together in `/private/tmp/seaside-theme-comparison.png`. The Lucre
+shell uses the source deep ink, ocean teal, cyan, sand, and sunset amber without
+introducing unrelated green or red. The sixth deep-ink color `#242234` was
+sampled from the reference artwork typography to support dark surfaces and
+high-contrast foregrounds.
 
 ## Focused-region evidence
 
-The Pair card was inspected separately in the browser capture. Its meter runs
-from `#423416` through the neutral sunken surface to `#DD9900`; Sell renders as
-`#423416` with warm ivory text; Buy renders as `#DD9900` with `#1B1B1B` text.
-The positive Lock In button uses the same gold/ink pair. Heatmap loss cells use
-dark-brown opacity and profit cells use gold opacity, with transparent zero cells.
+The browser-rendered Pair-card region was inspected in both themes. Trend
+Strength runs from amber through the neutral surface to teal. Sell and loss
+states use sunset amber with deep-ink text; Buy and profit states use a slightly
+deepened ocean teal with warm-white text. Heatmap zero cells remain transparent,
+while profit and loss intensity scales through teal and amber opacity.
 
-## Interaction and responsive checks
+## Interaction, responsive, and console checks
 
-- Theme-change handling still redraws the volume, P/L, strategy, and heatmap charts.
-- Semantic state tokens were verified from computed browser styles.
-- Buy and positive Lock In computed to `rgb(221, 153, 0)` with `rgb(27, 27, 27)` text.
-- Sell computed to `rgb(66, 52, 22)` with `rgb(255, 248, 232)` text.
-- Heatmap legend language changes from red/green to dark brown/gold under Soleau Gold.
-- No browser console warnings or errors were present in the QA fixture.
+- Palette selection recognizes `seaside` across first-paint cache, runtime
+  switching, profile loading, backend validation, and database persistence.
+- Theme-change handling still redraws P/L, signal, strategy, session-overlay,
+  and heatmap surfaces from semantic CSS tokens.
+- The dark and light fixtures rendered at the production desktop viewport with
+  no browser console warnings or errors.
+- The Appearance option follows the existing responsive palette-card layout;
+  no component geometry or mobile breakpoint was changed.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: the existing Cabinet Grotesk and General Sans hierarchy is unchanged.
-- Spacing and layout rhythm: existing production component spacing, grids, radii, and sizing are unchanged.
-- Colors and visual tokens: positive, negative, danger, warning, soft-state, surface, and foreground tokens now inherit the Soleau Gold scale consistently.
-- Image quality and asset fidelity: no raster assets were introduced; the implementation is code-native UI using the approved palette.
-- Copy and content: Pair health and heatmap guidance no longer assumes that semantic states are always red or green.
+- Fonts and typography: existing Cabinet Grotesk and General Sans hierarchy,
+  sizing, weight, and wrapping remain unchanged.
+- Spacing and layout rhythm: production grids, cards, controls, radii, and
+  responsive spacing remain unchanged; only theme tokens and one option row were added.
+- Colors and visual tokens: the supplied `#9FDDED`, `#2A90AB`, `#F7F6EE`,
+  `#FADA95`, and `#FFBA52` palette is present, supported by sampled deep ink
+  `#242234`; all positive/negative tokens inherit the Seaside semantics.
+- Image quality and asset fidelity: the source is a color reference rather than
+  an application asset, so no raster asset belongs in the production interface.
+- Copy and content: the Appearance description and palette-aware heatmap legend
+  name teal and amber rather than green and red.
 
 ## Comparison history
 
-The first semantic pass exposed insufficient contrast for small bearish text on
-the dark-brown surface. Bearish surfaces remained `#423416`, while dark-theme
-text and outlines moved to the palette's restrained bronze `#B99345`. The final
-browser capture confirms the distinction without reintroducing red or green.
+The first browser pass used source teal `#2A90AB` directly beneath warm-white
+button text and measured 3.41:1 contrast. The actionable positive surface was
+deepened to `#24768A`, preserving the ocean color while raising contrast to
+4.80:1. The second light/dark capture confirmed the revised controls and no
+console errors.
 
 ## Findings
 
-No actionable P0, P1, or P2 visual differences remain for this theme update.
+No actionable P0, P1, or P2 visual differences remain for the Seaside palette.
 
 ## Follow-up polish
 
-P3: real production data may reveal unusually dense chart/notification states;
-the underlying semantic tokens will still apply without component-specific fixes.
+P3: unusually dense production charts may benefit from per-chart opacity tuning
+after forward use, but all chart primitives already inherit the correct tokens.
 
 final result: passed
