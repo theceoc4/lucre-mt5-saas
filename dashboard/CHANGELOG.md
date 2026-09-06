@@ -1,5 +1,16 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.76 — Weekend-aware sessions and closed-position history (2026-09-06)
+
+- Replaces duplicated hour-only session buckets with one shared UTC calendar
+  that labels Friday 21:00 UTC through Sunday 21:00 UTC as off-session.
+- Stores immutable entry and close sessions on trade history and repairs prior
+  weekend rows from their actual open/close timestamps.
+- Adds a scrollable History dashboard tab with strategy and local-time period
+  filters, broker P/L, net-after-cost detail, attribution, and session context.
+- Loads closed-position history with pagination so the History view is not
+  silently capped at Supabase's first 1,000 rows.
+
 ## v1.0.75 — Strategy editor visual polish (2026-09-06)
 
 - Restores a full-size, clearly labeled On/Off toggle for strategy-level account

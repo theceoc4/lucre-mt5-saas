@@ -53,6 +53,7 @@ const state = {
   strategyHeatmapMode: 'signals',
   pairSort: 'alphabetical',
   signalFilter: { pair: 'all', period: '30d' },
+  historyFilter: { strategy: 'all', period: '30d' },
   // v1.0.14 — item 3: P/L Over Time card filters (timeframe + manual/auto/all).
   plFilter: { timeframe: '30d', source: 'all' },
 };
@@ -173,6 +174,8 @@ const plSourceSelect = document.getElementById('pl-source-select');
 const plSummaryValue = document.getElementById('pl-summary-value');
 const signalsPairFilter = document.getElementById('signals-pair-filter');
 const signalsPeriodFilter = document.getElementById('signals-period-filter');
+const historyStrategyFilter = document.getElementById('history-strategy-filter');
+const historyPeriodFilter = document.getElementById('history-period-filter');
 const buttonNotifications = document.getElementById('button-notifications');
 const notificationPanel = document.getElementById('notification-panel');
 const notificationList = document.getElementById('notification-list');
@@ -429,6 +432,7 @@ function rerenderTimezoneSurfaces() {
   renderPositions();
   renderPositionsTab();
   renderSignalsTab();
+  renderHistoryTab();
   renderAccountHistoryList();
   renderNewsPage();
   renderVolumeChart();
@@ -3461,6 +3465,7 @@ async function loadStrategies() {
     renderStrategies();
     renderStrategyStatusTab();
     renderStrategyPage();
+    renderHistoryTab();
     renderDashboardHeatmap();
     renderNotifications();
     return;
@@ -3501,6 +3506,7 @@ async function loadStrategies() {
   renderStrategyWinRates();
   renderStrategyStatusTab();
   renderStrategyPage();
+  renderHistoryTab();
   renderDashboardHeatmap();
   renderNotifications();
 }
@@ -4959,6 +4965,7 @@ async function loadTradeHistory() {
     renderWinRate();
     renderPlChart();
     renderSessionsTab();
+    renderHistoryTab();
     renderWinRateTab();
     renderDurationTab();
     renderStrategyPage();
@@ -4966,13 +4973,14 @@ async function loadTradeHistory() {
     renderNotifications();
     return;
   }
-  const { data, error } = await supabase
+  const { data, error } = await fetchPagedRows(() => supabase
     .from('trade_history')
     .select(
-      'id, symbol, side, volume, profit, net_profit, r_multiple, open_time, close_time, strategy_id, session, htf_regime, near_news_event, news_event_id, outcome, source, profit_verified, entry_context'
+      'id, symbol, side, volume, profit, net_profit, r_multiple, open_time, close_time, strategy_id, strategy_name_at_entry, origin_detail, session, entry_session, close_session, htf_regime, near_news_event, news_event_id, outcome, source, profit_verified, entry_context'
     )
     .eq('terminal_id', state.activeTerminalId)
-    .order('close_time', { ascending: true });
+    .order('close_time', { ascending: true })
+    .order('id', { ascending: true }));
 
   if (error) {
     console.error('loadTradeHistory error', error);
@@ -4983,6 +4991,7 @@ async function loadTradeHistory() {
   renderPlChart();
   renderStrategyWinRates();
   renderSessionsTab();
+  renderHistoryTab();
   renderWinRateTab();
   renderDurationTab();
   renderStrategyStatusTab();
@@ -5138,11 +5147,11 @@ function renderRiskEngine() {
 }
 
 // ---------------------------------------------------------------------------
-// Analytics tab strip — Overview / Signals / Positions / Sessions / Risk Score /
+// Analytics tab strip — Overview / Signals / Positions / History / Sessions / Risk Score /
 // Win Rate / News / Strategies. Blocked outcomes remain inside Signals; trade
 // duration now lives on Overview.
 // ---------------------------------------------------------------------------
-const SESSION_LABELS = { asia: 'Asia', london: 'London', ny: 'New York', overlap: 'Overlap' };
+const SESSION_LABELS = { asia: 'Asia', london: 'London', ny: 'New York', overlap: 'Overlap', off_session: 'Off-session' };
 const IMPACT_LABELS = { high: 'High', medium: 'Medium', low: 'Low' };
 
 function setActiveTab(tab) {
@@ -5295,6 +5304,85 @@ function renderPositionsTab() {
   );
 }
 
+function historyStrategyKey(trade) {
+  return trade.strategy_id ? `strategy:${trade.strategy_id}` : 'manual';
+}
+
+function historyStrategyLabel(trade) {
+  const linked = state.strategies.find((strategy) => strategy.id === trade.strategy_id);
+  const captured = String(trade.strategy_name_at_entry || linked?.name || '').trim();
+  if (captured) return captured;
+  if (trade.origin_detail === 'mt5_direct_manual') return 'MT5 terminal';
+  if (trade.origin_detail === 'pairs_one_click') return 'Pairs one-click';
+  return 'Manual';
+}
+
+function renderHistoryTab() {
+  const list = document.getElementById('tab-history-list');
+  if (!list) return;
+  const allRows = state.tradeHistory.filter((trade) => trade.close_time);
+  const strategyOptions = new Map();
+  allRows.forEach((trade) => strategyOptions.set(historyStrategyKey(trade), historyStrategyLabel(trade)));
+  if (historyStrategyFilter) {
+    const selected = state.historyFilter.strategy;
+    historyStrategyFilter.innerHTML = '<option value="all">All strategies</option>' + [...strategyOptions.entries()]
+      .sort((a, b) => a[1].localeCompare(b[1]))
+      .map(([key, label]) => `<option value="${escapeHtml(key)}">${escapeHtml(label)}</option>`)
+      .join('');
+    historyStrategyFilter.value = strategyOptions.has(selected) ? selected : 'all';
+    state.historyFilter.strategy = historyStrategyFilter.value;
+  }
+
+  const now = Date.now();
+  const cutoff = state.historyFilter.period === '7d' ? now - 7 * 86400000
+    : state.historyFilter.period === '30d' ? now - 30 * 86400000 : 0;
+  const rows = allRows.filter((trade) => {
+    const strategyMatches = state.historyFilter.strategy === 'all'
+      || historyStrategyKey(trade) === state.historyFilter.strategy;
+    const closedAt = new Date(trade.close_time).getTime();
+    const periodMatches = state.historyFilter.period === 'today'
+      ? zonedDateKey(trade.close_time) === zonedDateKey(new Date())
+      : state.historyFilter.period === 'all' || closedAt >= cutoff;
+    return strategyMatches && periodMatches;
+  }).sort((a, b) => new Date(b.close_time) - new Date(a.close_time));
+
+  if (rows.length === 0) {
+    list.innerHTML = `<p class="empty-state-text">${allRows.length ? 'No closed positions match these filters.' : 'No closed positions yet.'}</p>`;
+    return;
+  }
+
+  list.innerHTML = rows.map((trade) => {
+    const verified = trade.profit_verified !== false;
+    const brokerProfit = Number(trade.profit || 0);
+    const netProfit = trade.net_profit == null ? brokerProfit : Number(trade.net_profit);
+    const profitClass = !verified ? 'pending' : brokerProfit > 0 ? 'positive' : brokerProfit < 0 ? 'negative' : '';
+    const entrySession = trade.entry_session || trade.session || 'unknown';
+    const closeSession = trade.close_session || 'unknown';
+    const closeSessionNote = closeSession !== entrySession
+      ? `<small>Closed: ${escapeHtml(SESSION_LABELS[closeSession] || 'Unknown')}</small>` : '';
+    const profitValue = verified
+      ? `${brokerProfit >= 0 ? '+' : '−'}$${Math.abs(brokerProfit).toFixed(2)}` : 'Pending';
+    const netNote = !verified ? '<small>Awaiting broker verification</small>' : Math.abs(netProfit - brokerProfit) >= 0.005
+      ? `<small>Net ${netProfit >= 0 ? '+' : '−'}$${Math.abs(netProfit).toFixed(2)}</small>` : '<small>Broker P/L</small>';
+    return `<div class="history-table-row">
+      <div><strong>${escapeHtml(trade.symbol || 'Unknown')}</strong><small>${escapeHtml(String(trade.side || '—').toUpperCase())} · ${formatDateTime(trade.close_time)}</small></div>
+      <div><span>${escapeHtml(historyStrategyLabel(trade))}</span><small>${escapeHtml(trade.origin_detail || trade.source || '—')}</small></div>
+      <div class="history-profit ${profitClass}"><span>${profitValue}</span>${netNote}</div>
+      <div><span>${escapeHtml(SESSION_LABELS[entrySession] || 'Unknown')}</span>${closeSessionNote}</div>
+    </div>`;
+  }).join('');
+}
+
+historyStrategyFilter?.addEventListener('change', (event) => {
+  state.historyFilter.strategy = event.target.value;
+  renderHistoryTab();
+});
+
+historyPeriodFilter?.addEventListener('change', (event) => {
+  state.historyFilter.period = event.target.value;
+  renderHistoryTab();
+});
+
 function renderSessionsTab() {
   const list = document.getElementById('tab-sessions-list');
   if (!list) return;
@@ -5312,7 +5400,7 @@ function renderSessionsTab() {
     if (!bySession.has(key)) bySession.set(key, []);
     bySession.get(key).push(t);
   });
-  const order = ['asia', 'london', 'ny', 'overlap', 'unknown'];
+  const order = ['asia', 'london', 'overlap', 'ny', 'off_session', 'unknown'];
   const keys = [...bySession.keys()].sort((a, b) => order.indexOf(a) - order.indexOf(b));
   list.innerHTML = keys
     .map((key) => {
@@ -6044,7 +6132,10 @@ function chartDateLabel(ordinal) {
   return new Intl.DateTimeFormat(undefined, { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(new Date(ordinal));
 }
 
-function sessionForUtcHour(hour) {
+function sessionForUtcDate(date) {
+  const day = date.getUTCDay();
+  const hour = date.getUTCHours();
+  if (day === 6 || (day === 5 && hour >= 21) || (day === 0 && hour < 21)) return 'off_session';
   if (hour < 7 || hour >= 21) return 'asia';
   if (hour < 12) return 'london';
   if (hour < 16) return 'overlap';
@@ -6058,7 +6149,7 @@ function sessionForZonedHour(localDateParts, localHour) {
     const candidate = new Date(anchor + offset * 3600000);
     const parts = zonedDateParts(candidate);
     if (parts && `${parts.year}-${parts.month}-${parts.day}` === targetKey && parts.hour === localHour) {
-      return sessionForUtcHour(candidate.getUTCHours());
+      return sessionForUtcDate(candidate);
     }
   }
   return null;
@@ -6158,6 +6249,7 @@ function sessionBandsPlugin(sessions, enabled) {
         london: 'rgba(105, 77, 16, 0.13)',
         overlap: 'rgba(182, 128, 5, 0.10)',
         ny: 'rgba(221, 153, 0, 0.085)',
+        off_session: 'rgba(27, 27, 27, 0.10)',
       }
     : palette === 'seaside'
       ? {
@@ -6165,12 +6257,14 @@ function sessionBandsPlugin(sessions, enabled) {
           london: 'rgba(42, 144, 171, 0.12)',
           overlap: 'rgba(250, 218, 149, 0.11)',
           ny: 'rgba(255, 186, 82, 0.09)',
+          off_session: 'rgba(36, 34, 52, 0.10)',
         }
     : {
         asia: 'rgba(74, 115, 148, 0.10)',
         london: 'rgba(215, 230, 78, 0.075)',
         overlap: 'rgba(195, 88, 63, 0.075)',
         ny: 'rgba(76, 138, 94, 0.085)',
+        off_session: 'rgba(120, 128, 120, 0.08)',
       };
   return {
     id: `session-bands-${Math.random().toString(36).slice(2)}`,
@@ -6779,6 +6873,8 @@ function resetDashboardState() {
   state.calendarEvents = [];
   state.scenarioStats = [];
   state.signalFilter = { pair: 'all', period: '30d' };
+  state.historyFilter = { strategy: 'all', period: '30d' };
+  if (historyPeriodFilter) historyPeriodFilter.value = '30d';
   if (signalsPeriodFilter) signalsPeriodFilter.value = '30d';
   if (signalChartRange) signalChartRange.value = '30d';
   if (strategyChartRange) strategyChartRange.value = '30d';

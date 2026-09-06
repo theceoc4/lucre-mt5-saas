@@ -6,6 +6,7 @@
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { computeTrendStrengthV3, TREND_MIN_BARS } from "../_shared/trend-strength-v3.ts";
+import { marketSessionFor, type MarketSession } from "../_shared/market-session.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -113,7 +114,7 @@ function stats(results: number[]) {
   return { trade_count: results.length, win_rate: results.length ? wins.length/results.length : null, profit_factor: grossLoss ? grossWin/grossLoss : null, expectancy_r: results.length ? equity/results.length : null, max_drawdown_r: drawdown };
 }
 
-function sessionAt(barTime:string):Session { const h=new Date(barTime).getUTCHours(); return h<7?'asia':h<12?'london':h<16?'overlap':h<21?'ny':'asia'; }
+function sessionAt(barTime:string):MarketSession { return marketSessionFor(new Date(barTime)); }
 
 function simulate(strategy:any,bars:Bar[],contextBars:Bar[]=[]){
   const exits=strategy.exit_config||{},stopAtr=Math.max(.1,n(exits.stop_atr??strategy.config?.stop_atr,1.8)),targetR=Math.max(.1,n(exits.target_r??strategy.config?.target_r,2));
@@ -121,7 +122,7 @@ function simulate(strategy:any,bars:Bar[],contextBars:Bar[]=[]){
   const horizon=Math.max(5,Math.min(200,Math.floor(n(strategy.config?.shadow_horizon_bars,50)))),atrValues=atr(bars),results:{index:number,r:number}[]=[];
   const allowed=new Set(Array.isArray(strategy.allowed_sessions)?strategy.allowed_sessions:[]),cooldownMs=Math.max(0,n(strategy.cooldown_minutes,0))*60000,maxSpread=strategy.max_spread_points==null?Infinity:n(strategy.max_spread_points,Infinity);let lastEntry=-Infinity;
   for(let i=80;i<bars.length-horizon;i++){
-    const enteredAt=new Date(bars[i].bar_time).getTime();if(allowed.size&&!allowed.has(sessionAt(bars[i].bar_time)))continue;if(Number.isFinite(Number(bars[i].spread))&&Number(bars[i].spread)>maxSpread)continue;if(enteredAt-lastEntry<cooldownMs)continue;
+    const enteredAt=new Date(bars[i].bar_time).getTime(),barSession=sessionAt(bars[i].bar_time);if(barSession==='off_session'||(allowed.size&&!allowed.has(barSession as Session)))continue;if(Number.isFinite(Number(bars[i].spread))&&Number(bars[i].spread)>maxSpread)continue;if(enteredAt-lastEntry<cooldownMs)continue;
     const side=entry(strategy,bars,i,contextBars);if(!side)continue;const a=atrValues[i];if(!(a>0))continue;
     const risk=stopAtr*a,ep=bars[i].close,tp=side==='buy'?ep+targetR*risk:ep-targetR*risk;let sl=side==='buy'?ep-risk:ep+risk,result=0,exit=i+horizon;lastEntry=enteredAt;
     for(let j=i+1;j<=Math.min(i+horizon,bars.length-1);j++){

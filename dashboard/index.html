@@ -41,7 +41,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.75" />
+<link rel="stylesheet" href="./style.css?v=1.0.76" />
 </head>
 <body>
 
@@ -769,6 +769,7 @@
         <a class="tab active" href="javascript:void(0)" role="tab" aria-selected="true" data-tab="overview" data-testid="tab-overview">Overview</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="signals" data-testid="tab-signals">Signals</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="positions" data-testid="tab-positions">Positions</a>
+        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="history" data-testid="tab-history">History</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="sessions" data-testid="tab-sessions">Sessions</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="risk-score" data-testid="tab-risk-score">Risk Score</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="win-rate" data-testid="tab-win-rate">Win Rate</a>
@@ -915,6 +916,22 @@
         </div>
         <div class="mini-table positions-data-list" id="tab-positions-list">
           <p class="empty-state-text">No open positions. Connect an account and place an order to see it here.</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="tab-panel" data-tab-panel="history" role="tabpanel" hidden>
+      <section class="card card-pad history-panel-card" aria-label="Closed position history">
+        <div class="card-title-row history-panel-head">
+          <div class="history-filters" aria-label="History filters">
+            <label><span>Strategy</span><select id="history-strategy-filter" aria-label="Filter closed positions by strategy"><option value="all">All strategies</option></select></label>
+            <label><span>Period</span><select id="history-period-filter" aria-label="Filter closed positions by period"><option value="today">Today</option><option value="7d">Past 7 days</option><option value="30d" selected>Past 30 days</option><option value="all">All time</option></select></label>
+          </div>
+          <h3>Closed Positions</h3>
+        </div>
+        <div class="history-table-head" aria-hidden="true"><span>Symbol</span><span>Strategy</span><span>P/L at close</span><span>Session</span></div>
+        <div class="history-scroll-list" id="tab-history-list">
+          <p class="empty-state-text">No closed positions yet.</p>
         </div>
       </section>
     </div>
@@ -1111,7 +1128,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.75"></script>
-<script type="module" src="./main.js?v=1.0.75"></script>
+<script src="./app.js?v=1.0.76"></script>
+<script type="module" src="./main.js?v=1.0.76"></script>
 </body>
 </html>

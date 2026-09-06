@@ -23,6 +23,7 @@
 // Response: { ea_command_id, status: "queued" }
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { marketSessionFor } from "../_shared/market-session.ts";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -35,15 +36,6 @@ function jsonResponse(body: unknown, status = 200) {
     status,
     headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
   });
-}
-
-function sessionForNow(date: Date): "asia" | "london" | "ny" | "overlap" {
-  const h = date.getUTCHours();
-  if (h >= 0 && h < 7) return "asia";
-  if (h >= 7 && h < 12) return "london";
-  if (h >= 12 && h < 16) return "overlap";
-  if (h >= 16 && h < 21) return "ny";
-  return "asia";
 }
 
 Deno.serve(async (req: Request) => {
@@ -170,7 +162,7 @@ Deno.serve(async (req: Request) => {
   // Position rows already preserve immutable entry context. Copy it directly
   // instead of adding an ea_commands lookup (and sometimes a calendar query)
   // to the latency-sensitive close path.
-  const session = position.session ?? sessionForNow(now);
+  const session = position.session ?? marketSessionFor(now);
   const htfRegime = position.htf_regime ?? null;
   const nearNews = position.near_news_event ?? false;
   const newsEventId = position.news_event_id ?? null;

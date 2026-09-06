@@ -13,6 +13,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { dispatchPushInBackground } from "../_shared/push-notifications.ts";
 import { resolveBrokerSymbol } from "./_shared/symbol-resolver.ts";
 import { computeTrendStrengthV3, TREND_MIN_BARS } from "../_shared/trend-strength-v3.ts";
+import { isTradingSession, marketSessionFor, SESSION_DEFINITION_VERSION, type TradingSession } from "../_shared/market-session.ts";
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -22,7 +23,7 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 type Side = "buy" | "sell";
-type Session = "asia" | "london" | "ny" | "overlap";
+type Session = TradingSession;
 type Regime = "trending" | "ranging";
 type PolicyDecision = "ok" | "downweight" | "block";
 type EvaluationStatus = "session_blocked" | "symbol_disabled" | "missing_bars" | "stale_candles" |
@@ -219,16 +220,6 @@ async function trendRiskForCandidate(
     enabled: true, alignment: aligned ? "aligned" : "opposed", multiplier, score, strength,
     regime: data.regime, modelVersion: data.model_version, sourceBarTime: data.source_bar_time,
   };
-}
-
-// Simplified UTC session bucketing, copied from signal-action/index.ts.
-function sessionForNow(date: Date): Session {
-  const h = date.getUTCHours();
-  if (h >= 0 && h < 7) return "asia";
-  if (h >= 7 && h < 12) return "london";
-  if (h >= 12 && h < 16) return "overlap";
-  if (h >= 16 && h < 21) return "ny";
-  return "asia";
 }
 
 // One canonical, symbol-aware news lookup. The prior implementation queried
@@ -1182,12 +1173,12 @@ async function processSignalCandidate(
       news_event_id: news.news_event_id, strategy_name_at_entry: strategy.name,
       origin_detail: origin, risk_defined: true,
       entry_context: {
-        version: 3, captured_at: nowIso, origin, source_kind: sourceKind,
+        version: 3, captured_at: nowIso, origin, source_kind: sourceKind, session,
         external_event_id: externalEventId, strategy_name_at_entry: strategy.name,
         exit_source: externalSourceSl != null || externalSourceTp != null ? "external_signal" : "strategy_default",
         external_source_sl: externalSourceSl, external_source_tp: externalSourceTp,
         account_risk_override: strategy.override_account_risk === true,
-        session_definition: "utc-v1", regime_model: `adx14-${timeframe.toLowerCase()}-v1`,
+        session_definition: SESSION_DEFINITION_VERSION, regime_model: `adx14-${timeframe.toLowerCase()}-v1`,
         regime_quality: "strategy_grade", risk_defined: true, timeframe,
         strategy_kind: strategy.kind, canonical_symbol: symbol,
         risk_percent_total: effectiveRiskPercent, risk_percent_leg: riskPercentPerLeg,
@@ -1473,7 +1464,7 @@ Deno.serve(async (req: Request) => {
 
     const now = new Date();
     const nowIso = now.toISOString();
-    const session = sessionForNow(now);
+    const marketSession = marketSessionFor(now);
     const { data: calendarHealthRows, error: calendarHealthError } = await admin
       .from("market_feed_health")
       .select("terminal_id,last_received_at")
@@ -1525,6 +1516,18 @@ Deno.serve(async (req: Request) => {
       const strategySymbols = externalEvent
         ? [String(externalEvent.canonical_symbol ?? "")].filter(Boolean)
         : strategy.symbols;
+      if (!isTradingSession(marketSession)) {
+        for (const symbol of strategySymbols) {
+          if (typeof symbol === "string" && symbol.length > 0) {
+            recordEvaluation(strategy, symbol, "session_blocked", null, null, {
+              current_session: marketSession,
+              session_definition: SESSION_DEFINITION_VERSION,
+            });
+          }
+        }
+        continue;
+      }
+      const session = marketSession;
       if (externalEvent) {
         const occurredAtMs = new Date(String(externalEvent.occurred_at)).getTime();
         const ttlMs = Math.max(1, Math.floor(numberValue(strategy.signal_ttl_seconds, 60))) * 1000;

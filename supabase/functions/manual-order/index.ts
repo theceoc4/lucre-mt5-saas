@@ -42,15 +42,6 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-function sessionForNow(date: Date): "asia" | "london" | "ny" | "overlap" {
-  const h = date.getUTCHours();
-  if (h >= 0 && h < 7) return "asia";
-  if (h >= 7 && h < 12) return "london";
-  if (h >= 12 && h < 16) return "overlap";
-  if (h >= 16 && h < 21) return "ny";
-  return "asia";
-}
-
 async function nearNewsCheck(
   admin: ReturnType<typeof createClient>,
   terminalId: string,

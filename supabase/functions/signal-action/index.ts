@@ -36,6 +36,7 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { resolveBrokerSymbol } from "./_shared/symbol-resolver.ts";
 import { lookupThrottlePolicy } from "./_shared/throttle-gate.ts";
+import { marketSessionFor } from "../_shared/market-session.ts";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -63,15 +64,6 @@ function versionAtLeast(actual: unknown, required: string): boolean {
 // Simplified UTC session bucketing. London/NY overlap (12:00-16:00 UTC) is the
 // highest-liquidity window and is tagged 'overlap' rather than either session
 // individually. This is a heuristic pending a real session-calendar source.
-function sessionForNow(date: Date): "asia" | "london" | "ny" | "overlap" {
-  const h = date.getUTCHours();
-  if (h >= 0 && h < 7) return "asia";
-  if (h >= 7 && h < 12) return "london";
-  if (h >= 12 && h < 16) return "overlap";
-  if (h >= 16 && h < 21) return "ny";
-  return "asia";
-}
-
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: CORS_HEADERS });
   if (req.method !== "POST") return jsonResponse({ error: "method_not_allowed" }, 405);
@@ -230,7 +222,7 @@ Deno.serve(async (req: Request) => {
       idempotency_key: idempotencyKey,
       signal_delivery_id: delivery.id,
       strategy_id: signal.strategy_id ?? null,
-      session: signal.session ?? sessionForNow(now),
+      session: signal.session ?? marketSessionFor(now),
       htf_regime: signal.htf_regime,
       near_news_event: signal.near_news_event,
       news_event_id: signal.news_event_id,
@@ -241,6 +233,7 @@ Deno.serve(async (req: Request) => {
         version: 2,
         captured_at: now.toISOString(),
         origin: "strategy_manual_confirm",
+        session: signal.session ?? marketSessionFor(now),
         strategy_name_at_entry: strategy?.name ?? "Strategy",
         strategy_kind: strategy?.kind ?? null,
         timeframe: strategy?.timeframe ?? null,

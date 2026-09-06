@@ -1,3 +1,5 @@
+import { marketSessionFor, SESSION_DEFINITION_VERSION } from "./market-session.ts";
+
 type ContextInput = { terminalId: string; symbol: string; at: Date; origin: string; strategyName?: string | null; riskDefined?: boolean };
 // Edge Functions use an ungenerated Supabase schema, so pinning this helper to
 // createClient's default `unknown` database generic makes every selected row
@@ -5,14 +7,6 @@ type ContextInput = { terminalId: string; symbol: string; at: Date; origin: stri
 // client-agnostic until generated Database types are introduced project-wide.
 // deno-lint-ignore no-explicit-any
 type SupabaseAdminClient = any;
-
-function sessionFor(at: Date): "asia" | "london" | "ny" | "overlap" {
-  const hour = at.getUTCHours();
-  if (hour < 7 || hour >= 21) return "asia";
-  if (hour < 12) return "london";
-  if (hour < 16) return "overlap";
-  return "ny";
-}
 
 // Kept intentionally deterministic and versioned. It gives manual/direct
 // orders a consistent regime tag while price bars warm up; 'unknown' is never
@@ -31,7 +25,7 @@ async function regimeFor(admin: SupabaseAdminClient, terminalId: string, symbol:
 }
 
 export async function captureMarketContext(admin: SupabaseAdminClient, input: ContextInput) {
-  const session = sessionFor(input.at);
+  const session = marketSessionFor(input.at);
   const { regime, quality } = await regimeFor(admin, input.terminalId, input.symbol);
   const from = new Date(input.at.getTime() - 30 * 60_000).toISOString();
   const to = new Date(input.at.getTime() + 30 * 60_000).toISOString();
@@ -50,8 +44,9 @@ export async function captureMarketContext(admin: SupabaseAdminClient, input: Co
       version: 1,
       captured_at: input.at.toISOString(),
       origin: input.origin,
+      session,
       strategy_name_at_entry: input.strategyName ?? "Discretionary manual",
-      session_definition: "utc-v1",
+      session_definition: SESSION_DEFINITION_VERSION,
       regime_model: "m5-zscore-v1",
       regime_quality: quality,
       news: event ? { id: event.id, title: event.title, currency: event.currency, impact: event.impact, event_time: event.event_time, minutes_from_entry: Math.round((new Date(event.event_time).getTime() - input.at.getTime()) / 60_000) } : null,
