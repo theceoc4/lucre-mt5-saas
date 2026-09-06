@@ -14,6 +14,8 @@
   to the dedicated Strategies page.
 - Extends the external ingress audit retention from 90 to 400 days so the Year
   chart does not silently lose older webhook outcomes.
+- Preserves signal and external-event history when a strategy is deleted, with
+  an immutable strategy-name snapshot for later audit and attribution.
 
 ## v1.0.72 — Resilient private P/L status (2026-09-06)
 
