@@ -41,7 +41,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.73" />
+<link rel="stylesheet" href="./style.css?v=1.0.74" />
 </head>
 <body>
 
@@ -123,7 +123,12 @@
 <div class="modal-overlay" id="modal-add-strategy" aria-hidden="true">
   <div class="modal-card strategy-builder-modal">
     <div class="modal-head">
-      <h3 id="add-strategy-title">Add a strategy</h3>
+      <div class="settings-modal-title-row">
+        <button class="icon-btn strategy-editor-back-button" type="button" id="button-strategy-editor-back" aria-label="Back to strategy categories" hidden>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
+        <h3 id="add-strategy-title">Add a strategy</h3>
+      </div>
       <button class="icon-btn" type="button" data-modal-close aria-label="Close">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
@@ -132,11 +137,20 @@
     <form id="form-add-strategy" novalidate>
       <input type="hidden" name="edit_id" id="strategy-edit-id" value="" />
       <input type="hidden" name="kind" id="strategy-kind" value="custom_rules" />
-      <div class="field">
+      <div class="strategy-editor-home" id="strategy-editor-home">
+        <div class="settings-category-list">
+          <button class="settings-category-button" type="button" data-strategy-editor-target="general"><span class="settings-category-icon settings-category-icon-text" aria-hidden="true">01</span><span><strong>Basics</strong><small>Name, signal source, timeframe, execution, direction, and sessions.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
+          <button class="settings-category-button" type="button" data-strategy-editor-target="logic"><span class="settings-category-icon settings-category-icon-text" aria-hidden="true">02</span><span><strong>Signal Logic</strong><small>Trend alignment and indicator confirmation rules.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
+          <button class="settings-category-button" type="button" data-strategy-editor-target="symbols"><span class="settings-category-icon settings-category-icon-text" aria-hidden="true">03</span><span><strong>Symbols</strong><small>Choose which terminal-owned markets this strategy can trade.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
+          <button class="settings-category-button" type="button" data-strategy-editor-target="risk"><span class="settings-category-icon settings-category-icon-text" aria-hidden="true">04</span><span><strong>Risk &amp; Orders</strong><small>Position risk, exits, spread, cooldown, and account override.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
+          <button class="settings-category-button" type="button" id="strategy-editor-connection-button" data-strategy-editor-target="connection" hidden><span class="settings-category-icon settings-category-icon-text" aria-hidden="true">05</span><span><strong>External Connection</strong><small>Webhook URL, JSON payload, and endpoint controls.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
+        </div>
+      </div>
+      <div class="field" data-strategy-editor-section="general" hidden>
         <label for="strategy-name">Strategy name</label>
         <input id="strategy-name" name="name" type="text" placeholder="e.g. London Momentum" maxlength="80" required />
       </div>
-      <div class="field">
+      <div class="field" data-strategy-editor-section="general" hidden>
         <label for="strategy-signal-source">Signal source</label>
         <select id="strategy-signal-source" name="signal_source">
           <option value="internal" selected>Lucre indicators</option>
@@ -146,7 +160,7 @@
         </select>
         <p class="field-hint" id="strategy-source-hint">Lucre evaluates the indicator stack on each newly closed broker candle.</p>
       </div>
-      <div class="strategy-builder-grid strategy-builder-grid-3">
+      <div class="strategy-builder-grid strategy-builder-grid-3" data-strategy-editor-section="general" hidden>
         <div class="field">
           <label for="strategy-timeframe">Timeframe</label>
           <select id="strategy-timeframe" name="timeframe" required>
@@ -174,7 +188,7 @@
           </select>
         </div>
       </div>
-      <div class="field">
+      <div class="field" data-strategy-editor-section="general" hidden>
         <label>Sessions <span class="field-label-note">UTC</span></label>
         <div class="strategy-session-options">
           <label><input type="checkbox" name="allowed_sessions" value="asia" checked /> Asia</label>
@@ -184,7 +198,7 @@
         </div>
       </div>
 
-      <section class="strategy-trend-filter" aria-labelledby="strategy-trend-filter-label">
+      <section class="strategy-trend-filter" data-strategy-editor-section="logic" aria-labelledby="strategy-trend-filter-label" hidden>
         <div class="strategy-trend-filter-head">
           <div>
             <h4 id="strategy-trend-filter-label">Trend alignment risk</h4>
@@ -204,7 +218,7 @@
         <p class="field-hint">Neutral or unavailable trend data stays at 1.00×. Maximum lot size and all portfolio guardrails still apply.</p>
       </section>
 
-      <section class="strategy-indicator-builder" aria-labelledby="strategy-indicators-label">
+      <section class="strategy-indicator-builder" data-strategy-editor-section="logic" aria-labelledby="strategy-indicators-label" hidden>
         <div class="strategy-section-heading">
           <div><h4 id="strategy-indicators-label">Indicators</h4><p class="field-hint">Add up to four, evaluated top to bottom. AND tightens the setup; OR gives it another route.</p></div>
           <span class="strategy-indicator-count" id="strategy-indicator-count">0 / 4</span>
@@ -222,7 +236,7 @@
         <button class="strategy-add-indicator" type="button" id="button-add-strategy-indicator" aria-label="Add indicator">+</button>
       </section>
 
-      <section class="external-signal-setup" id="external-signal-setup" hidden>
+      <section class="external-signal-setup" id="external-signal-setup" data-strategy-editor-section="connection" hidden>
         <div class="strategy-section-heading">
           <div><h4>External signal connection</h4><p class="field-hint" id="external-signal-copy">Save the strategy to create its private connection.</p></div>
           <span class="external-endpoint-status" id="external-endpoint-status">Not connected</span>
@@ -248,10 +262,10 @@
           </div>
           <p class="field-hint">The Lucre EA reads the indicator with its default Inputs and acts only on closed candle index 1. A non-empty BUY or SELL buffer value creates one event per candle.</p>
         </div>
-        <p class="field-hint">The external trigger is always required. Indicators added above become optional Lucre confirmations; policy, news, risk, broker mapping and execution checks still run normally.</p>
+        <p class="field-hint">The external trigger is always required. Optional SL/TP values are treated as absolute prices and validated against the live broker entry; omit them to use the strategy defaults. Confirmation, policy, news, risk, broker mapping and execution checks still run normally.</p>
       </section>
 
-      <div class="field strategy-symbol-field">
+      <div class="field strategy-symbol-field" data-strategy-editor-section="symbols" hidden>
         <label id="strategy-symbol-picker-label">Symbols</label>
         <div class="symbol-picker-row">
           <div class="symbol-multiselect" id="strategy-symbol-multiselect">
@@ -270,8 +284,8 @@
         <p class="field-hint" id="strategy-symbols-hint">No pairs added yet — check one or more above, then click Add.</p>
       </div>
 
-      <details class="strategy-advanced-settings">
-        <summary>Risk &amp; order settings</summary>
+      <section class="strategy-advanced-settings" data-strategy-editor-section="risk" hidden>
+        <div class="strategy-section-heading"><div><h4>Risk &amp; order settings</h4><p class="field-hint">Strategy limits apply to future signals and orders.</p></div></div>
         <div class="strategy-builder-grid strategy-builder-grid-3">
           <div class="field"><label for="strategy-lot">Maximum lot size</label><input id="strategy-lot" name="max_lot_size" type="number" step="0.01" min="0.01" value="0.10" /></div>
           <div class="field"><label for="strategy-risk-percent">Risk per signal (%)</label><input id="strategy-risk-percent" name="risk_percent" type="number" step="0.05" min="0.05" max="5" value="0.50" /></div>
@@ -284,7 +298,11 @@
           <div class="field"><label for="strategy-cooldown">Cooldown (minutes)</label><input id="strategy-cooldown" name="cooldown_minutes" type="number" min="0" max="10080" step="1" value="0" /></div>
           <div class="field"><label for="strategy-max-positions">Max strategy positions</label><input id="strategy-max-positions" name="max_concurrent_positions" type="number" min="1" max="20" step="1" value="1" /></div>
         </div>
-      </details>
+        <label class="strategy-account-risk-override">
+          <span><strong>Override account risk settings</strong><small>Use this strategy’s risk and position rules even when account-level portfolio limits would block it. Terminal, broker, margin, lot-size, and strategy position limits still apply.</small></span>
+          <input type="checkbox" name="override_account_risk" class="strategy-toggle-input" />
+        </label>
+      </section>
       <p class="auth-message" id="add-strategy-message" role="status"></p>
       <div class="strategy-form-actions">
         <button class="btn-accent auth-submit" type="submit" id="add-strategy-submit">Add strategy</button>
@@ -1089,7 +1107,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.73"></script>
-<script type="module" src="./main.js?v=1.0.73"></script>
+<script src="./app.js?v=1.0.74"></script>
+<script type="module" src="./main.js?v=1.0.74"></script>
 </body>
 </html>

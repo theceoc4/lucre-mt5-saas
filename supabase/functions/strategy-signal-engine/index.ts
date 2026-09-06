@@ -1,4 +1,4 @@
-// v1.0.43 — broker-session-aware feed readiness without synthetic candles.
+// v1.0.74 — strategy risk overrides and provider-supplied external exits.
 // v1.0.31 — progressive indicator stacks with bounded AND/OR evaluation.
 // v1.0.30 — strategy-signal-engine
 //
@@ -67,6 +67,7 @@ type StrategyRow = {
   cooldown_minutes?: number | string;
   max_concurrent_positions?: number | string;
   max_spread_points?: number | string | null;
+  override_account_risk?: boolean;
   news_posture?: "avoid" | "neutral" | "exploit";
   news_window_minutes?: number | string;
   news_min_impact?: "low" | "medium" | "high";
@@ -635,6 +636,7 @@ function candidateFromSide(
   side: Side,
   score: number,
   news: NewsContext,
+  externalExits: { sl: number | null; tp: number | null } | null = null,
 ): SignalCandidate | null {
   const current = bars[bars.length - 1];
   const atr = computeATR(bars, 14)[bars.length - 1];
@@ -647,15 +649,21 @@ function candidateFromSide(
   const swingStop = side === "buy"
     ? current.close - (Math.min(...recent.map((bar) => bar.low)) - 0.2 * atr)
     : (Math.max(...recent.map((bar) => bar.high)) + 0.2 * atr) - current.close;
-  const risk = Math.max(stopAtr * atr, swingStop);
+  const defaultRisk = Math.max(stopAtr * atr, swingStop);
+  const externalStopRisk = externalExits?.sl == null
+    ? null
+    : side === "buy" ? current.close - externalExits.sl : externalExits.sl - current.close;
+  const risk = externalStopRisk ?? defaultRisk;
   if (!(risk > EPSILON) || risk > positiveConfig(exits, "max_stop_atr", 4) * atr) return null;
+  const suggestedTp = externalExits?.tp ?? (side === "buy" ? current.close + targetR * risk : current.close - targetR * risk);
+  if ((side === "buy" && suggestedTp <= current.close) || (side === "sell" && suggestedTp >= current.close)) return null;
   const newsCaution = news.near && (strategy.news_posture ?? "avoid") === "avoid";
   const newsFactor = positiveConfig(strategy.config, "news_score_factor", 0.5);
   const finalScore = newsCaution ? clamp01(score * newsFactor) : clamp01(score);
   return {
     side, entryPrice: current.close,
-    suggestedSl: side === "buy" ? current.close - risk : current.close + risk,
-    suggestedTp: side === "buy" ? current.close + targetR * risk : current.close - targetR * risk,
+    suggestedSl: externalExits?.sl ?? (side === "buy" ? current.close - risk : current.close + risk),
+    suggestedTp,
     score: finalScore, entryAtr: atr, initialRiskDistance: risk,
     policyDecision: newsCaution ? "downweight" : "ok",
   };
@@ -979,13 +987,16 @@ async function processSignalCandidate(
     budgets: Map<string, TerminalPositionBudget>;
     sourceKind?: "internal" | "tradingview" | "generic_webhook" | "mt5_indicator";
     externalEventId?: string | null;
+    externalSourceSl?: number | null;
+    externalSourceTp?: number | null;
     recordEvaluation: (status: EvaluationStatus, detail?: Record<string, unknown>) => void;
   },
 ): Promise<CandidatePipelineResult> {
   const {
     strategy, symbol, timeframe, bars, candidate, news, regime, session,
     sourceBarTime, candleAgeSeconds, now, nowIso, eaVersion, budgets,
-    sourceKind = "internal", externalEventId = null, recordEvaluation,
+    sourceKind = "internal", externalEventId = null,
+    externalSourceSl = null, externalSourceTp = null, recordEvaluation,
   } = input;
   const finish = (
     evaluationStatus: EvaluationStatus,
@@ -1173,6 +1184,9 @@ async function processSignalCandidate(
       entry_context: {
         version: 3, captured_at: nowIso, origin, source_kind: sourceKind,
         external_event_id: externalEventId, strategy_name_at_entry: strategy.name,
+        exit_source: externalSourceSl != null || externalSourceTp != null ? "external_signal" : "strategy_default",
+        external_source_sl: externalSourceSl, external_source_tp: externalSourceTp,
+        account_risk_override: strategy.override_account_risk === true,
         session_definition: "utc-v1", regime_model: `adx14-${timeframe.toLowerCase()}-v1`,
         regime_quality: "strategy_grade", risk_defined: true, timeframe,
         strategy_kind: strategy.kind, canonical_symbol: symbol,
@@ -1394,7 +1408,7 @@ Deno.serve(async (req: Request) => {
     if (externalEventId) {
       const { data: claimed, error: claimError } = await admin.from("external_signal_events")
         .update({ status: "processing" }).eq("id", externalEventId).eq("status", "received")
-        .select("id,endpoint_id,terminal_id,strategy_id,provider,provider_event_id,canonical_symbol,timeframe,side,occurred_at,received_at")
+        .select("id,endpoint_id,terminal_id,strategy_id,provider,provider_event_id,canonical_symbol,timeframe,side,source_sl,source_tp,occurred_at,received_at")
         .maybeSingle();
       if (claimError) return jsonResponse({ error: "external_event_claim_failed", detail: claimError.message }, 500);
       if (!claimed) return jsonResponse({ processed: 0, duplicate_or_missing_external_event: true });
@@ -1412,7 +1426,7 @@ Deno.serve(async (req: Request) => {
 
     let strategyQuery = admin
       .from("strategies")
-      .select("id, terminal_id, name, kind, timeframe, symbols, delivery_mode, max_lot_size, risk_percent, signal_ttl_seconds, config, run_mode, bias_timeframe, rule_definition, exit_config, allowed_sessions, direction_mode, cooldown_minutes, max_concurrent_positions, max_spread_points, news_posture, news_window_minutes, news_min_impact, news_exploit_size_multiplier, signal_source")
+      .select("id, terminal_id, name, kind, timeframe, symbols, delivery_mode, max_lot_size, risk_percent, signal_ttl_seconds, config, run_mode, bias_timeframe, rule_definition, exit_config, allowed_sessions, direction_mode, cooldown_minutes, max_concurrent_positions, max_spread_points, override_account_risk, news_posture, news_window_minutes, news_min_impact, news_exploit_size_multiplier, signal_source")
       .eq("enabled", true)
       .in("kind", ["momentum_breakout", "confirmed_trend_pullback", "multi_timeframe_trend_pullback", "range_mean_reversion", "volatility_compression_breakout", "news_continuation", "custom_rules"]);
     if (externalEvent) {
@@ -1645,6 +1659,8 @@ Deno.serve(async (req: Request) => {
         let candidate: SignalCandidate | null;
         if (externalEvent) {
           const externalSide = externalEvent.side === "sell" ? "sell" : "buy";
+          const externalSl = externalEvent.source_sl == null ? null : Number(externalEvent.source_sl);
+          const externalTp = externalEvent.source_tp == null ? null : Number(externalEvent.source_tp);
           let confirmed = true;
           if (strategy.rule_definition?.version === 2 && strategy.rule_definition.indicators.length > 0) {
             const confirmation = indicatorRuleSides(
@@ -1657,13 +1673,16 @@ Deno.serve(async (req: Request) => {
             const conditions = externalSide === "buy" ? strategy.rule_definition.long : strategy.rule_definition.short;
             confirmed = customRuleSide(conditions, barsByTimeframe).matched;
           }
-          candidate = confirmed ? candidateFromSide(strategy, bars, externalSide, 0.68, news) : null;
+          candidate = confirmed ? candidateFromSide(strategy, bars, externalSide, 0.68, news, {
+            sl: Number.isFinite(externalSl) ? externalSl : null,
+            tp: Number.isFinite(externalTp) ? externalTp : null,
+          }) : null;
         } else {
           candidate = evaluateStrategy(strategy, barsByTimeframe, news);
         }
         if (!candidate) {
           recordEvaluation(strategy, symbol, "no_setup", sourceBarTime, candleAgeSeconds, {
-            reason: externalEvent ? "external_signal_failed_confirmation" : "indicator_conditions_not_met",
+            reason: externalEvent ? "external_signal_failed_confirmation_or_exit_validation" : "indicator_conditions_not_met",
             external_event_id: externalEvent?.id ?? null,
           });
           continue;
@@ -1674,6 +1693,8 @@ Deno.serve(async (req: Request) => {
           eaVersion: eaVersionByTerminal.get(strategy.terminal_id), budgets,
           sourceKind: strategy.signal_source ?? "internal",
           externalEventId: externalEvent ? String(externalEvent.id) : null,
+          externalSourceSl: externalEvent?.source_sl == null ? null : Number(externalEvent.source_sl),
+          externalSourceTp: externalEvent?.source_tp == null ? null : Number(externalEvent.source_tp),
           recordEvaluation: (status, detail = {}) =>
             recordEvaluation(strategy, symbol, status, sourceBarTime, candleAgeSeconds, detail),
         });

@@ -1408,6 +1408,42 @@ function updateStrategyExecutionHint() {
 }
 document.getElementById('strategy-execution-mode')?.addEventListener('change', updateStrategyExecutionHint);
 
+const STRATEGY_EDITOR_PAGES = {
+  general: 'Set the strategy identity, source, timing, execution mode, and direction.',
+  logic: 'Build the signal and trend-confirmation logic used before Lucre accepts a setup.',
+  symbols: 'Choose the terminal-owned symbols this strategy is allowed to evaluate.',
+  risk: 'Set order sizing, exits, and the relationship between strategy and account risk rules.',
+  connection: 'Manage the private external endpoint and copy a provider-ready payload.',
+};
+let activeStrategyEditorPage = 'home';
+
+function strategyEditorHomeSubtitle() {
+  return document.getElementById('strategy-edit-id')?.value
+    ? 'Choose a category to update. Changes apply only to future signals and positions.'
+    : 'Choose a category to configure the new strategy.';
+}
+
+function showStrategyEditorPage(page = 'home') {
+  const source = document.getElementById('strategy-signal-source')?.value || 'internal';
+  const selected = STRATEGY_EDITOR_PAGES[page] && (page !== 'connection' || source !== 'internal') ? page : 'home';
+  activeStrategyEditorPage = selected;
+  const home = document.getElementById('strategy-editor-home');
+  const back = document.getElementById('button-strategy-editor-back');
+  if (home) home.hidden = selected !== 'home';
+  document.querySelectorAll('[data-strategy-editor-section]').forEach((section) => {
+    section.hidden = section.dataset.strategyEditorSection !== selected;
+  });
+  if (back) back.hidden = selected === 'home';
+  const subtitle = document.getElementById('add-strategy-sub');
+  if (subtitle) subtitle.textContent = selected === 'home' ? strategyEditorHomeSubtitle() : STRATEGY_EDITOR_PAGES[selected];
+  document.querySelector('.strategy-builder-modal')?.scrollTo({ top: 0, behavior: 'instant' });
+}
+
+document.querySelectorAll('[data-strategy-editor-target]').forEach((button) => {
+  button.addEventListener('click', () => showStrategyEditorPage(button.dataset.strategyEditorTarget));
+});
+document.getElementById('button-strategy-editor-back')?.addEventListener('click', () => showStrategyEditorPage('home'));
+
 function externalSignalTemplate(strategy) {
   const symbol = strategySelectedSymbols[0] || 'EURUSD';
   const timeframe = document.getElementById('strategy-timeframe')?.value || strategy?.timeframe || 'M5';
@@ -1415,12 +1451,13 @@ function externalSignalTemplate(strategy) {
   if (source === 'tradingview') {
     return JSON.stringify({
       event_id: '{{ticker}}-{{interval}}-{{time}}-buy', symbol: '{{ticker}}',
-      timeframe: '{{interval}}', side: 'buy', source_price: '{{close}}', occurred_at: '{{timenow}}',
+      timeframe: '{{interval}}', side: 'buy', source_price: '{{close}}',
+      sl: '{{plot("Stop Loss")}}', tp: '{{plot("Take Profit")}}', occurred_at: '{{timenow}}',
     });
   }
   return JSON.stringify({
     event_id: `unique-event-${Date.now()}`, symbol, timeframe, side: 'buy',
-    source_price: 0, occurred_at: new Date().toISOString(),
+    source_price: 0, sl: null, tp: null, occurred_at: new Date().toISOString(),
   }, null, 2);
 }
 
@@ -1431,7 +1468,10 @@ function updateStrategySourceUi(strategy = null) {
   const hint = document.getElementById('strategy-source-hint');
   const indicatorHeading = document.getElementById('strategy-indicators-label');
   const backtestButton = document.getElementById('button-run-strategy-backtest');
-  if (setup) setup.hidden = !isExternal;
+  const connectionButton = document.getElementById('strategy-editor-connection-button');
+  if (setup) setup.hidden = !isExternal || activeStrategyEditorPage !== 'connection';
+  if (connectionButton) connectionButton.hidden = !isExternal;
+  if (!isExternal && activeStrategyEditorPage === 'connection') showStrategyEditorPage('home');
   if (indicatorHeading) indicatorHeading.textContent = isExternal ? 'Confirmation indicators (optional)' : 'Indicators';
   if (backtestButton) {
     const isEditing = Boolean(strategy?.id || document.getElementById('strategy-edit-id')?.value);
@@ -1441,7 +1481,7 @@ function updateStrategySourceUi(strategy = null) {
     ? 'Lucre evaluates the indicator stack on each newly closed broker candle.'
     : source === 'mt5_indicator'
     ? 'The Lucre EA reads a custom indicator and relays one closed-candle event into the same strategy engine.'
-    : 'An authenticated webhook proposes BUY or SELL; Lucre remains authoritative for broker data, filters, risk and execution.';
+    : 'An authenticated webhook proposes BUY or SELL and may include absolute SL/TP prices. Lucre remains authoritative for broker data, validation, filters, risk and execution.';
   const mt5Fields = document.getElementById('mt5-indicator-fields');
   if (mt5Fields) mt5Fields.hidden = source !== 'mt5_indicator';
   if (!isExternal) return;
@@ -1713,6 +1753,7 @@ function resetStrategyModalToAddMode() {
   document.getElementById('button-delete-strategy').hidden = true;
   document.getElementById('button-run-strategy-backtest').hidden = true;
   strategyHasLegacyDefinition = false;
+  showStrategyEditorPage('home');
 }
 
 function openAddStrategyModal() {
@@ -1725,6 +1766,7 @@ function openAddStrategyModal() {
   form.signal_source.value = 'internal';
   form.execution_mode.value = 'shadow';
   form.trend_filter_enabled.checked = false;
+  form.override_account_risk.checked = false;
   strategyIndicatorRows = [];
   document.getElementById('strategy-indicator-composer').hidden = true;
   updateStrategyParameterVisibility();
@@ -1774,6 +1816,7 @@ function openEditStrategyModal(id) {
   form.stop_atr.value = exits.stop_atr ?? config.stop_atr ?? 1.8; form.target_r.value = exits.target_r ?? config.target_r ?? 2.2;
   form.breakeven_r.value = exits.breakeven_r ?? 1; form.trailing_start_r.value = exits.trailing_start_r ?? 1.5;
   form.trail_atr.value = exits.trail_atr ?? 1.5;
+  form.override_account_risk.checked = strategy.override_account_risk === true;
   strategyIndicatorRows = strategy.rule_definition?.version === 2 && Array.isArray(strategy.rule_definition.indicators)
     ? strategy.rule_definition.indicators.slice(0, 4).map((row, index) => ({
         indicator: row.indicator, join: index === 0 ? 'and' : (row.join === 'or' ? 'or' : 'and'), params: { ...(row.params || {}) },
@@ -1792,7 +1835,8 @@ function openEditStrategyModal(id) {
     'Update this configuration\'s pairs, delivery mode, or lot size. Changes apply to future signals only — in-flight signals and open positions are unaffected.';
   document.getElementById('add-strategy-submit').textContent = 'Save changes';
   document.getElementById('button-delete-strategy').hidden = false;
-  document.getElementById('button-run-strategy-backtest').hidden = false;
+  document.getElementById('button-run-strategy-backtest').hidden = form.signal_source.value !== 'internal';
+  showStrategyEditorPage('home');
 
   window.LucreUI.openModal('modal-add-strategy');
 }
@@ -1832,6 +1876,7 @@ function strategyBacktestDraft(form, existingStrategy) {
     allowed_sessions: [...form.querySelectorAll('input[name="allowed_sessions"]:checked')].map((input) => input.value),
     cooldown_minutes: Math.max(0, Math.min(10080, Math.round(numeric('cooldown_minutes', 0)))),
     max_spread_points: form.max_spread_points.value ? numeric('max_spread_points', null) : null,
+    override_account_risk: Boolean(form.override_account_risk.checked),
   };
 }
 
@@ -1994,6 +2039,7 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
     cooldown_minutes: Math.max(0, Math.min(10080, Math.round(numeric('cooldown_minutes', 0)))),
     max_concurrent_positions: Math.max(1, Math.min(20, Math.round(numeric('max_concurrent_positions', 1)))),
     max_spread_points: form.max_spread_points.value ? numeric('max_spread_points', null) : null,
+    override_account_risk: Boolean(form.override_account_risk.checked),
     config,
     exit_config: exitConfig,
     rule_definition: ruleDefinition,
@@ -3413,7 +3459,7 @@ async function loadStrategies() {
     .select(
       'id, name, kind, timeframe, enabled, delivery_mode, symbols, max_lot_size, risk_percent, signal_ttl_seconds, ' +
         'news_posture, news_window_minutes, news_min_impact, news_exploit_size_multiplier, config, run_mode, bias_timeframe, ' +
-        'rule_definition, definition_version, exit_config, allowed_sessions, direction_mode, cooldown_minutes, max_concurrent_positions, max_spread_points, min_shadow_signals, promoted_at, signal_source'
+        'rule_definition, definition_version, exit_config, allowed_sessions, direction_mode, cooldown_minutes, max_concurrent_positions, max_spread_points, override_account_risk, min_shadow_signals, promoted_at, signal_source'
     )
     .eq('terminal_id', state.activeTerminalId)
     .in('kind', ACTIVE_STRATEGY_KINDS)

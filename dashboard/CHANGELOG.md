@@ -1,5 +1,19 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.74 — Focused strategy editor and external exits (2026-09-06)
+
+- Reorganizes the strategy editor into Basics, Signal Logic, Symbols, Risk &
+  Orders, and External Connection pages, matching the cleaner Settings flow.
+- Makes editor action buttons equal height and removes Backtest from external
+  strategies, where historical webhook events cannot be reconstructed safely.
+- Adds an explicit per-strategy override for configurable account portfolio
+  limits while preserving strategy position caps and terminal/broker safety.
+- Accepts optional absolute SL/TP prices from authenticated TradingView and
+  generic webhook signals, validates them against the live broker entry and
+  strategy stop-distance limit, and falls back to strategy defaults when absent.
+- Reduces the selected-strategy title by 30% and left-aligns it with the rest
+  of the Strategies workspace.
+
 ## v1.0.73 — Durable external signal analytics (2026-09-06)
 
 - Counts terminal-private external webhook events that are rejected before a

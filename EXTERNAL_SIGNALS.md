@@ -30,11 +30,18 @@ Send a JSON `POST` to the private URL:
   "timeframe": "M5",
   "side": "buy",
   "source_price": 1.0842,
+  "sl": 1.0815,
+  "tp": 1.0896,
   "occurred_at": "2026-09-04T21:00:02Z"
 }
 ```
 
 - `event_id` should stay identical when a provider retries the same alert.
+- `sl` and `tp` are optional absolute prices. Aliases `stop_loss`/`stopLoss`
+  and `take_profit`/`takeProfit` are accepted. Supplied prices must be on the
+  correct side of Lucre's live broker entry, and the stop must remain inside
+  the strategy's maximum ATR distance. Omitted or unresolved values fall back
+  to the strategy's ATR stop and R target.
 - `side` accepts `buy`, `sell`, `long`, `short`, `1`, or `-1`.
 - TradingView numeric intervals (`1`, `5`, `15`, `30`, `60`, `240`) and common
   minute aliases (`1m`, `5m`, `15m`, `30m`) are normalized and retained as

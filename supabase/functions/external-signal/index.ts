@@ -1,7 +1,7 @@
-// v1.0.50 -- Authenticated, durable ingress for TradingView, generic webhooks,
+// v1.0.74 -- Authenticated, durable ingress for TradingView, generic webhooks,
 // and Lucre EA indicator adapters. This endpoint only admits a candidate. It
-// never accepts account identity, volume, risk, stops, or execution mode from
-// the caller; those are loaded from the terminal-owned strategy by the engine.
+// never accepts account identity, volume, risk, or execution mode from the
+// caller. Optional absolute SL/TP prices are validated by the strategy engine.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -78,6 +78,29 @@ function normalizeSide(value: unknown): "buy" | "sell" | null {
 
 function normalizeProviderSymbol(value: unknown): string {
   return String(value ?? "").trim().split(":").pop()?.toUpperCase() ?? "";
+}
+
+function optionalPrice(
+  body: Record<string, unknown>,
+  keys: string[],
+): { value: number | null; invalid: boolean } {
+  const supplied = keys.find((key) => Object.prototype.hasOwnProperty.call(body, key));
+  if (!supplied) return { value: null, invalid: false };
+  const raw = body[supplied];
+  if (raw === null || raw === undefined || String(raw).trim() === "") {
+    return { value: null, invalid: false };
+  }
+  const text = String(raw).trim().toLowerCase();
+  // TradingView leaves an unresolved placeholder intact when a named plot is
+  // unavailable. Treat that exactly like an omitted price so strategy defaults
+  // remain the safe fallback.
+  if (text.includes("{{") || ["na", "nan", "null", "none"].includes(text)) {
+    return { value: null, invalid: false };
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0
+    ? { value, invalid: false }
+    : { value: null, invalid: true };
 }
 
 Deno.serve(async (req: Request) => {
@@ -257,6 +280,11 @@ Deno.serve(async (req: Request) => {
     });
   }
 
+  const stopLoss = optionalPrice(body, ["sl", "stop_loss", "stopLoss"]);
+  const takeProfit = optionalPrice(body, ["tp", "take_profit", "takeProfit"]);
+  if (stopLoss.invalid) return await reject("invalid_sl", 422);
+  if (takeProfit.invalid) return await reject("invalid_tp", 422);
+
   if (body.test === true) {
     await admin.from("external_signal_endpoints").update({
       last_received_at: receivedAt.toISOString(),
@@ -269,6 +297,8 @@ Deno.serve(async (req: Request) => {
       timeframe,
       provider_timeframe: providerTimeframe,
       side,
+      sl: stopLoss.value,
+      tp: takeProfit.value,
     });
   }
 
@@ -318,6 +348,8 @@ Deno.serve(async (req: Request) => {
     provider_timeframe: providerTimeframe,
     side,
     source_price: Number.isFinite(sourcePrice) ? sourcePrice : null,
+    sl: stopLoss.value,
+    tp: takeProfit.value,
     occurred_at: occurredAt.toISOString(),
   };
   const { data: event, error: insertError } = await admin.from(
@@ -334,6 +366,8 @@ Deno.serve(async (req: Request) => {
     timeframe,
     side,
     source_price: Number.isFinite(sourcePrice) ? sourcePrice : null,
+    source_sl: stopLoss.value,
+    source_tp: takeProfit.value,
     occurred_at: occurredAt.toISOString(),
     sanitized_payload: sanitizedPayload,
   }).select("id").single();
