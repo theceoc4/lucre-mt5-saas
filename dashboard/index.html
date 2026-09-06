@@ -41,7 +41,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.76" />
+<link rel="stylesheet" href="./style.css?v=1.0.77" />
 </head>
 <body>
 
@@ -195,6 +195,7 @@
           <label><input type="checkbox" name="allowed_sessions" value="london" checked /> London</label>
           <label><input type="checkbox" name="allowed_sessions" value="overlap" checked /> London / New York overlap</label>
           <label><input type="checkbox" name="allowed_sessions" value="ny" checked /> New York</label>
+          <label><input type="checkbox" name="allowed_sessions" value="off_session" /> Off-session</label>
         </div>
       </div>
 
@@ -767,12 +768,8 @@
            that behavior instead of showing Signals first). -->
       <nav class="tab-row" role="tablist" aria-label="Analytics views">
         <a class="tab active" href="javascript:void(0)" role="tab" aria-selected="true" data-tab="overview" data-testid="tab-overview">Overview</a>
-        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="signals" data-testid="tab-signals">Signals</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="positions" data-testid="tab-positions">Positions</a>
         <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="history" data-testid="tab-history">History</a>
-        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="sessions" data-testid="tab-sessions">Sessions</a>
-        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="risk-score" data-testid="tab-risk-score">Risk Score</a>
-        <a class="tab" href="javascript:void(0)" role="tab" aria-selected="false" data-tab="win-rate" data-testid="tab-win-rate">Win Rate</a>
       </nav>
     </div>
 
@@ -909,7 +906,7 @@
     </div>
 
     <div class="tab-panel" data-tab-panel="positions" role="tabpanel" hidden>
-      <section class="card card-pad" aria-label="Open positions detail">
+      <section class="card card-pad positions-panel-card" aria-label="Open positions detail">
         <div class="card-title-row">
           <h3>Open Positions</h3>
           <button class="btn-secondary btn-xs close-all-positions-button" type="button" data-close-all-positions disabled>Close all</button>
@@ -1128,7 +1125,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.76"></script>
-<script type="module" src="./main.js?v=1.0.76"></script>
+<script src="./app.js?v=1.0.77"></script>
+<script type="module" src="./main.js?v=1.0.77"></script>
 </body>
 </html>

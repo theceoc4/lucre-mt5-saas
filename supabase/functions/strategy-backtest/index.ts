@@ -122,7 +122,7 @@ function simulate(strategy:any,bars:Bar[],contextBars:Bar[]=[]){
   const horizon=Math.max(5,Math.min(200,Math.floor(n(strategy.config?.shadow_horizon_bars,50)))),atrValues=atr(bars),results:{index:number,r:number}[]=[];
   const allowed=new Set(Array.isArray(strategy.allowed_sessions)?strategy.allowed_sessions:[]),cooldownMs=Math.max(0,n(strategy.cooldown_minutes,0))*60000,maxSpread=strategy.max_spread_points==null?Infinity:n(strategy.max_spread_points,Infinity);let lastEntry=-Infinity;
   for(let i=80;i<bars.length-horizon;i++){
-    const enteredAt=new Date(bars[i].bar_time).getTime(),barSession=sessionAt(bars[i].bar_time);if(barSession==='off_session'||(allowed.size&&!allowed.has(barSession as Session)))continue;if(Number.isFinite(Number(bars[i].spread))&&Number(bars[i].spread)>maxSpread)continue;if(enteredAt-lastEntry<cooldownMs)continue;
+    const enteredAt=new Date(bars[i].bar_time).getTime(),barSession=sessionAt(bars[i].bar_time);if(allowed.size&&!allowed.has(barSession))continue;if(Number.isFinite(Number(bars[i].spread))&&Number(bars[i].spread)>maxSpread)continue;if(enteredAt-lastEntry<cooldownMs)continue;
     const side=entry(strategy,bars,i,contextBars);if(!side)continue;const a=atrValues[i];if(!(a>0))continue;
     const risk=stopAtr*a,ep=bars[i].close,tp=side==='buy'?ep+targetR*risk:ep-targetR*risk;let sl=side==='buy'?ep-risk:ep+risk,result=0,exit=i+horizon;lastEntry=enteredAt;
     for(let j=i+1;j<=Math.min(i+horizon,bars.length-1);j++){
@@ -140,7 +140,7 @@ function simulate(strategy:any,bars:Bar[],contextBars:Bar[]=[]){
 }
 
 function draftStrategy(saved:any,draft:any){
-  if(!draft||typeof draft!=='object')return saved;const sessions=['asia','london','overlap','ny'];
+  if(!draft||typeof draft!=='object')return saved;const sessions=['asia','london','overlap','ny','off_session'];
   return{...saved,kind:typeof draft.kind==='string'?draft.kind:saved.kind,timeframe:typeof draft.timeframe==='string'?draft.timeframe:saved.timeframe,config:draft.config&&typeof draft.config==='object'?draft.config:saved.config,exit_config:draft.exit_config&&typeof draft.exit_config==='object'?draft.exit_config:saved.exit_config,rule_definition:draft.rule_definition&&typeof draft.rule_definition==='object'?draft.rule_definition:saved.rule_definition,direction_mode:['both','long_only','short_only'].includes(draft.direction_mode)?draft.direction_mode:saved.direction_mode,allowed_sessions:Array.isArray(draft.allowed_sessions)?draft.allowed_sessions.filter((v:any)=>sessions.includes(v)):saved.allowed_sessions,cooldown_minutes:n(draft.cooldown_minutes,n(saved.cooldown_minutes,0)),max_spread_points:draft.max_spread_points==null?null:n(draft.max_spread_points,n(saved.max_spread_points,Infinity))};
 }
 

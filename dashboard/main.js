@@ -3914,8 +3914,7 @@ function renderPositionRows(list, emptyMessage) {
             <div class="position-origin-detail">${escapeHtml(initiator.detail)}</div>
           </div>
           <div class="mini-table-stats">
-            <div class="pct" style="color:${plColor}">${plValue >= 0 ? '+' : ''}${plValue.toFixed(2)}</div>
-            <div class="count">${p.open_price} → ${p.current_price ?? '—'}</div>
+            <div class="pct" style="color:${plColor}">${plValue >= 0 ? '+' : '−'}$${Math.abs(plValue).toFixed(2)}</div>
           </div>
           ${actionsHtml}
         </div>`;
@@ -3924,8 +3923,8 @@ function renderPositionRows(list, emptyMessage) {
 
   list.innerHTML = `
     <div class="positions-table-head" aria-hidden="true">
-      <span>Position</span>
-      <span>Initiated by</span>
+      <span>Symbol</span>
+      <span>Strategy</span>
       <span style="text-align:right">Live P/L</span>
       <span style="text-align:right">Actions</span>
     </div>

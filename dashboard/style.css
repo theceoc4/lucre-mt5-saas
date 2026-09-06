@@ -1246,6 +1246,21 @@ a {
   gap: 0;
 }
 
+.positions-panel-card {
+  height: 560px;
+  max-height: min(560px, calc(100vh - 220px));
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+}
+
+.positions-panel-card .positions-data-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
 .positions-table-head,
 .position-table-row {
   display: grid;
@@ -4225,6 +4240,7 @@ body {
   .signals-panel-card { height: 520px; max-height: none; }
   .risk-score-panel-card { height: 520px; max-height: none; }
   .history-panel-card { height: 520px; max-height: none; }
+  .positions-panel-card { height: 520px; max-height: none; }
   .signals-panel-card .card-title-row { align-items: stretch; flex-direction: column; }
   .history-panel-head { align-items: stretch; flex-direction: column-reverse; }
   .history-panel-head > h3 { margin-left: 0; }
@@ -4300,7 +4316,7 @@ body {
 .strategy-builder-grid { display: grid; gap: var(--space-3); align-items: start; }
 .strategy-builder-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .field-label-note { color: var(--color-text-faint); font-weight: 500; }
-.strategy-session-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-2); }
+.strategy-session-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: var(--space-2); }
 .strategy-session-options label {
   display: flex; align-items: center; justify-content: center; gap: var(--space-2);
   min-height: 40px; padding: var(--space-2) var(--space-3); font-size: 0.82rem;

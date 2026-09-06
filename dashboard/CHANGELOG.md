@@ -1,5 +1,15 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.77 — Off-session strategies and cleaner position navigation (2026-09-06)
+
+- Adds Off-session as an opt-in strategy editor choice and carries it through
+  draft backtests, live evaluation, signal persistence, and trade attribution.
+- Restyles open-position rows as a four-column ledger for Symbol, Strategy,
+  Live P/L, and consistent Modify/Close actions.
+- Gives the dedicated Positions view the same fixed-height, vertically
+  scrollable treatment as closed-position History.
+- Simplifies dashboard analytics navigation to Overview, Positions, and History.
+
 ## v1.0.76 — Weekend-aware sessions and closed-position history (2026-09-06)
 
 - Replaces duplicated hour-only session buckets with one shared UTC calendar

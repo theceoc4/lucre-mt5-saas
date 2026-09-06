@@ -13,7 +13,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { dispatchPushInBackground } from "../_shared/push-notifications.ts";
 import { resolveBrokerSymbol } from "./_shared/symbol-resolver.ts";
 import { computeTrendStrengthV3, TREND_MIN_BARS } from "../_shared/trend-strength-v3.ts";
-import { isTradingSession, marketSessionFor, SESSION_DEFINITION_VERSION, type TradingSession } from "../_shared/market-session.ts";
+import { marketSessionFor, SESSION_DEFINITION_VERSION, type MarketSession } from "../_shared/market-session.ts";
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -23,7 +23,7 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 type Side = "buy" | "sell";
-type Session = TradingSession;
+type Session = MarketSession;
 type Regime = "trending" | "ranging";
 type PolicyDecision = "ok" | "downweight" | "block";
 type EvaluationStatus = "session_blocked" | "symbol_disabled" | "missing_bars" | "stale_candles" |
@@ -1516,17 +1516,6 @@ Deno.serve(async (req: Request) => {
       const strategySymbols = externalEvent
         ? [String(externalEvent.canonical_symbol ?? "")].filter(Boolean)
         : strategy.symbols;
-      if (!isTradingSession(marketSession)) {
-        for (const symbol of strategySymbols) {
-          if (typeof symbol === "string" && symbol.length > 0) {
-            recordEvaluation(strategy, symbol, "session_blocked", null, null, {
-              current_session: marketSession,
-              session_definition: SESSION_DEFINITION_VERSION,
-            });
-          }
-        }
-        continue;
-      }
       const session = marketSession;
       if (externalEvent) {
         const occurredAtMs = new Date(String(externalEvent.occurred_at)).getTime();
