@@ -41,7 +41,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.74" />
+<link rel="stylesheet" href="./style.css?v=1.0.75" />
 </head>
 <body>
 
@@ -300,7 +300,10 @@
         </div>
         <label class="strategy-account-risk-override">
           <span><strong>Override account risk settings</strong><small>Use this strategy’s risk and position rules even when account-level portfolio limits would block it. Terminal, broker, margin, lot-size, and strategy position limits still apply.</small></span>
-          <input type="checkbox" name="override_account_risk" class="strategy-toggle-input" />
+          <span class="strategy-account-risk-control">
+            <input type="checkbox" name="override_account_risk" class="strategy-toggle-input" aria-label="Override account risk settings" />
+            <span class="strategy-account-risk-state" aria-hidden="true"></span>
+          </span>
         </label>
       </section>
       <p class="auth-message" id="add-strategy-message" role="status"></p>
@@ -981,6 +984,7 @@
       <div id="strategy-page-content">
         <section class="card strategy-selected-name-card" aria-label="Selected strategy">
           <h1 id="strategy-page-selected-name">Strategy</h1>
+          <p class="desc" id="strategy-page-selected-description">Strategy · M5 · 0 pairs</p>
         </section>
         <div class="main-row strategy-page-main-row">
           <section class="card card-pad stat-card" aria-label="Selected strategy signals summary">
@@ -1107,7 +1111,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.74"></script>
-<script type="module" src="./main.js?v=1.0.74"></script>
+<script src="./app.js?v=1.0.75"></script>
+<script type="module" src="./main.js?v=1.0.75"></script>
 </body>
 </html>

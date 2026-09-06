@@ -1,5 +1,14 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.75 — Strategy editor visual polish (2026-09-06)
+
+- Restores a full-size, clearly labeled On/Off toggle for strategy-level account
+  risk overrides and prevents narrow modal layouts from squeezing the control.
+- Gives the Symbols editor page the same bordered module treatment as the other
+  strategy categories.
+- Reduces the selected-strategy heading another 30%, removes the oversized card
+  height, preserves equal padding, and adds the strategy/timeframe/pair summary.
+
 ## v1.0.74 — Focused strategy editor and external exits (2026-09-06)
 
 - Reorganizes the strategy editor into Basics, Signal Logic, Symbols, Risk &

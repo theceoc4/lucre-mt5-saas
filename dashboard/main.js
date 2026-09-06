@@ -6362,6 +6362,7 @@ function renderStrategyPage() {
   empty.hidden = true;
   content.hidden = false;
   document.getElementById('strategy-page-selected-name').textContent = strategy.name;
+  document.getElementById('strategy-page-selected-description').textContent = `${strategy.name} · ${strategy.timeframe || 'M5'} · ${(strategy.symbols || []).length} pair${(strategy.symbols || []).length === 1 ? '' : 's'}`;
 
   document.getElementById('strategy-page-signal-description').textContent = `${strategy.name} · ${strategy.timeframe || 'M5'} · ${(strategy.symbols || []).length} pair${(strategy.symbols || []).length === 1 ? '' : 's'}`;
   document.getElementById('strategy-page-signal-total').textContent = signalSummary.total.toLocaleString();
