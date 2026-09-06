@@ -21,6 +21,7 @@ const state = {
   activeTerminalId: null,
   strategies: [],
   externalSignalEndpoints: [],
+  externalSignalEvents: [],
   signals: [],
   signalDeliveries: [],
   tradeHistory: [],
@@ -179,6 +180,7 @@ const notificationDot = document.getElementById('notification-dot');
 const notificationCount = document.getElementById('notification-count');
 const strategyPageSelect = document.getElementById('strategy-page-select');
 const strategyPageEdit = document.getElementById('strategy-page-edit');
+const strategyPageEnabled = document.getElementById('strategy-page-enabled');
 const strategyChartRange = document.getElementById('strategy-chart-range');
 const signalSessionBands = document.getElementById('signal-session-bands');
 const strategySessionBands = document.getElementById('strategy-session-bands');
@@ -2404,7 +2406,7 @@ function startPositionPolling() {
   positionPollIntervalId = setInterval(() => {
     if (!state.activeTerminalId || document.hidden) return;
     loadPositions();
-    loadSignals();
+    loadSignals({ incremental: true });
     refreshActiveTerminalBalance();
     // v1.0.17 -- belt-and-suspenders fallback for the trade_history Realtime
     // subscription added in startRealtime(): if a channel drop/reconnect ever
@@ -3015,9 +3017,10 @@ function notificationRelativeTime(value) {
 
 function buildNotifications() {
   const items = [];
-  const signalById = new Map(state.signals.map((signal) => [signal.id, signal]));
+  const activity = signalActivityData();
+  const signalById = new Map(activity.signals.map((signal) => [signal.id, signal]));
 
-  state.signals.forEach((signal) => {
+  activity.signals.forEach((signal) => {
     const blocked = signal.policy_decision === 'block';
     const adjusted = signal.policy_decision === 'downweight';
     items.push({
@@ -3029,7 +3032,7 @@ function buildNotifications() {
     });
   });
 
-  state.signalDeliveries
+  activity.deliveries
     .filter((delivery) => ['tapped', 'auto_executed', 'failed', 'expired'].includes(delivery.status))
     .forEach((delivery) => {
       const signal = signalById.get(delivery.signal_id);
@@ -3236,7 +3239,10 @@ function stopRealtime() {
 
 document.addEventListener('visibilitychange', () => {
   evaluateRealtimeLeadership();
-  if (!document.hidden) requestPositionStream();
+  if (!document.hidden) {
+    requestPositionStream();
+    loadSignals({ incremental: true });
+  }
 });
 window.addEventListener('storage', (event) => {
   if (realtimeDesiredTerminalId && event.key === realtimeLeaderKey(realtimeDesiredTerminalId)) {
@@ -3623,10 +3629,34 @@ function renderStrategies() {
   // and fixing the text-overlap this button previously caused.
 }
 
-async function loadSignals() {
+let signalLoadInFlight = null;
+let signalHistoryTerminalId = null;
+let signalHistoryRefreshedAt = 0;
+
+async function fetchPagedRows(makeQuery, pageSize = 1000) {
+  const rows = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await makeQuery().range(from, from + pageSize - 1);
+    if (error) return { data: null, error };
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < pageSize) return { data: rows, error: null };
+  }
+}
+
+function mergeRowsById(existing, incoming) {
+  const merged = new Map(existing.map((row) => [row.id, row]));
+  incoming.forEach((row) => merged.set(row.id, { ...(merged.get(row.id) || {}), ...row }));
+  return [...merged.values()];
+}
+
+async function loadSignals({ incremental = false } = {}) {
   if (!state.activeTerminalId) {
     state.signals = [];
     state.signalDeliveries = [];
+    state.externalSignalEvents = [];
+    signalHistoryTerminalId = null;
+    signalHistoryRefreshedAt = 0;
     renderSignalSummary();
     renderVolumeChart();
     renderRiskEngine();
@@ -3637,36 +3667,89 @@ async function loadSignals() {
     return;
   }
 
-  const [signalsRes, deliveriesRes] = await Promise.all([
-    supabase
-      .from('signals')
-      .select(
-        'id, strategy_id, symbol, side, timeframe, policy_decision, generated_at, expires_at, suggested_volume, near_news_event, htf_regime, ' +
-          'block_reason, news_event_id, source_kind, external_event_id, calendar_events(title, currency, impact)'
-      )
-      .eq('terminal_id', state.activeTerminalId),
-    supabase
-      .from('signal_deliveries')
-      .select('id, signal_id, status, delivered_at, acted_at, created_at')
-      .eq('terminal_id', state.activeTerminalId),
-  ]);
+  const terminalId = state.activeTerminalId;
+  if (signalLoadInFlight?.terminalId === terminalId) return signalLoadInFlight.promise;
+  const useIncremental = incremental && signalHistoryTerminalId === terminalId;
+  const requestStartedAt = Date.now();
+  // Resume from the last successful snapshot, not merely "five minutes ago".
+  // This catches every event produced while a mobile PWA was backgrounded.
+  const sinceMs = useIncremental
+    ? Math.max(0, Math.min(requestStartedAt - 5 * 60_000, signalHistoryRefreshedAt - 5 * 60_000))
+    : 0;
+  const sinceIso = new Date(sinceMs).toISOString();
+  const signalSelect =
+    'id, strategy_id, symbol, side, timeframe, policy_decision, generated_at, expires_at, suggested_volume, near_news_event, htf_regime, ' +
+    'block_reason, news_event_id, source_kind, external_event_id, calendar_events(title, currency, impact)';
+  const eventSelect =
+    'id, strategy_id, provider, canonical_symbol, symbol_received, timeframe, side, occurred_at, received_at, processed_at, status, block_reason, signal_id';
 
-  if (signalsRes.error) console.error('loadSignals error', signalsRes.error);
-  if (deliveriesRes.error) console.error('loadSignalDeliveries error', deliveriesRes.error);
+  const promise = (async () => {
+    const [signalsRes, deliveriesRes, eventsRes] = await Promise.all([
+      fetchPagedRows(() => {
+        let query = supabase.from('signals').select(signalSelect)
+          .eq('terminal_id', terminalId).order('generated_at', { ascending: false }).order('id', { ascending: false });
+        if (useIncremental) query = query.gte('generated_at', sinceIso);
+        return query;
+      }),
+      fetchPagedRows(() => {
+        let query = supabase.from('signal_deliveries')
+          .select('id, signal_id, status, delivered_at, acted_at, created_at')
+          .eq('terminal_id', terminalId).order('created_at', { ascending: false }).order('id', { ascending: false });
+        if (useIncremental) query = query.or(`created_at.gte.${sinceIso},acted_at.gte.${sinceIso}`);
+        return query;
+      }),
+      fetchPagedRows(() => {
+        let query = supabase.from('external_signal_events').select(eventSelect)
+          .eq('terminal_id', terminalId).order('received_at', { ascending: false }).order('id', { ascending: false });
+        if (useIncremental) query = query.or(`received_at.gte.${sinceIso},processed_at.gte.${sinceIso}`);
+        return query;
+      }),
+    ]);
 
-  state.signals = signalsRes.data || [];
-  state.signalDeliveries = deliveriesRes.data || [];
-  renderSignalSummary();
-  renderVolumeChart();
-  renderRiskEngine();
-  renderSignalsTab();
-  renderStrategyPage();
-  renderDashboardHeatmap();
-  renderNotifications();
+    const failures = [
+      ['signals', signalsRes.error],
+      ['signal deliveries', deliveriesRes.error],
+      ['external signal events', eventsRes.error],
+    ].filter(([, error]) => error);
+    if (failures.length > 0) {
+      failures.forEach(([source, error]) => console.error(`loadSignals ${source} error`, error));
+      // Keep the last coherent snapshot. A network/RLS hiccup must never turn
+      // known signal history into a fake zero-count dashboard.
+      return;
+    }
+    if (state.activeTerminalId !== terminalId) return;
+
+    state.signals = useIncremental
+      ? mergeRowsById(state.signals, signalsRes.data)
+      : signalsRes.data;
+    state.signalDeliveries = useIncremental
+      ? mergeRowsById(state.signalDeliveries, deliveriesRes.data)
+      : deliveriesRes.data;
+    state.externalSignalEvents = useIncremental
+      ? mergeRowsById(state.externalSignalEvents, eventsRes.data)
+      : eventsRes.data;
+    signalHistoryTerminalId = terminalId;
+    signalHistoryRefreshedAt = requestStartedAt;
+    renderSignalSummary();
+    renderVolumeChart();
+    renderRiskEngine();
+    renderSignalsTab();
+    renderStrategyPage();
+    renderDashboardHeatmap();
+    renderNotifications();
+  })();
+
+  signalLoadInFlight = { terminalId, promise };
+  try {
+    return await promise;
+  } finally {
+    if (signalLoadInFlight?.promise === promise) signalLoadInFlight = null;
+  }
 }
 
 function renderSignalSummary() {
-  const summary = summarizeSignalsForRange(state.signals, state.signalDeliveries, state.signalChartRange);
+  const activity = signalActivityData();
+  const summary = summarizeSignalsForRange(activity.signals, activity.deliveries, state.signalChartRange);
 
   textSignalTotal.textContent = summary.total.toLocaleString();
   countExecuted.textContent = summary.executed.toLocaleString();
@@ -4969,7 +5052,8 @@ async function loadAgentPolicies() {
 }
 
 function renderRiskEngine() {
-  const blocked = state.signals.filter((s) => s.policy_decision === 'block').length;
+  const activity = signalActivityData();
+  const blocked = blockedSignalIdSet(activity.signals, activity.deliveries).size;
   // v1.0.19 -- previously read state.agentPolicies (the scenario-level
   // adaptive throttle ladder table), which stays empty until scenario_stats
   // has accumulated verified trades per session/htf_regime/news scenario --
@@ -4977,18 +5061,18 @@ function renderRiskEngine() {
   // own signal feed already carries a per-signal policy_decision (including
   // 'downweight'), so count directly from state.signals for an accurate,
   // immediately-available number instead of waiting on the ladder to warm up.
-  const downweighted = state.signals.filter((s) => s.policy_decision === 'downweight').length;
+  const downweighted = activity.signals.filter((s) => s.policy_decision === 'downweight').length;
 
   textRiskBlocked.textContent = `${blocked.toLocaleString()} signals`;
   textRiskDownweighted.textContent = `${downweighted.toLocaleString()} signals`;
 
-  if (state.signals.length === 0) {
+  if (activity.signals.length === 0) {
     textRiskTrend.textContent = 'Adaptive risk engine warms up once trade history exists';
     riskGaugeArc.setAttribute('stroke-dasharray', '0 157.08');
     return;
   }
 
-  const total = state.signals.length;
+  const total = activity.signals.length;
   const blockedPct = total > 0 ? blocked / total : 0;
   const arcLength = 157.08;
   const filled = blockedPct * arcLength;
@@ -5058,7 +5142,8 @@ function signalNewsDetail(s) {
 function renderSignalsTab() {
   const list = document.getElementById('tab-signals-list');
   if (!list) return;
-  const symbols = [...new Set(state.signals.map((signal) => signal.symbol).filter(Boolean))].sort();
+  const activity = signalActivityData();
+  const symbols = [...new Set(activity.signals.map((signal) => signal.symbol).filter(Boolean))].sort();
   if (signalsPairFilter) {
     const selected = state.signalFilter.pair;
     signalsPairFilter.innerHTML = '<option value="all">All pairs</option>' + symbols
@@ -5075,7 +5160,7 @@ function renderSignalsTab() {
     '30d': now - 30 * 86400000,
     all: 0,
   };
-  const filtered = state.signals.filter((signal) => {
+  const filtered = activity.signals.filter((signal) => {
     const pairMatches = state.signalFilter.pair === 'all' || signal.symbol === state.signalFilter.pair;
     const generatedAt = new Date(signal.generated_at || 0).getTime();
     const periodMatches = state.signalFilter.period === 'today'
@@ -5086,7 +5171,7 @@ function renderSignalsTab() {
 
   if (filtered.length === 0) {
     list.innerHTML =
-      `<p class="empty-state-text">${state.signals.length ? 'No signals match these filters.' : 'No signals yet. Once your EA is connected and generating signals, they\'ll show up here.'}</p>`;
+      `<p class="empty-state-text">${activity.signals.length ? 'No signals match these filters.' : 'No signals yet. Once your EA is connected and generating signals, they\'ll show up here.'}</p>`;
     return;
   }
   const sorted = [...filtered].sort(
@@ -5095,7 +5180,7 @@ function renderSignalsTab() {
   list.innerHTML = sorted
     .map((s) => {
       const sideClass = s.side === 'sell' ? 'side-sell' : 'side-buy';
-      const actionableDelivery = state.signalDeliveries.find(
+      const actionableDelivery = activity.deliveries.find(
         (delivery) => delivery.signal_id === s.id && ['pending', 'delivered'].includes(delivery.status)
       );
       const expired = s.expires_at ? new Date(s.expires_at).getTime() < now : false;
@@ -5707,10 +5792,84 @@ function selectedStrategy() {
   return state.strategies.find((strategy) => strategy.id === state.selectedStrategyId) || null;
 }
 
-function strategyScopedData(strategyId) {
-  const signals = state.signals.filter((signal) => signal.strategy_id === strategyId);
+const EXTERNAL_BLOCKED_STATUSES = new Set([
+  'blocked', 'duplicate', 'processing_failed', 'mapping_failed', 'invalid', 'rate_limited',
+]);
+
+function signalActivityData(strategyId = null) {
+  const persistedSignals = state.signals.filter(
+    (signal) => !strategyId || signal.strategy_id === strategyId
+  );
+  const events = state.externalSignalEvents.filter(
+    (event) => !strategyId || event.strategy_id === strategyId
+  );
+  const signalByExternalEvent = new Map(
+    persistedSignals.filter((signal) => signal.external_event_id)
+      .map((signal) => [signal.external_event_id, signal])
+  );
+  const syntheticSignals = events
+    .filter((event) => !signalByExternalEvent.has(event.id))
+    .map((event) => ({
+      id: `external:${event.id}`,
+      strategy_id: event.strategy_id,
+      symbol: event.canonical_symbol || event.symbol_received || 'Unknown',
+      side: event.side,
+      timeframe: event.timeframe,
+      policy_decision: EXTERNAL_BLOCKED_STATUSES.has(event.status) ? 'block' : 'ok',
+      block_reason: event.block_reason || (EXTERNAL_BLOCKED_STATUSES.has(event.status) ? event.status : null),
+      // Dashboard activity is anchored to Lucre's receipt time. Provider
+      // timestamps remain stored for audit, but cannot shift a signal outside
+      // Today/7d/30d buckets because of a sender clock or timezone mistake.
+      generated_at: event.received_at,
+      expires_at: null,
+      source_kind: event.provider,
+      external_event_id: event.id,
+      external_status: event.status,
+    }));
+  const syntheticSignalByExternalEvent = new Map(
+    syntheticSignals.map((signal) => [signal.external_event_id, signal])
+  );
+  const signals = [...persistedSignals, ...syntheticSignals];
   const signalIds = new Set(signals.map((signal) => signal.id));
   const deliveries = state.signalDeliveries.filter((delivery) => signalIds.has(delivery.signal_id));
+  const deliverySignalIds = new Set(deliveries.map((delivery) => delivery.signal_id));
+  events.forEach((event) => {
+    const signal = signalByExternalEvent.get(event.id)
+      || syntheticSignalByExternalEvent.get(event.id);
+    if (!signal || deliverySignalIds.has(signal.id)) return;
+    const status = event.status === 'command_queued' ? 'auto_executed'
+      : event.status === 'expired' ? 'expired'
+      : EXTERNAL_BLOCKED_STATUSES.has(event.status) ? 'failed'
+      : event.status === 'manual_pending' ? 'pending'
+      : null;
+    if (!status) return;
+    deliveries.push({
+      id: `external-delivery:${event.id}`,
+      signal_id: signal.id,
+      status,
+      delivered_at: event.processed_at,
+      acted_at: event.processed_at,
+      created_at: event.received_at,
+    });
+    deliverySignalIds.add(signal.id);
+  });
+  return { signals, deliveries, events };
+}
+
+function blockedSignalIdSet(signals, deliveries) {
+  const signalIds = new Set(signals.map((signal) => signal.id));
+  const blocked = new Set(
+    signals.filter((signal) => signal.policy_decision === 'block').map((signal) => signal.id)
+  );
+  deliveries
+    .filter((delivery) => signalIds.has(delivery.signal_id) && ['cancelled', 'failed'].includes(delivery.status))
+    .forEach((delivery) => blocked.add(delivery.signal_id));
+  return blocked;
+}
+
+function strategyScopedData(strategyId) {
+  const activity = signalActivityData(strategyId);
+  const { signals, deliveries } = activity;
   const trades = getVerifiedTradeHistory().filter((trade) => trade.strategy_id === strategyId && trade.close_time);
   const executedSignalIds = new Set(
     deliveries
@@ -5720,14 +5879,17 @@ function strategyScopedData(strategyId) {
   const expiredSignalIds = new Set(
     deliveries.filter((delivery) => delivery.status === 'expired').map((delivery) => delivery.signal_id)
   );
+  const blockedSignalIds = blockedSignalIdSet(signals, deliveries);
   return {
     signals,
     deliveries,
+    externalEvents: activity.events,
     trades,
     executed: executedSignalIds.size,
-    blocked: signals.filter((signal) => signal.policy_decision === 'block').length,
+    blocked: blockedSignalIds.size,
     expired: expiredSignalIds.size,
     executedSignalIds,
+    blockedSignalIds,
   };
 }
 
@@ -5811,10 +5973,11 @@ function renderActivityHeatmap(containerId, legendId, signals, trades, mode) {
 }
 
 function renderDashboardHeatmap() {
+  const activity = signalActivityData();
   renderActivityHeatmap(
     'dashboard-heatmap',
     'dashboard-heatmap-legend',
-    state.signals,
+    activity.signals,
     getVerifiedTradeHistory().filter((trade) => trade.close_time),
     state.dashboardHeatmapMode,
   );
@@ -5879,7 +6042,7 @@ function buildSignalChartBuckets(range) {
   });
 }
 
-function buildSignalChartSeries(signals, executedSignalIds, range) {
+function buildSignalChartSeries(signals, executedSignalIds, range, blockedSignalIds = null) {
   const buckets = buildSignalChartBuckets(range);
   const executed = new Array(buckets.length).fill(0);
   const blocked = new Array(buckets.length).fill(0);
@@ -5888,7 +6051,7 @@ function buildSignalChartSeries(signals, executedSignalIds, range) {
     const index = signalChartBucketIndex(signal, buckets, range);
     if (index < 0) return;
     signalCount += 1;
-    if (signal.policy_decision === 'block') blocked[index] += 1;
+    if (signal.policy_decision === 'block' || blockedSignalIds?.has(signal.id)) blocked[index] += 1;
     else if (executedSignalIds.has(signal.id)) executed[index] += 1;
   });
   return { labels: buckets.map((bucket) => bucket.label), sessions: buckets.map((bucket) => bucket.session || null), executed, blocked, signalCount };
@@ -5921,10 +6084,11 @@ function summarizeSignalsForRange(signals, deliveries, range) {
   const expiredIds = new Set(deliveries
     .filter((delivery) => signalIds.has(delivery.signal_id) && delivery.status === 'expired')
     .map((delivery) => delivery.signal_id));
+  const blockedIds = blockedSignalIdSet(filteredSignals, deliveries);
   return {
     total: filteredSignals.length,
     executed: executedIds.size,
-    blocked: filteredSignals.filter((signal) => signal.policy_decision === 'block').length,
+    blocked: blockedIds.size,
     expired: expiredIds.size,
   };
 }
@@ -6010,7 +6174,7 @@ function renderStrategyVolumeChart(scoped) {
   if (!canvas || typeof Chart === 'undefined') return;
   if (strategyVolumeChartInstance) strategyVolumeChartInstance.destroy();
 
-  const series = buildSignalChartSeries(scoped.signals, scoped.executedSignalIds, state.strategyChartRange);
+  const series = buildSignalChartSeries(scoped.signals, scoped.executedSignalIds, state.strategyChartRange, scoped.blockedSignalIds);
   const emptyOverlay = document.getElementById('strategy-page-chart-empty');
   if (emptyOverlay) emptyOverlay.style.display = series.signalCount === 0 ? 'flex' : 'none';
 
@@ -6109,6 +6273,11 @@ function renderStrategyPage() {
     strategyPageSelect.innerHTML = '<option>No strategies</option>';
     strategyPageSelect.disabled = true;
     strategyPageEdit.disabled = true;
+    if (strategyPageEnabled) {
+      strategyPageEnabled.checked = false;
+      strategyPageEnabled.disabled = true;
+      delete strategyPageEnabled.dataset.strategyToggle;
+    }
     empty.hidden = false;
     content.hidden = true;
     renderActivityHeatmap('strategy-heatmap', 'strategy-heatmap-legend', [], [], state.strategyHeatmapMode);
@@ -6123,11 +6292,19 @@ function renderStrategyPage() {
   const signalSummary = summarizeSignalsForRange(scoped.signals, scoped.deliveries, state.strategyChartRange);
   strategyPageSelect.disabled = false;
   strategyPageEdit.disabled = false;
+  if (strategyPageEnabled) {
+    strategyPageEnabled.disabled = false;
+    strategyPageEnabled.checked = Boolean(strategy.enabled);
+    strategyPageEnabled.dataset.strategyToggle = strategy.id;
+    strategyPageEnabled.setAttribute('aria-label', `${strategy.enabled ? 'Disable' : 'Enable'} ${strategy.name}`);
+    strategyPageEnabled.closest('label')?.setAttribute('title', `${strategy.enabled ? 'Disable' : 'Enable'} ${strategy.name}`);
+  }
   strategyPageSelect.innerHTML = state.strategies.map((item) =>
     `<option value="${item.id}" ${item.id === strategy.id ? 'selected' : ''}>${escapeHtml(item.name)}${item.enabled ? '' : ' (disabled)'}</option>`
   ).join('');
   empty.hidden = true;
   content.hidden = false;
+  document.getElementById('strategy-page-selected-name').textContent = strategy.name;
 
   document.getElementById('strategy-page-signal-description').textContent = `${strategy.name} · ${strategy.timeframe || 'M5'} · ${(strategy.symbols || []).length} pair${(strategy.symbols || []).length === 1 ? '' : 's'}`;
   document.getElementById('strategy-page-signal-total').textContent = signalSummary.total.toLocaleString();
@@ -6194,7 +6371,7 @@ function renderStrategyPage() {
   document.getElementById('strategy-page-average-duration-detail').textContent = tradesWithDuration.length ? `${tradesWithDuration.length} completed trades` : 'No closed trades';
 
   const blockedSignals = scoped.signals
-    .filter((signal) => signal.policy_decision === 'block')
+    .filter((signal) => scoped.blockedSignalIds.has(signal.id))
     .sort((left, right) => new Date(right.generated_at) - new Date(left.generated_at));
   const blockedList = document.getElementById('strategy-page-blocked-list');
   document.getElementById('strategy-page-blocked-list-count').textContent =
@@ -6269,6 +6446,11 @@ strategyHeatmapMode?.addEventListener('change', (event) => {
 strategyPageEdit?.addEventListener('click', () => {
   if (state.selectedStrategyId) openEditStrategyModal(state.selectedStrategyId);
 });
+strategyPageEnabled?.addEventListener('change', (event) => {
+  const strategy = selectedStrategy();
+  if (!strategy) return;
+  handleStrategyToggle(event.target, strategy.id);
+});
 document.getElementById('strategy-page-add')?.addEventListener('click', () => {
   openAddStrategyModal();
 });
@@ -6287,12 +6469,14 @@ function renderVolumeChart() {
   const textFaint = cssVar('--color-text-faint') || '#99a496';
   const surfaceSunken = cssVar('--color-surface-sunken') || '#eef1e9';
 
+  const activity = signalActivityData();
   const executedSignalIds = new Set(
-    state.signalDeliveries
+    activity.deliveries
       .filter((delivery) => ['tapped', 'auto_executed'].includes(delivery.status))
       .map((delivery) => delivery.signal_id)
   );
-  const series = buildSignalChartSeries(state.signals, executedSignalIds, state.signalChartRange);
+  const blockedSignalIds = blockedSignalIdSet(activity.signals, activity.deliveries);
+  const series = buildSignalChartSeries(activity.signals, executedSignalIds, state.signalChartRange, blockedSignalIds);
   if (chartEmptyOverlay) chartEmptyOverlay.style.display = series.signalCount === 0 ? 'flex' : 'none';
 
   const ctx = canvas.getContext('2d');
@@ -6509,6 +6693,9 @@ function resetDashboardState() {
   state.strategies = [];
   state.signals = [];
   state.signalDeliveries = [];
+  state.externalSignalEvents = [];
+  signalHistoryTerminalId = null;
+  signalHistoryRefreshedAt = 0;
   state.tradeHistory = [];
   state.recentCommands = [];
   state.notifications = [];

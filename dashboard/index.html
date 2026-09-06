@@ -41,7 +41,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.72" />
+<link rel="stylesheet" href="./style.css?v=1.0.73" />
 </head>
 <body>
 
@@ -947,6 +947,9 @@
           <button class="strategy-page-edit" type="button" id="strategy-page-edit" aria-label="Edit selected strategy">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.64 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.64a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.36 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15z"/></svg>
           </button>
+          <label class="strategy-toggle strategy-toggle-icon-only strategy-page-enable" id="strategy-page-enable-wrap" title="Enable selected strategy">
+            <input type="checkbox" class="strategy-toggle-input" id="strategy-page-enabled" aria-label="Enable selected strategy" />
+          </label>
           <button class="btn-accent strategy-page-add-active" type="button" id="strategy-page-add-active" aria-label="Add a new strategy">+ New strategy</button>
         </div>
       </section>
@@ -958,6 +961,9 @@
       </div>
 
       <div id="strategy-page-content">
+        <section class="card strategy-selected-name-card" aria-label="Selected strategy">
+          <h1 id="strategy-page-selected-name">Strategy</h1>
+        </section>
         <div class="main-row strategy-page-main-row">
           <section class="card card-pad stat-card" aria-label="Selected strategy signals summary">
             <div class="card-title-row"><span class="icon-badge" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg></span></div>
@@ -1083,7 +1089,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.72"></script>
-<script type="module" src="./main.js?v=1.0.72"></script>
+<script src="./app.js?v=1.0.73"></script>
+<script type="module" src="./main.js?v=1.0.73"></script>
 </body>
 </html>

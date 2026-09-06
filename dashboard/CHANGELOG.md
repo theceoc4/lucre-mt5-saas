@@ -1,5 +1,20 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.73 — Durable external signal analytics (2026-09-06)
+
+- Counts terminal-private external webhook events that are rejected before a
+  normal `signals` row is created, so Strategy Performance includes executed,
+  blocked, duplicate-bar, expired, and pending external activity accurately.
+- Loads complete signal, delivery, and external-event histories in stable
+  paginated queries, then refreshes only a five-minute overlap window during
+  polling to reduce reads without missing late status transitions.
+- Preserves the last coherent activity snapshot if any Supabase read fails,
+  preventing signal history and totals from temporarily collapsing to zero.
+- Adds an enable/disable control and a full-width selected-strategy title card
+  to the dedicated Strategies page.
+- Extends the external ingress audit retention from 90 to 400 days so the Year
+  chart does not silently lose older webhook outcomes.
+
 ## v1.0.72 — Resilient private P/L status (2026-09-06)
 
 - Shows the actual age of the latest private MT5 P/L snapshot instead of a
