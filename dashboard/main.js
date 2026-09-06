@@ -1967,8 +1967,15 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
 
   const symbols = strategySelectedSymbols.slice();
 
+  if (!form.name.value.trim()) {
+    msg.textContent = 'Enter a strategy name before saving.';
+    showStrategyEditorPage('general');
+    form.name.focus();
+    return;
+  }
   if (symbols.length === 0) {
     msg.textContent = 'Add at least one pair before saving.';
+    showStrategyEditorPage('symbols');
     return;
   }
   const editId = form.edit_id.value;
@@ -1976,16 +1983,19 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
   const signalSource = form.signal_source.value || 'internal';
   if (signalSource === 'internal' && strategyIndicatorRows.length === 0 && (!existingStrategy || existingStrategy.rule_definition?.version === 2)) {
     msg.textContent = 'Add at least one indicator before saving.';
+    showStrategyEditorPage('logic');
     return;
   }
   const indicatorError = validateIndicatorStack();
   if (strategyIndicatorRows.length > 0 && indicatorError) {
     msg.textContent = indicatorError;
+    showStrategyEditorPage('logic');
     return;
   }
   const allowedSessions = [...form.querySelectorAll('input[name="allowed_sessions"]:checked')].map((input) => input.value);
   if (allowedSessions.length === 0) {
     msg.textContent = 'Select at least one trading session.';
+    showStrategyEditorPage('general');
     return;
   }
 
@@ -1993,6 +2003,7 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
   const numeric = (field, fallback) => Number.isFinite(parseFloat(form[field]?.value)) ? parseFloat(form[field].value) : fallback;
   if (signalSource === 'mt5_indicator' && !form.mt5_indicator_name.value.trim()) {
     msg.textContent = 'Enter the MT5 custom indicator filename.';
+    showStrategyEditorPage('connection');
     return;
   }
   const config = {
