@@ -1,5 +1,15 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.72 — Resilient private P/L status (2026-09-06)
+
+- Shows the actual age of the latest private MT5 P/L snapshot instead of a
+  hard-coded two-second label.
+- Allows one delayed unchanged heartbeat before switching to the durable
+  account fallback, reducing false `Backup · 30s` transitions without adding
+  Realtime messages or changing broker-authoritative values.
+- Points terminals without private account streaming to the versioned v1.50
+  EA package.
+
 ## v1.0.71 — Trend-aware strategy risk and News workspace (2026-09-05)
 
 - Adds an optional trend-alignment risk layer to the strategy builder, driven

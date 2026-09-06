@@ -1,4 +1,4 @@
-// v1.0.4 — position-action (dashboard modify / close / close all)
+// v1.0.5 — position-action (dashboard modify / close / close all)
 //
 // Validates ownership and position existence, then inserts a dashboard_modify or
 // dashboard_close command. Close commands inherit session/regime/near-news context
@@ -95,45 +95,28 @@ Deno.serve(async (req: Request) => {
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
   if (body.action === "close_all") {
-    const { data: terminal, error: terminalError } = await admin
-      .from("mt5_terminals")
-      .select("id, user_id")
-      .eq("id", body.terminal_id!)
-      .maybeSingle();
-    if (terminalError) return jsonResponse({ error: "lookup_failed", detail: terminalError.message }, 500);
-    if (!terminal) return jsonResponse({ error: "terminal_not_found" }, 404);
-    if (terminal.user_id !== userData.user.id) return jsonResponse({ error: "forbidden" }, 403);
+    const idempotencyKey = body.client_request_id ?? `close-all:${body.terminal_id}:${Date.now()}`;
+    const { data, error } = await admin.rpc("enqueue_dashboard_close_all", {
+      p_terminal_id: body.terminal_id!,
+      p_user_id: userData.user.id,
+      p_idempotency_key: idempotencyKey,
+      p_max_deviation_points: body.max_deviation_points ?? 20,
+    });
+    if (error) return jsonResponse({ error: "close_all_enqueue_failed", detail: error.message }, 500);
 
-    const { data: positions, error: positionsError } = await admin
-      .from("positions")
-      .select("id")
-      .eq("terminal_id", terminal.id)
-      .eq("status", "open");
-    if (positionsError) return jsonResponse({ error: "lookup_failed", detail: positionsError.message }, 500);
-    if (!positions?.length) return jsonResponse({ error: "no_open_positions" }, 409);
-
-    const now = new Date();
-    const { data: command, error: insertError } = await admin
-      .from("ea_commands")
-      .insert({
-        terminal_id: terminal.id,
-        source: "dashboard_close",
-        command_type: "close_all",
-        max_deviation_points: body.max_deviation_points ?? 20,
-        idempotency_key: body.client_request_id ?? `close-all:${terminal.id}:${now.getTime()}`,
-      })
-      .select()
-      .single();
-    if (insertError) {
-      if (insertError.code === "23505") return jsonResponse({ error: "already_closing" }, 409);
-      return jsonResponse({ error: "insert_failed", detail: insertError.message }, 500);
+    const result = data as {
+      error?: "terminal_not_found" | "forbidden" | "no_open_positions" | "already_closing";
+      ea_command_id?: string;
+      status?: string;
+      position_count?: number;
+    } | null;
+    if (!result) return jsonResponse({ error: "close_all_enqueue_failed" }, 500);
+    if (result.error === "terminal_not_found") return jsonResponse({ error: result.error }, 404);
+    if (result.error === "forbidden") return jsonResponse({ error: result.error }, 403);
+    if (result.error === "no_open_positions" || result.error === "already_closing") {
+      return jsonResponse({ error: result.error }, 409);
     }
-
-    await admin.from("positions")
-      .update({ status: "closing", updated_at: now.toISOString() })
-      .eq("terminal_id", terminal.id)
-      .eq("status", "open");
-    return jsonResponse({ ea_command_id: command.id, status: command.status, position_count: positions.length });
+    return jsonResponse(result);
   }
 
   const { data: position, error: positionError } = await admin

@@ -79,7 +79,10 @@ let positionStreamUiIntervalId = null;
 let streamedPositionFields = new Map();
 let streamedAccountState = null;
 let positionStreamStartedAt = 0;
-const POSITION_STREAM_TTL_MS = 15000;
+// The EA sends an unchanged liveness snapshot every eight seconds. A 20-second
+// lease survives one delayed relay without presenting the 30-second durable
+// fallback as though the private stream had failed.
+const POSITION_STREAM_TTL_MS = 20000;
 const POSITION_STREAM_LEASE_MS = 25000;
 const REALTIME_LEADER_TTL_MS = 9000;
 const REALTIME_LEADER_HEARTBEAT_MS = 3000;
@@ -3824,7 +3827,12 @@ function renderFloatingPl() {
   const total = streamIsCurrent
     ? streamedAccountState.floating_pl
     : durableIsCurrent ? Number(active.floating_pl) : derivedTotal;
-  const source = streamIsCurrent ? 'Live · 2s' : durableIsCurrent ? 'Backup · 30s' : 'Derived · waiting';
+  const streamAgeSeconds = streamIsCurrent
+    ? Math.max(0, Math.floor((now - streamedAccountState.receivedAt) / 1000))
+    : null;
+  const source = streamIsCurrent
+    ? `Live · ${streamAgeSeconds}s`
+    : durableIsCurrent ? 'Backup · 30s' : 'Derived · waiting';
   balanceWidgetFloatingPl.textContent = `${total >= 0 ? '+' : ''}${fmtUsd(total)}`;
   if (socialFloatingPl) socialFloatingPl.textContent = `${total >= 0 ? '+' : ''}${fmtUsd(total)}`;
   if (floatingPlSource) floatingPlSource.textContent = source;
@@ -3847,7 +3855,7 @@ function renderFloatingPl() {
         || (normalizedVersion[0] === 1 && normalizedVersion[1] === 0 && normalizedVersion[2] >= 48));
     const streamGraceElapsed = positionStreamStartedAt > 0 && now - positionStreamStartedAt > 12000;
     if (active?.status === 'connected' && !supportsAccountStream) {
-      bannerPositionStream.textContent = `EA ${active.ea_version || 'unknown'} does not provide broker-authoritative live P/L. Install LucreHubEA-v1.49.mq5 to enable it.`;
+      bannerPositionStream.textContent = `EA ${active.ea_version || 'unknown'} does not provide broker-authoritative live P/L. Install LucreHubEA-v1.50.mq5 to enable it.`;
       bannerPositionStream.hidden = false;
     } else if (hasOpenPosition && supportsAccountStream && streamGraceElapsed && !streamIsCurrent) {
       bannerPositionStream.textContent = 'The private MT5 P/L stream is unavailable. Displaying the durable 30-second account snapshot until it reconnects.';

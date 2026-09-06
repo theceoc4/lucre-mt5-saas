@@ -1,5 +1,17 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.50 — Monotonic low-latency control loop (2026-09-06)
+
+- Moves command polling, WebSocket reconnects, heartbeats, stale detection,
+  and private P/L lease timing from quote-driven broker time to MT5's monotonic
+  millisecond clock. Quiet markets and weekends can no longer freeze them.
+- Keeps the candle deadline lane ahead of heavyweight reconciliation while
+  retaining the WebSocket and command fallback as the first timer work.
+- Works with the backend's atomic command claim and close-all transaction so
+  control-plane work needs fewer database round trips without changing order
+  validation, broker execution, privacy, or recovery behavior.
+- Ships only explicitly versioned `LucreHubEA-v1.50` source and ZIP artifacts.
+
 ## v1.0.49 — External custom-indicator bridge (2026-09-04)
 
 - Receives terminal-owned MT5 indicator strategy configuration from the

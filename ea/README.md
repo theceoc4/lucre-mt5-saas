@@ -1,6 +1,13 @@
-# LucreHubEA — v1.0.49 (single-file build)
+# LucreHubEA — v1.0.50 (single-file build)
 
 ## What changed in this build
+
+Version 1.0.50 hardens the time-sensitive control loop. Command polling,
+WebSocket reconnects and heartbeats, and private P/L leases now use MT5's
+monotonic millisecond clock rather than quote-driven broker time. The existing
+candle deadline lane stays ahead of heavyweight account reconciliation, while
+the command lane remains first. Supabase claims queued work atomically and
+close-all is enqueued in one transaction.
 
 Version 1.0.49 adds the MT5 side of external indicator strategies. The EA
 receives only the owner-approved indicator configurations from `ea-sync`,
@@ -23,7 +30,7 @@ reports `ACCOUNT_CREDIT`, aggregate position profit, and cumulative open swap
 as reconciliation diagnostics, while retaining the durable 30-second snapshot
 as a fallback. Version 1.0.48 retains that broker-authoritative value and ships
 explicitly versioned artifacts. Version 1.0.49 continues that convention with
-`LucreHubEA-v1.49.mq5` and `LucreHubEA-v1.49.zip`.
+`LucreHubEA-v1.50.mq5` and `LucreHubEA-v1.50.zip`.
 
 Version 1.0.46 keeps the fast public Realtime lane limited to empty command
 wake-up hints and dashboard lease requests. Live position values now travel
@@ -74,7 +81,7 @@ between sections).
 
 ## Install (one file now)
 
-1. Copy **only** `releases/LucreHubEA-v1.49.mq5` into `MQL5/Experts/` on the
+1. Copy **only** `releases/LucreHubEA-v1.50.mq5` into `MQL5/Experts/` on the
    terminal (local **or** VPS-hosted).
 2. Open it in MetaEditor and compile (F7). No `.mqh` files to copy —
    there are no `#include` dependencies left to satisfy.

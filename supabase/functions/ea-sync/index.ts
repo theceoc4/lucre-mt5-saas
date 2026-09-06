@@ -430,23 +430,9 @@ Deno.serve(async (req: Request) => {
   // second small request carrying the result.
   if (commandOnly) {
     const { data: queuedCommands, error: queuedError } = await admin
-      .from("ea_commands")
-      .select("*")
-      .eq("terminal_id", terminal.id)
-      .eq("status", "queued")
-      .order("requested_at", { ascending: true });
+      .rpc("claim_queued_terminal_commands", { p_terminal_id: terminal.id });
 
-    if (queuedError) return jsonResponse({ error: "queued_fetch_failed", detail: queuedError.message }, 500);
-
-    if (queuedCommands && queuedCommands.length > 0) {
-      const { error: dispatchError } = await admin
-        .from("ea_commands")
-        .update({ status: "sent", dispatched_at: nowIso })
-        .in("id", queuedCommands.map((command) => command.id));
-      if (dispatchError) {
-        return jsonResponse({ error: "queued_dispatch_failed", detail: dispatchError.message }, 500);
-      }
-    }
+    if (queuedError) return jsonResponse({ error: "queued_claim_failed", detail: queuedError.message }, 500);
 
     return jsonResponse({
       terminal_id: terminal.id,
@@ -907,13 +893,9 @@ Deno.serve(async (req: Request) => {
 
   // 4. Fetch queued commands for this terminal, mark them sent, return them.
   const { data: queuedCommands, error: queuedError } = await admin
-    .from("ea_commands")
-    .select("*")
-    .eq("terminal_id", terminal.id)
-    .eq("status", "queued")
-    .order("requested_at", { ascending: true });
+    .rpc("claim_queued_terminal_commands", { p_terminal_id: terminal.id });
 
-  if (queuedError) return jsonResponse({ error: "queued_fetch_failed", detail: queuedError.message }, 500);
+  if (queuedError) return jsonResponse({ error: "queued_claim_failed", detail: queuedError.message }, 500);
 
   // v1.0.14: PriceReporter.mqh consumes this piggybacked mapping list from the
   // cached ea-sync response. Keep only usable resolved broker symbols; mappings
@@ -1070,13 +1052,6 @@ Deno.serve(async (req: Request) => {
         Number.isFinite(Number(strategy.config.mt5_sell_buffer)) ? Math.floor(Number(strategy.config.mt5_sell_buffer)) : 1)),
     })))
     .filter((source) => source.broker_symbol);
-
-  if (queuedCommands && queuedCommands.length > 0) {
-    await admin
-      .from("ea_commands")
-      .update({ status: "sent", dispatched_at: nowIso })
-      .in("id", queuedCommands.map((c) => c.id));
-  }
 
   // The full MT5 snapshot is authoritative for the cluster's open count and
   // floating P/L. SQL owns the crossing latch; this call can therefore run on
