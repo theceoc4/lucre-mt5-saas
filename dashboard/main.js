@@ -2473,7 +2473,7 @@ function startPositionPolling() {
     // subscription added in startRealtime(): if a channel drop/reconnect ever
     // misses an INSERT, metrics still catch up within one poll tick instead
     // of needing a manual reload.
-    loadTradeHistory();
+    loadTradeHistory({ incremental: true });
   }, pollMs);
 }
 
@@ -2715,7 +2715,7 @@ function handleCoordinatedRealtimeEvent(message) {
       applyStrategyEvaluationChange(message.terminalId, payload);
       break;
     case 'trade_history':
-      loadTradeHistory();
+      loadTradeHistory({ incremental: true });
       break;
     case 'account_history':
       loadAccountHistory();
@@ -2885,13 +2885,13 @@ function startRealtimeTransport(terminalId) {
     // Strategy, and Sessions tabs only ever reflected the snapshot fetched at
     // page-load/terminal-switch time -- a closed trade never updated these
     // widgets without a manual reload. Every INSERT here is a newly finalized
-    // close, so a full loadTradeHistory() keeps every metric derived from it
-    // live.
+    // close, so a five-minute overlap merge keeps every metric live without
+    // downloading the user's complete closed-trade ledger again.
     .on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'trade_history', filter: `terminal_id=eq.${terminalId}` },
       (payload) => {
-        loadTradeHistory();
+        loadTradeHistory({ incremental: true });
         publishRealtimeToTabs('trade_history', terminalId, payload);
       }
     )
@@ -3695,6 +3695,8 @@ function renderStrategies() {
 let signalLoadInFlight = null;
 let signalHistoryTerminalId = null;
 let signalHistoryRefreshedAt = 0;
+let tradeHistoryTerminalId = null;
+let tradeHistoryRefreshedAt = 0;
 
 async function fetchPagedRows(makeQuery, pageSize = 1000) {
   const rows = [];
@@ -4959,9 +4961,11 @@ symbolSearchForm?.addEventListener('submit', async (e) => {
   }, 5000);
 });
 
-async function loadTradeHistory() {
+async function loadTradeHistory({ incremental = false } = {}) {
   if (!state.activeTerminalId) {
     state.tradeHistory = [];
+    tradeHistoryTerminalId = null;
+    tradeHistoryRefreshedAt = 0;
     renderWinRate();
     renderPlChart();
     renderSessionsTab();
@@ -4973,20 +4977,29 @@ async function loadTradeHistory() {
     renderNotifications();
     return;
   }
-  const { data, error } = await fetchPagedRows(() => supabase
-    .from('trade_history')
-    .select(
-      'id, symbol, side, volume, profit, net_profit, r_multiple, open_time, close_time, strategy_id, strategy_name_at_entry, origin_detail, session, entry_session, close_session, htf_regime, near_news_event, news_event_id, outcome, source, profit_verified, entry_context'
-    )
-    .eq('terminal_id', state.activeTerminalId)
-    .order('close_time', { ascending: true })
-    .order('id', { ascending: true }));
+  const terminalId = state.activeTerminalId;
+  const useIncremental = incremental && tradeHistoryTerminalId === terminalId && tradeHistoryRefreshedAt > 0;
+  const makeQuery = () => {
+    let query = supabase.from('trade_history')
+      .select('id, symbol, side, volume, profit, net_profit, r_multiple, open_time, close_time, strategy_id, strategy_name_at_entry, origin_detail, session, entry_session, close_session, htf_regime, near_news_event, news_event_id, outcome, source, profit_verified, entry_context')
+      .eq('terminal_id', terminalId)
+      .order('close_time', { ascending: true })
+      .order('id', { ascending: true });
+    if (useIncremental) query = query.gte('close_time', new Date(Date.now() - 5 * 60_000).toISOString());
+    return query;
+  };
+  const { data, error } = useIncremental ? await makeQuery().limit(1000) : await fetchPagedRows(makeQuery);
 
   if (error) {
     console.error('loadTradeHistory error', error);
     return;
   }
-  state.tradeHistory = data || [];
+  if (terminalId !== state.activeTerminalId) return;
+  state.tradeHistory = useIncremental
+    ? mergeRowsById(state.tradeHistory, data || []).sort((a, b) => new Date(a.close_time) - new Date(b.close_time))
+    : data || [];
+  tradeHistoryTerminalId = terminalId;
+  tradeHistoryRefreshedAt = Date.now();
   renderWinRate();
   renderPlChart();
   renderStrategyWinRates();
@@ -6848,6 +6861,8 @@ function resetDashboardState() {
   state.externalSignalEvents = [];
   signalHistoryTerminalId = null;
   signalHistoryRefreshedAt = 0;
+  tradeHistoryTerminalId = null;
+  tradeHistoryRefreshedAt = 0;
   state.tradeHistory = [];
   state.recentCommands = [];
   state.notifications = [];
