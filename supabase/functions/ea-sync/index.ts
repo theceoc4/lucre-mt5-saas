@@ -112,6 +112,8 @@ interface PositionReport {
   tp?: number | null;
   unrealized_pl: number;
   swap?: number;
+  commission?: number;
+  fee?: number;
   open_time: string;
   strategy_id?: string | null;
 }
@@ -201,6 +203,8 @@ Deno.serve(async (req: Request) => {
       credit?: number;
       positions_profit?: number;
       positions_swap?: number;
+      positions_commission?: number;
+      positions_fee?: number;
       terminal_trade_allowed?: boolean;
       mql_trade_allowed?: boolean;
       account_trade_allowed?: boolean;
@@ -263,6 +267,10 @@ Deno.serve(async (req: Request) => {
     if (body.account.credit !== undefined) accountUpdate.account_credit = body.account.credit;
     if (body.account.positions_profit !== undefined) accountUpdate.positions_profit = body.account.positions_profit;
     if (body.account.positions_swap !== undefined) accountUpdate.positions_swap = body.account.positions_swap;
+    if (body.account.positions_commission !== undefined) {
+      accountUpdate.positions_commission = body.account.positions_commission;
+    }
+    if (body.account.positions_fee !== undefined) accountUpdate.positions_fee = body.account.positions_fee;
     if (body.account.terminal_trade_allowed !== undefined) {
       accountUpdate.terminal_trade_allowed = body.account.terminal_trade_allowed;
     }
@@ -596,7 +604,7 @@ Deno.serve(async (req: Request) => {
     reportedTickets.add(p.mt5_ticket);
     const { data: existing } = await admin
       .from("positions")
-      .select("id, side, open_price, current_price, sl, tp, unrealized_pl, swap, status, closing_since, updated_at, initial_sl, initial_risk_distance, mfe_price_distance, mae_price_distance, mfe_r, mae_r, max_unrealized_pl, min_unrealized_pl")
+      .select("id, side, open_price, current_price, sl, tp, unrealized_pl, swap, commission, fee, status, closing_since, updated_at, initial_sl, initial_risk_distance, mfe_price_distance, mae_price_distance, mfe_r, mae_r, max_unrealized_pl, min_unrealized_pl")
       .eq("terminal_id", terminal.id)
       .eq("mt5_ticket", p.mt5_ticket)
       .maybeSingle();
@@ -611,8 +619,11 @@ Deno.serve(async (req: Request) => {
       const maeDistance = Math.max(Number(existing.mae_price_distance ?? 0), adverseDistance);
       const nextMfeR = riskDistance > 0 ? mfeDistance / riskDistance : null;
       const nextMaeR = riskDistance > 0 ? maeDistance / riskDistance : null;
-      const nextMaxPl = Math.max(Number(existing.max_unrealized_pl ?? p.unrealized_pl), p.unrealized_pl);
-      const nextMinPl = Math.min(Number(existing.min_unrealized_pl ?? p.unrealized_pl), p.unrealized_pl);
+      const nextCommission = p.commission ?? Number(existing.commission ?? 0);
+      const nextFee = p.fee ?? Number(existing.fee ?? 0);
+      const nextNetPl = p.unrealized_pl + Number(p.swap ?? 0) + nextCommission + nextFee;
+      const nextMaxPl = Math.max(Number(existing.max_unrealized_pl ?? nextNetPl), nextNetPl);
+      const nextMinPl = Math.min(Number(existing.min_unrealized_pl ?? nextNetPl), nextNetPl);
       const lastDurableUpdate = Date.parse(String(existing.updated_at ?? ""));
       const refreshDue = !Number.isFinite(lastDurableUpdate) || Date.now() - lastDurableUpdate >= 120_000;
       const positionChanged = existing.status !== "open" || existing.closing_since != null ||
@@ -621,6 +632,8 @@ Deno.serve(async (req: Request) => {
         !sameNumber(existing.tp, p.tp ?? null) ||
         !sameNumber(existing.unrealized_pl, p.unrealized_pl, 0.0049) ||
         !sameNumber(existing.swap, p.swap ?? 0, 0.0049) ||
+        !sameNumber(existing.commission, nextCommission, 0.0049) ||
+        !sameNumber(existing.fee, nextFee, 0.0049) ||
         !sameNumber(existing.initial_risk_distance, riskDistance || null) ||
         !sameNumber(existing.mfe_price_distance, mfeDistance) ||
         !sameNumber(existing.mae_price_distance, maeDistance) ||
@@ -637,6 +650,8 @@ Deno.serve(async (req: Request) => {
           tp: p.tp ?? null,
           unrealized_pl: p.unrealized_pl,
           swap: p.swap ?? 0,
+          commission: nextCommission,
+          fee: nextFee,
           initial_risk_distance: riskDistance || null,
           mfe_price_distance: mfeDistance,
           mae_price_distance: maeDistance,
@@ -742,6 +757,19 @@ Deno.serve(async (req: Request) => {
         };
       }
 
+      let openingCommission = p.commission;
+      let openingFee = p.fee;
+      if (openingCommission === undefined || openingFee === undefined) {
+        const { data: entryDeals } = await admin
+          .from("mt5_account_history")
+          .select("commission, fee")
+          .eq("terminal_id", terminal.id)
+          .eq("position_id", p.mt5_ticket)
+          .in("entry_type", [0, 2]);
+        openingCommission ??= (entryDeals ?? []).reduce((sum, deal) => sum + Number(deal.commission ?? 0), 0);
+        openingFee ??= (entryDeals ?? []).reduce((sum, deal) => sum + Number(deal.fee ?? 0), 0);
+      }
+
       await admin.from("positions").insert({
         terminal_id: terminal.id,
         strategy_id: openContext.strategy_id,
@@ -755,6 +783,8 @@ Deno.serve(async (req: Request) => {
         tp: p.tp ?? null,
         unrealized_pl: p.unrealized_pl,
         swap: p.swap ?? 0,
+        commission: openingCommission ?? 0,
+        fee: openingFee ?? 0,
         source: openContext.source,
         status: "open",
         open_time: p.open_time,
@@ -776,8 +806,8 @@ Deno.serve(async (req: Request) => {
         mae_price_distance: 0,
         mfe_r: 0,
         mae_r: 0,
-        max_unrealized_pl: p.unrealized_pl,
-        min_unrealized_pl: p.unrealized_pl,
+        max_unrealized_pl: p.unrealized_pl + Number(p.swap ?? 0) + Number(openingCommission ?? 0) + Number(openingFee ?? 0),
+        min_unrealized_pl: p.unrealized_pl + Number(p.swap ?? 0) + Number(openingCommission ?? 0) + Number(openingFee ?? 0),
         auto_manage: openContext.auto_manage,
         updated_at: nowIso,
       });
@@ -1063,7 +1093,8 @@ Deno.serve(async (req: Request) => {
     p_total_pl: Number.isFinite(body.account?.floating_pl)
       ? Number(body.account?.floating_pl)
       : reportedPositions.reduce(
-        (sum, position) => sum + Number(position.unrealized_pl || 0) + Number(position.swap || 0),
+        (sum, position) => sum + Number(position.unrealized_pl || 0) + Number(position.swap || 0)
+          + Number(position.commission || 0) + Number(position.fee || 0),
         0,
       ),
     p_threshold: 1,

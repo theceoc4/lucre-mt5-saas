@@ -20,6 +20,8 @@ interface PositionState {
   current_price: number;
   unrealized_pl: number;
   swap?: number;
+  commission?: number;
+  fee?: number;
   sl: number | null;
   tp: number | null;
 }
@@ -31,6 +33,8 @@ interface PositionStateBody {
   account_credit?: number;
   positions_profit?: number;
   positions_swap?: number;
+  positions_commission?: number;
+  positions_fee?: number;
 }
 
 function finite(value: unknown): value is number {
@@ -45,6 +49,8 @@ function validPosition(value: unknown): value is PositionState {
     finite(row.current_price) && row.current_price >= 0 &&
     finite(row.unrealized_pl) &&
     (row.swap === undefined || finite(row.swap)) &&
+    (row.commission === undefined || finite(row.commission)) &&
+    (row.fee === undefined || finite(row.fee)) &&
     (row.sl === null || finite(row.sl)) &&
     (row.tp === null || finite(row.tp));
 }
@@ -88,7 +94,7 @@ Deno.serve(async (req: Request) => {
   if (!Array.isArray(positions) || positions.length > 100 || !positions.every(validPosition)) {
     return reply({ error: "invalid_position_state" }, 400);
   }
-  for (const key of ["account_floating_pl", "account_credit", "positions_profit", "positions_swap"]) {
+  for (const key of ["account_floating_pl", "account_credit", "positions_profit", "positions_swap", "positions_commission", "positions_fee"]) {
     if (payload[key] !== undefined && !finite(payload[key])) {
       return reply({ error: "invalid_position_state", field: key }, 400);
     }
@@ -102,6 +108,8 @@ Deno.serve(async (req: Request) => {
   if (finite(payload.account_credit)) broadcastPayload.account_credit = payload.account_credit;
   if (finite(payload.positions_profit)) broadcastPayload.positions_profit = payload.positions_profit;
   if (finite(payload.positions_swap)) broadcastPayload.positions_swap = payload.positions_swap;
+  if (finite(payload.positions_commission)) broadcastPayload.positions_commission = payload.positions_commission;
+  if (finite(payload.positions_fee)) broadcastPayload.positions_fee = payload.positions_fee;
 
   const { error } = await admin.rpc("broadcast_private_position_state", {
     p_terminal_id: auth.terminal!.id,

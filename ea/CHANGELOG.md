@@ -1,5 +1,14 @@
 # Changelog — LucreHubEA (MT5 Expert Advisor)
 
+## v1.0.51 — Net live P/L after all costs (2026-09-06)
+
+- Sums opening-deal commission and broker fees for every active MT5 position.
+- Reports per-position net P/L inputs through both durable sync and the private
+  low-latency position stream.
+- Publishes account floating P/L as current position profit plus swap,
+  commission, and fees so Lock In reflects the amount actually retained.
+- Ships explicitly versioned `LucreHubEA-v1.51` source and ZIP artifacts.
+
 ## v1.0.50 — Monotonic low-latency control loop (2026-09-06)
 
 - Moves command polling, WebSocket reconnects, heartbeats, stale detection,

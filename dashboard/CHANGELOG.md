@@ -1,5 +1,17 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.78 — Net P/L contract and aligned position ledger (2026-09-06)
+
+- Makes net account impact the single displayed P/L value across open and
+  closed positions, pair/day metrics, dashboard and strategy charts, heatmaps,
+  notifications, strategy analytics, and floating Lock In controls.
+- Adds EA-reported opening commission and fees to live and durable position
+  snapshots so floating values include profit, swap, commission, and fees.
+- Fixes the position ledger by making its header and every row share the exact
+  same four-column CSS grid on desktop while preserving the mobile stack.
+- Recomputes scenario profitability statistics from net realized P/L so risk
+  throttling and reported win rates agree with what users actually keep.
+
 ## v1.0.77 — Off-session strategies and cleaner position navigation (2026-09-06)
 
 - Adds Off-session as an opt-in strategy editor choice and carries it through

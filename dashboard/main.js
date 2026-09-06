@@ -2500,6 +2500,8 @@ function mergeStreamedPositionFields(positions) {
       current_price: streamed.current_price,
       unrealized_pl: streamed.unrealized_pl,
       swap: streamed.swap,
+      commission: streamed.commission === undefined ? position.commission : streamed.commission,
+      fee: streamed.fee === undefined ? position.fee : streamed.fee,
       sl: streamed.sl,
       tp: streamed.tp,
     };
@@ -2521,9 +2523,13 @@ function applyStreamedPositionState(terminalId, eventPayload) {
     const currentPrice = Number(position?.current_price);
     const unrealizedPl = Number(position?.unrealized_pl);
     const swap = position?.swap === undefined ? 0 : Number(position.swap);
+    const commission = position?.commission === undefined ? undefined : Number(position.commission);
+    const fee = position?.fee === undefined ? undefined : Number(position.fee);
     if (!Number.isFinite(ticket) || !Number.isFinite(volume)
       || !Number.isFinite(currentPrice) || !Number.isFinite(unrealizedPl)
-      || !Number.isFinite(swap)) return;
+      || !Number.isFinite(swap)
+      || (commission !== undefined && !Number.isFinite(commission))
+      || (fee !== undefined && !Number.isFinite(fee))) return;
     const sl = position.sl === null ? null : Number(position.sl);
     const tp = position.tp === null ? null : Number(position.tp);
     next.set(String(ticket), {
@@ -2532,6 +2538,8 @@ function applyStreamedPositionState(terminalId, eventPayload) {
       current_price: currentPrice,
       unrealized_pl: unrealizedPl,
       swap,
+      commission,
+      fee,
       sl: sl === null || Number.isFinite(sl) ? sl : null,
       tp: tp === null || Number.isFinite(tp) ? tp : null,
     });
@@ -2546,6 +2554,8 @@ function applyStreamedPositionState(terminalId, eventPayload) {
       account_credit: Number.isFinite(Number(message.account_credit)) ? Number(message.account_credit) : null,
       positions_profit: Number.isFinite(Number(message.positions_profit)) ? Number(message.positions_profit) : null,
       positions_swap: Number.isFinite(Number(message.positions_swap)) ? Number(message.positions_swap) : null,
+      positions_commission: Number.isFinite(Number(message.positions_commission)) ? Number(message.positions_commission) : null,
+      positions_fee: Number.isFinite(Number(message.positions_fee)) ? Number(message.positions_fee) : null,
     };
   }
   // MT5 is the live source of truth. Hide a position already marked `closing`
@@ -2746,7 +2756,7 @@ async function refreshActiveTerminalBalance() {
   if (!state.activeTerminalId) return;
   const { data, error } = await supabase
     .from('mt5_terminals')
-    .select('id, equity, balance, margin_level, floating_pl, account_credit, positions_profit, positions_swap, floating_pl_reported_at, status, terminal_trade_allowed, mql_trade_allowed, account_trade_allowed, account_expert_trade_allowed, trade_capability_reported_at')
+    .select('id, equity, balance, margin_level, floating_pl, account_credit, positions_profit, positions_swap, positions_commission, positions_fee, floating_pl_reported_at, status, terminal_trade_allowed, mql_trade_allowed, account_trade_allowed, account_expert_trade_allowed, trade_capability_reported_at')
     .eq('id', state.activeTerminalId)
     .maybeSingle();
   if (error || !data) return;
@@ -3108,7 +3118,7 @@ function buildNotifications() {
     });
 
   state.tradeHistory.forEach((trade) => {
-    const pl = Number(trade.net_profit ?? trade.profit ?? 0);
+    const pl = tradeNetProfit(trade);
     items.push({
       id: `close:${trade.id}`,
       tone: pl < 0 ? 'warn' : 'success',
@@ -3360,7 +3370,7 @@ async function loadTerminals() {
   const { data, error } = await supabase
     .from('mt5_terminals')
     .select(
-      'id, label, broker, account_login, server, is_live, status, equity, balance, margin_level, floating_pl, account_credit, positions_profit, positions_swap, floating_pl_reported_at, ea_version, api_key_last_four, api_key_last_rotated_at, max_manual_lot_size, max_daily_loss_usd, max_open_positions, force_symbol_rescan, last_symbol_scan_at, realtime_topic_id'
+      'id, label, broker, account_login, server, is_live, status, equity, balance, margin_level, floating_pl, account_credit, positions_profit, positions_swap, positions_commission, positions_fee, floating_pl_reported_at, ea_version, api_key_last_four, api_key_last_rotated_at, max_manual_lot_size, max_daily_loss_usd, max_open_positions, force_symbol_rescan, last_symbol_scan_at, realtime_topic_id'
       + ', terminal_trade_allowed, mql_trade_allowed, account_trade_allowed, account_expert_trade_allowed, trade_capability_reported_at'
     )
     .order('created_at', { ascending: true });
@@ -3577,7 +3587,19 @@ function tradeSessionKey(trade) {
 }
 
 function isWinningTrade(trade) {
-  return trade?.outcome ? trade.outcome === 'win' : Number(trade?.profit ?? 0) > 0;
+  return tradeNetProfit(trade) > 0;
+}
+
+function tradeNetProfit(trade) {
+  const persistedNet = Number(trade?.net_profit);
+  if (trade?.net_profit != null && Number.isFinite(persistedNet)) return persistedNet;
+  return Number(trade?.profit ?? 0) + Number(trade?.commission ?? 0)
+    + Number(trade?.swap ?? 0) + Number(trade?.fee ?? 0);
+}
+
+function positionNetProfit(position) {
+  return Number(position?.unrealized_pl ?? 0) + Number(position?.swap ?? 0)
+    + Number(position?.commission ?? 0) + Number(position?.fee ?? 0);
 }
 
 function strategyPerformanceSummary(strategyId) {
@@ -3837,7 +3859,7 @@ async function loadPositions() {
 
   const { data, error } = await supabase
     .from('positions')
-    .select('id, mt5_ticket, symbol, side, volume, open_price, current_price, sl, tp, unrealized_pl, swap, status, open_time, source, strategy_id, strategy_name_at_entry, origin_detail')
+    .select('id, mt5_ticket, symbol, side, volume, open_price, current_price, sl, tp, unrealized_pl, swap, commission, fee, status, open_time, source, strategy_id, strategy_name_at_entry, origin_detail')
     .eq('terminal_id', state.activeTerminalId)
     .neq('status', 'closed')
     .order('open_time', { ascending: false });
@@ -3887,7 +3909,7 @@ function renderPositionRows(list, emptyMessage) {
 
   const rows = state.positions
     .map((p) => {
-      const plValue = Number(p.unrealized_pl) || 0;
+      const plValue = positionNetProfit(p);
       const plColor = plValue > 0 ? 'var(--color-positive)' : plValue < 0 ? 'var(--color-negative)' : 'var(--color-text-muted)';
       const sideClass = p.side === 'sell' ? 'side-sell' : 'side-buy';
       const initiator = getPositionInitiator(p);
@@ -3962,15 +3984,19 @@ function renderFloatingPl() {
   if (!floatingPlButton || !balanceWidgetFloatingPl) return;
   const active = state.terminals.find((terminal) => terminal.id === state.activeTerminalId);
   const now = Date.now();
-  const streamIsCurrent = streamedAccountState?.terminalId === state.activeTerminalId
+  const versionParts = String(active?.ea_version || '').match(/\d+/g)?.map(Number) || [];
+  const normalizedVersion = versionParts.length === 2
+    ? [versionParts[0], 0, versionParts[1]] : versionParts.slice(0, 3);
+  const supportsAccountStream = normalizedVersion.length === 3
+    && (normalizedVersion[0] > 1
+      || (normalizedVersion[0] === 1 && normalizedVersion[1] > 0)
+      || (normalizedVersion[0] === 1 && normalizedVersion[1] === 0 && normalizedVersion[2] >= 51));
+  const streamIsCurrent = supportsAccountStream && streamedAccountState?.terminalId === state.activeTerminalId
     && now - streamedAccountState.receivedAt <= POSITION_STREAM_TTL_MS;
   const durableAge = active?.floating_pl_reported_at
     ? now - new Date(active.floating_pl_reported_at).getTime() : Infinity;
-  const durableIsCurrent = Number.isFinite(Number(active?.floating_pl)) && durableAge <= 90000;
-  const derivedTotal = state.positions.reduce(
-    (sum, position) => sum + (Number(position.unrealized_pl) || 0) + (Number(position.swap) || 0),
-    0
-  );
+  const durableIsCurrent = supportsAccountStream && Number.isFinite(Number(active?.floating_pl)) && durableAge <= 90000;
+  const derivedTotal = state.positions.reduce((sum, position) => sum + positionNetProfit(position), 0);
   const total = streamIsCurrent
     ? streamedAccountState.floating_pl
     : durableIsCurrent ? Number(active.floating_pl) : derivedTotal;
@@ -3993,16 +4019,9 @@ function renderFloatingPl() {
 
   if (bannerPositionStream) {
     const hasOpenPosition = state.positions.some((position) => position.status === 'open');
-    const versionParts = String(active?.ea_version || '').match(/\d+/g)?.map(Number) || [];
-    const normalizedVersion = versionParts.length === 2
-      ? [versionParts[0], 0, versionParts[1]] : versionParts.slice(0, 3);
-    const supportsAccountStream = normalizedVersion.length === 3
-      && (normalizedVersion[0] > 1
-        || (normalizedVersion[0] === 1 && normalizedVersion[1] > 0)
-        || (normalizedVersion[0] === 1 && normalizedVersion[1] === 0 && normalizedVersion[2] >= 48));
     const streamGraceElapsed = positionStreamStartedAt > 0 && now - positionStreamStartedAt > 12000;
     if (active?.status === 'connected' && !supportsAccountStream) {
-      bannerPositionStream.textContent = `EA ${active.ea_version || 'unknown'} does not provide broker-authoritative live P/L. Install LucreHubEA-v1.50.mq5 to enable it.`;
+      bannerPositionStream.textContent = `EA ${active.ea_version || 'unknown'} does not provide net live P/L after all costs. Install LucreHubEA-v1.51.mq5 to enable it.`;
       bannerPositionStream.hidden = false;
     } else if (hasOpenPosition && supportsAccountStream && streamGraceElapsed && !streamIsCurrent) {
       bannerPositionStream.textContent = 'The private MT5 P/L stream is unavailable. Displaying the durable 30-second account snapshot until it reconnects.';
@@ -4206,14 +4225,14 @@ function computeSymbolPerformance(symbol) {
   );
   const todayKey = zonedDateKey(new Date());
   const todayTrades = trades.filter((trade) => zonedDateKey(trade.close_time) === todayKey);
-  const dailyPl = todayTrades.reduce((sum, trade) => sum + Number(trade.profit ?? 0), 0);
+  const dailyPl = todayTrades.reduce((sum, trade) => sum + tradeNetProfit(trade), 0);
 
   if (trades.length === 0) {
     return { count: 0, winRate: null, totalPl: 0, bestSession: null, dailyPl, dailyCount: 0 };
   }
 
   const wins = trades.filter(isWinningTrade).length;
-  const totalPl = trades.reduce((sum, trade) => sum + Number(trade.profit ?? 0), 0);
+  const totalPl = trades.reduce((sum, trade) => sum + tradeNetProfit(trade), 0);
   const sessions = new Map();
   trades.forEach((trade) => {
     const session = tradeSessionKey(trade);
@@ -4553,7 +4572,7 @@ function renderPairsView() {
                 <span>Best Session</span>
                 <strong>${bestSessionLabel}</strong>
               </div>
-              <div class="pair-performance-stat" title="Broker profit from ${perf.dailyCount} verified trade${perf.dailyCount === 1 ? '' : 's'} closed today">
+              <div class="pair-performance-stat" title="Net P/L after costs from ${perf.dailyCount} verified trade${perf.dailyCount === 1 ? '' : 's'} closed today">
                 <span>Daily P/L</span>
                 <strong style="color:${dailyPlColor}">${dailyPlLabel}</strong>
               </div>
@@ -5074,7 +5093,7 @@ function renderStrategyWinRates() {
         : '';
       return;
     }
-    const wins = trades.filter((t) => (t.profit ?? 0) > 0).length;
+    const wins = trades.filter(isWinningTrade).length;
     const pct = Math.round((wins / trades.length) * 100);
     const countLabel = pendingCount > 0
       ? `${trades.length} trades · ${pendingVerificationLink(pendingCount, `${pendingCount} pending`)}`
@@ -5094,7 +5113,7 @@ function renderWinRate() {
     winrateGaugeArc.setAttribute('stroke-dasharray', '0 157.08');
     return;
   }
-  const wins = verified.filter((t) => (t.profit ?? 0) > 0).length;
+  const wins = verified.filter(isWinningTrade).length;
   const pct = Math.round((wins / total) * 100);
   const avgRr =
     verified.reduce((sum, t) => sum + (t.r_multiple ?? 0), 0) / total;
@@ -5365,17 +5384,15 @@ function renderHistoryTab() {
 
   list.innerHTML = rows.map((trade) => {
     const verified = trade.profit_verified !== false;
-    const brokerProfit = Number(trade.profit || 0);
-    const netProfit = trade.net_profit == null ? brokerProfit : Number(trade.net_profit);
-    const profitClass = !verified ? 'pending' : brokerProfit > 0 ? 'positive' : brokerProfit < 0 ? 'negative' : '';
+    const netProfit = tradeNetProfit(trade);
+    const profitClass = !verified ? 'pending' : netProfit > 0 ? 'positive' : netProfit < 0 ? 'negative' : '';
     const entrySession = trade.entry_session || trade.session || 'unknown';
     const closeSession = trade.close_session || 'unknown';
     const closeSessionNote = closeSession !== entrySession
       ? `<small>Closed: ${escapeHtml(SESSION_LABELS[closeSession] || 'Unknown')}</small>` : '';
     const profitValue = verified
-      ? `${brokerProfit >= 0 ? '+' : '−'}$${Math.abs(brokerProfit).toFixed(2)}` : 'Pending';
-    const netNote = !verified ? '<small>Awaiting broker verification</small>' : Math.abs(netProfit - brokerProfit) >= 0.005
-      ? `<small>Net ${netProfit >= 0 ? '+' : '−'}$${Math.abs(netProfit).toFixed(2)}</small>` : '<small>Broker P/L</small>';
+      ? `${netProfit >= 0 ? '+' : '−'}$${Math.abs(netProfit).toFixed(2)}` : 'Pending';
+    const netNote = !verified ? '<small>Awaiting broker verification</small>' : '<small>After all costs</small>';
     return `<div class="history-table-row">
       <div><strong>${escapeHtml(trade.symbol || 'Unknown')}</strong><small>${escapeHtml(String(trade.side || '—').toUpperCase())} · ${formatDateTime(trade.close_time)}</small></div>
       <div><span>${escapeHtml(historyStrategyLabel(trade))}</span><small>${escapeHtml(trade.origin_detail || trade.source || '—')}</small></div>
@@ -5417,7 +5434,7 @@ function renderSessionsTab() {
   list.innerHTML = keys
     .map((key) => {
       const trades = bySession.get(key);
-      const wins = trades.filter((t) => (t.profit ?? 0) > 0).length;
+      const wins = trades.filter(isWinningTrade).length;
       const winRate = Math.round((wins / trades.length) * 100);
       const avgR = trades.reduce((sum, t) => sum + (t.r_multiple ?? 0), 0) / trades.length;
       return `
@@ -5446,8 +5463,8 @@ function renderWinRateTab() {
       : '<p class="empty-state-text">No trades yet.</p>';
     return;
   }
-  const wins = closed.filter((t) => (t.outcome ? t.outcome === 'win' : (t.profit ?? 0) > 0)).length;
-  const losses = closed.filter((t) => (t.outcome ? t.outcome === 'loss' : (t.profit ?? 0) < 0)).length;
+  const wins = closed.filter((trade) => tradeNetProfit(trade) > 0).length;
+  const losses = closed.filter((trade) => tradeNetProfit(trade) < 0).length;
   const breakeven = closed.length - wins - losses;
   const avgR = closed.reduce((sum, t) => sum + (t.r_multiple ?? 0), 0) / closed.length;
 
@@ -5469,7 +5486,7 @@ function renderWinRateTab() {
   const rowsHtml = [...bySymbol.entries()]
     .sort((a, b) => b[1].length - a[1].length)
     .map(([symbol, trades]) => {
-      const symWins = trades.filter((t) => (t.profit ?? 0) > 0).length;
+      const symWins = trades.filter(isWinningTrade).length;
       const pct = Math.round((symWins / trades.length) * 100);
       return `
         <div class="mini-table-row">
@@ -5570,16 +5587,16 @@ function renderAccountHistoryList() {
   list.innerHTML = rows
     .map((t) => {
       const dateLabel = formatDateTime(t.occurred_at);
-      const profit = Number(t.profit || 0);
-      const net = profit + Number(t.commission || 0) + Number(t.swap || 0) + Number(t.fee || 0);
-      const profitCell = `<span class="hist-pl ${profit > 0 ? 'positive' : profit < 0 ? 'negative' : ''}">${profit >= 0 ? '+' : ''}${profit.toFixed(2)} <small>MT5 profit</small></span>`;
-      const netCell = `<span class="hist-pl ${net > 0 ? 'positive' : net < 0 ? 'negative' : ''}">${net >= 0 ? '+' : ''}${net.toFixed(2)} <small>net</small></span>`;
+      const net = tradeNetProfit(t);
+      const costs = Number(t.commission || 0) + Number(t.swap || 0) + Number(t.fee || 0);
+      const netCell = `<span class="hist-pl ${net > 0 ? 'positive' : net < 0 ? 'negative' : ''}">${net >= 0 ? '+' : ''}${net.toFixed(2)} <small>net after costs</small></span>`;
+      const costsCell = `<small>${costs >= 0 ? '+' : ''}${costs.toFixed(2)} commission, swap &amp; fees</small>`;
       return `
         <div class="account-history-row">
           <div><span class="hist-symbol">${t.symbol || 'Account event'}</span> <span class="hist-side">${t.side || '—'}</span></div>
           <div class="hist-date">${dateLabel}</div>
           <div>${t.volume ?? '—'} lots</div>
-          <div>${profitCell}<br/>${netCell}</div>
+          <div>${netCell}<br/>${costsCell}</div>
         </div>`;
     })
     .join('');
@@ -6088,7 +6105,7 @@ function buildActivityHeatmap(signals, trades, mode) {
     if (!parts || !dateKey || !dateKeys.has(dateKey)) return;
     const ordinal = Date.UTC(parts.year, parts.month - 1, parts.day);
     const row = (new Date(ordinal).getUTCDay() + 6) % 7;
-    totals[row][parts.hour] += mode === 'pl' ? Number(item.profit ?? 0) : 1;
+    totals[row][parts.hour] += mode === 'pl' ? tradeNetProfit(item) : 1;
   });
   const values = totals.map((row, rowIndex) => row.map((total) => total / Math.max(1, weekdayOccurrences[rowIndex])));
   const maxMagnitude = Math.max(0, ...values.flat().map((value) => Math.abs(value)));
@@ -6117,7 +6134,7 @@ function renderActivityHeatmap(containerId, legendId, signals, trades, mode) {
       const alpha = empty || maxMagnitude === 0 ? 0 : 0.14 + 0.76 * Math.min(1, Math.abs(value) / maxMagnitude);
       const color = mode === 'pl' && value < 0 ? negative : positive;
       const valueLabel = mode === 'pl'
-        ? `${value >= 0 ? '+' : '−'}$${Math.abs(value).toFixed(2)} average broker P/L`
+        ? `${value >= 0 ? '+' : '−'}$${Math.abs(value).toFixed(2)} average net P/L`
         : `${value.toFixed(2)} average signal${Math.abs(value - 1) < 0.001 ? '' : 's'}`;
       const title = `${HEATMAP_WEEKDAYS[rowIndex]} ${heatmapHourLabel(hour)} · ${valueLabel}`;
       cells.push(`<span class="heatmap-cell" style="background-color:${empty ? 'transparent' : hexToRgba(color, alpha)}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"></span>`);
@@ -6125,7 +6142,7 @@ function renderActivityHeatmap(containerId, legendId, signals, trades, mode) {
   });
   container.innerHTML = cells.join('');
   legend.textContent = mode === 'pl'
-    ? `${semanticNames.negative} = average broker loss · ${semanticNames.positive} = average broker profit · 30 local calendar days · ${displayTimezone()}`
+    ? `${semanticNames.negative} = average net loss · ${semanticNames.positive} = average net profit · 30 local calendar days · ${displayTimezone()}`
     : `More ${semanticNames.volume} = more signals · 30 local calendar days · ${displayTimezone()}`;
 }
 
@@ -6372,7 +6389,7 @@ function renderStrategyPlChart(trades) {
   const byDate = new Map();
   trades.slice().sort((a, b) => new Date(a.close_time) - new Date(b.close_time)).forEach((trade) => {
     const label = formatDate(trade.close_time, { month: 'short', day: 'numeric' });
-    byDate.set(label, (byDate.get(label) || 0) + Number(trade.profit ?? 0));
+    byDate.set(label, (byDate.get(label) || 0) + tradeNetProfit(trade));
   });
   let running = 0;
   const values = [...byDate.values()].map((value) => (running += value));
@@ -6381,7 +6398,7 @@ function renderStrategyPlChart(trades) {
   const color = byDate.size ? (running >= 0 ? positive : negative) : textFaint;
   strategyPlChartInstance = new Chart(canvas.getContext('2d'), {
     type: 'line',
-    data: { labels, datasets: [{ label: 'Broker P/L', data, borderColor: color, backgroundColor: hexToRgba(color, 0.14), fill: true, tension: 0.3, pointRadius: 0, pointHoverRadius: 4, borderWidth: 2 }] },
+    data: { labels, datasets: [{ label: 'Net P/L', data, borderColor: color, backgroundColor: hexToRgba(color, 0.14), fill: true, tension: 0.3, pointRadius: 0, pointHoverRadius: 4, borderWidth: 2 }] },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } },
   });
 }
@@ -6478,14 +6495,12 @@ function renderStrategyPage() {
   if (strategyChartRange) strategyChartRange.value = state.strategyChartRange;
   if (strategySessionBands) strategySessionBands.checked = state.strategySessionBands;
 
-  const brokerPl = scoped.trades.reduce((sum, trade) => sum + Number(trade.profit ?? 0), 0);
-  const netPl = scoped.trades.reduce((sum, trade) => sum + Number(trade.net_profit ?? trade.profit ?? 0), 0);
-  const costs = netPl - brokerPl;
+  const netPl = scoped.trades.reduce((sum, trade) => sum + tradeNetProfit(trade), 0);
   const plTotal = document.getElementById('strategy-page-pl-total');
-  plTotal.textContent = scoped.trades.length ? `${brokerPl >= 0 ? '+' : '−'}$${Math.abs(brokerPl).toFixed(2)}` : '—';
-  plTotal.style.color = scoped.trades.length ? (brokerPl >= 0 ? 'var(--color-positive)' : 'var(--color-negative)') : '';
+  plTotal.textContent = scoped.trades.length ? `${netPl >= 0 ? '+' : '−'}$${Math.abs(netPl).toFixed(2)}` : '—';
+  plTotal.style.color = scoped.trades.length ? (netPl >= 0 ? 'var(--color-positive)' : 'var(--color-negative)') : '';
   document.getElementById('strategy-page-pl-detail').textContent = scoped.trades.length
-    ? `Broker P/L · Net after costs ${netPl >= 0 ? '+' : '−'}$${Math.abs(netPl).toFixed(2)} · Costs ${costs >= 0 ? '+' : '−'}$${Math.abs(costs).toFixed(2)}`
+    ? `Net P/L after all costs · ${scoped.trades.length} verified trades`
     : 'No verified closed trades yet';
 
   const pairStats = new Map();
@@ -6495,7 +6510,7 @@ function renderStrategyPage() {
     const pair = pairStats.get(symbol) || { count: 0, wins: 0, net: 0 };
     pair.count += 1;
     if (isWinningTrade(trade)) pair.wins += 1;
-    pair.net += Number(trade.net_profit ?? trade.profit ?? 0);
+    pair.net += tradeNetProfit(trade);
     pairStats.set(symbol, pair);
     const session = tradeSessionKey(trade);
     if (session) {
@@ -6723,19 +6738,18 @@ function renderPlChart() {
   const byDate = new Map();
   trades.forEach((t) => {
     const key = formatDate(t.close_time, { month: 'short', day: 'numeric' });
-    byDate.set(key, (byDate.get(key) || 0) + Number(t.profit ?? 0));
+    byDate.set(key, (byDate.get(key) || 0) + tradeNetProfit(t));
   });
 
-  const tradePlTotal = trades.reduce((sum, t) => sum + Number(t.profit ?? 0), 0);
-  const netTotal = trades.reduce((sum, t) => sum + Number(t.net_profit ?? t.profit ?? 0), 0);
+  const netTotal = trades.reduce((sum, trade) => sum + tradeNetProfit(trade), 0);
   if (plSummaryValue) {
     if (trades.length === 0) {
       plSummaryValue.textContent = '—';
       plSummaryValue.style.color = '';
     } else {
-      const sign = tradePlTotal >= 0 ? '+' : '−';
-      plSummaryValue.textContent = `${sign}$${Math.abs(tradePlTotal).toFixed(2)}`;
-      plSummaryValue.style.color = tradePlTotal >= 0 ? positive : negative;
+      const sign = netTotal >= 0 ? '+' : '−';
+      plSummaryValue.textContent = `${sign}$${Math.abs(netTotal).toFixed(2)}`;
+      plSummaryValue.style.color = netTotal >= 0 ? positive : negative;
     }
   }
   const plSummaryDetail = document.getElementById('pl-summary-detail');
@@ -6743,9 +6757,7 @@ function renderPlChart() {
     if (trades.length === 0) {
       plSummaryDetail.textContent = '';
     } else {
-      const netSign = netTotal >= 0 ? '+' : '−';
-      const costs = netTotal - tradePlTotal;
-      plSummaryDetail.textContent = `Net after costs ${netSign}$${Math.abs(netTotal).toFixed(2)} · Costs ${costs >= 0 ? '+' : '−'}$${Math.abs(costs).toFixed(2)}`;
+      plSummaryDetail.textContent = 'Net P/L after all commissions, swaps, and fees';
     }
   }
 
@@ -6769,7 +6781,7 @@ function renderPlChart() {
       labels,
       datasets: [
         {
-          label: 'Cumulative P/L',
+          label: 'Cumulative net P/L',
           data: cumulative,
           borderColor: lineColor,
           backgroundColor: hexToRgba(lineColor, 0.15),

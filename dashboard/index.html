@@ -41,7 +41,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.77" />
+<link rel="stylesheet" href="./style.css?v=1.0.78" />
 </head>
 <body>
 
@@ -486,7 +486,7 @@
         <div class="push-preference-list" id="push-preference-list">
           <label class="push-preference-row"><span><strong>Terminal disconnections</strong><small>When an MT5 heartbeat is missing for more than 90 seconds.</small></span><input type="checkbox" name="terminal_disconnected" checked /></label>
           <label class="push-preference-row"><span><strong>Opened positions</strong><small>One alert for each broker-confirmed MT5 ticket.</small></span><input type="checkbox" name="position_opened" checked /></label>
-          <label class="push-preference-row"><span><strong>Closed positions</strong><small>Includes the broker-reported realized P/L when available.</small></span><input type="checkbox" name="position_closed" checked /></label>
+          <label class="push-preference-row"><span><strong>Closed positions</strong><small>Includes net realized P/L after commissions, swaps, and fees.</small></span><input type="checkbox" name="position_closed" checked /></label>
           <label class="push-preference-row"><span><strong>Trend Strength extremes</strong><small>When a pair enters 100% bullish or 100% bearish.</small></span><input type="checkbox" name="trend_extreme" checked /></label>
           <label class="push-preference-row"><span><strong>Floating P/L crosses +$1.00</strong><small>Once per continuous cluster of open trades; resets after all positions close.</small></span><input type="checkbox" name="floating_pl_target" checked /></label>
         </div>
@@ -824,7 +824,7 @@
         </div>
         <div class="bar-card-legend">
           <div class="legend-inline">
-            <div class="legend-row"><span class="legend-dot lime"></span>Cumulative trade P/L</div>
+            <div class="legend-row"><span class="legend-dot lime"></span>Cumulative net P/L</div>
           </div>
           <div>
             <div class="pl-summary-value" id="pl-summary-value">—</div>
@@ -1125,7 +1125,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.77"></script>
-<script type="module" src="./main.js?v=1.0.77"></script>
+<script src="./app.js?v=1.0.78"></script>
+<script type="module" src="./main.js?v=1.0.78"></script>
 </body>
 </html>
