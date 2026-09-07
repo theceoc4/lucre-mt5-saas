@@ -1,5 +1,10 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.84 — Locked mobile viewport (2026-09-07)
+
+- Locks the dashboard viewport to a 1:1 scale and disables manual page zoom, preventing accidental pinch zoom and residual iOS/PWA focus zoom.
+- Retains safe-area support for installed PWAs and the existing fixed 16px mobile form-control floor.
+
 ## v1.0.83 — Stable mobile social feed (2026-09-07)
 
 - Prevents iOS/PWA focus zoom and horizontal page drift with an explicit 16px mobile editor floor, viewport-safe sizing, and horizontal overscroll containment.
