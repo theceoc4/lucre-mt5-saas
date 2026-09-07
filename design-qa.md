@@ -1,61 +1,80 @@
-# Design QA — Social input and hashtag update v1.0.80
+# Social post interaction QA
 
-## Source and evidence
+- Source visual truth: `/var/folders/s1/w5hdt7dn595dy2x09p26qf5r0000gn/T/TemporaryItems/NSIRD_screencaptureui_sP4RQb/Screenshot 2026-09-06 at 11.18.11 PM.png`
+- Browser-rendered implementation: `.qa/social-fullpage.png`
+- Focused comparison: `.qa/social-rail-comparison.png`
+- Production URL checked: `https://mt5dashboardui.vercel.app/?view=social`
+- Viewport: 1280 x 720 CSS pixels, browser device pixel ratio 2; the browser
+  capture API normalized the saved frame to 1280 x 720, and the focused rail
+  crop was normalized to the 394-pixel source height for comparison.
+- Source pixels: 562 x 394. Full implementation capture: 1280 x 720. Focused
+  comparison canvas: 1139 x 442.
+- State: Seaside dark palette; active My profile rail item; representative composer, post, comment, reaction summary, and footer actions.
 
-- Source visual truth: `/Users/rayevelyn/Desktop/Screenshot 2026-09-06 at 7.38.13 PM.png` (802 × 304 px).
-- Corrected focused-field capture: `/private/tmp/lucre-v1.0.80-focus-fixed.png` (700 × 220 px).
-- Side-by-side comparison: `/private/tmp/lucre-v1.0.80-focus-comparison.png` (802 × 568 px).
-- Inbox interaction capture: `/private/tmp/lucre-v1.0.80-inbox-focus.png` (1280 × 720 px).
-- Hashtag/Trending capture: `/private/tmp/lucre-v1.0.80-hashtag-ui.png` (1280 × 720 px).
-- Mobile focused-field capture: `/private/tmp/lucre-v1.0.80-mobile-focus.png` (390 × 844 px).
-- State: dark Seaside palette; username field focused; inbox open and composing; Social composer with optional hashtags.
+## Full-view comparison evidence
 
-## Full-view comparison
+The rendered Social layout preserves the existing palette, radii, type families,
+spacing rhythm, card surfaces, and centered-feed structure. The composer shows
+the requested placeholder and media control. The post footer is the last child
+in the card and presents reaction, comment, and share controls in three equal
+columns. The reaction summary and count sit above comments in the familiar
+timeline pattern.
 
-The source shows the browser focus ring painted around the nested text input,
-which clips into a bright blue vertical slice over the `$` prefix. The revised
-control paints one continuous focus ring around the shared prefix/input shell.
-The final comparison shows the prefix, username, border, and focus treatment as
-one uninterrupted field with no interior highlight artifact.
+## Focused region comparison evidence
 
-## Focused-region comparison
+The source screenshot documents the unwanted cyan inset stripe on the active
+left-rail item. The focused implementation comparison confirms the requested
+intentional difference: the active item retains its dark filled background but
+computed `box-shadow` is `none`, so no left accent stripe remains.
 
-- Fonts and typography: the existing Lucre families, weights, sizes, and field
-  hierarchy remain unchanged.
-- Spacing and layout rhythm: prefix and text padding remain aligned; no width or
-  modal-layout changes were introduced. The 390px mobile capture has zero
-  horizontal overflow.
-- Colors and visual tokens: focus uses the active palette's accent and retains
-  the Seaside surface/border colors shown in the source.
-- Image quality and assets: no image or icon assets are involved in this fix.
-- Copy and content: the required-tag control is removed. Composer guidance now
-  explains optional `#hashtags`; the discovery card is titled `Trending` with a
-  visible rolling 30-day period.
+## Required fidelity surfaces
 
-## Interaction verification
+- Fonts and typography: existing Cabinet Grotesk and General Sans hierarchy is
+  preserved; reaction counts and supporting copy use the established compact UI
+  scale.
+- Spacing and layout rhythm: composer and post cards retain the product grid,
+  padding, corner radii, and footer alignment. Media is contained within the
+  feed width and uses responsive `object-fit: contain` sizing.
+- Colors and visual tokens: all new surfaces and reaction treatments use Lucre
+  semantic tokens so Lucre, Soleau Gold, and Seaside palettes inherit correctly.
+- Image quality and assets: Bootstrap Icons supplies the interface icons; media
+  is rendered directly from signed Supabase Storage CDN URLs without placeholder
+  art or stretched crops.
+- Copy and content: composer reads “Share your thoughts...”; comment copy avoids
+  credential-oriented terms; counts are singular/plural aware.
 
-- The account modal opens with focus on the handle field and the page behind it
-  marked inert.
-- The inbox accepts typed content and retains the full message value.
-- Tab navigation remains inside the inbox; the underlying comment input never
-  receives focus.
-- Closing the modal removes page isolation and restores normal page focusability.
-- No required tag control exists in the rendered composer.
-- Desktop and mobile document widths match their viewport widths.
-- Browser console errors/warnings during the focused, inbox, and hashtag states: none.
+## Interaction and accessibility checks
+
+- Production v1.0.81 assets loaded with no browser console errors on the public
+  auth surface.
+- Comment input is `type=text`, has a unique per-post name in production render,
+  and sets autocomplete off plus password-manager ignore hints.
+- Reaction chooser buttons use accessible labels for Like, Love, Laugh, Wow,
+  Support, and Remove.
+- The post DOM order ends with `social-post-actions` after comments and the
+  comment form.
+- `$handle` matching is driven from authenticated discoverable profiles and
+  inserts the canonical handle used by the database mention notification trigger.
+- Signed-in posting and upload were not used during QA so no real social content
+  or user file was transmitted as part of verification.
+
+## Findings
+
+No actionable P0, P1, or P2 visual differences remain. The removed active-item
+stripe is an intentional correction requested from the source screenshot.
 
 ## Comparison history
 
-- Pass 1 P2: nested input focus outline visibly crossed the `$` prefix. Fixed by
-  suppressing the inner outline and applying `:focus-within` to the shared shell.
-- Pass 1 P1: the background timeline remained keyboard-focusable while a modal
-  was open. Fixed with modal-layer isolation, focus containment, and cursor
-  restoration during realtime inbox rendering.
-- Pass 2: corrected focus, inbox, mobile, and hashtag states show no remaining
-  actionable P0, P1, or P2 issue.
+- Initial fixture used block elements for mock avatars, which inherited comment
+  bubble styling and distorted the comment row (P2).
+- Fixed the fixture to use the same inline avatar element emitted by production.
+- Recaptured the implementation; comment alignment, footer placement, and active
+  navigation styling then matched the production component contract.
 
 ## Follow-up polish
 
-No P3 follow-up is required for this scoped correction.
+- Signed-in end-to-end media upload and tag notification delivery should be
+  forward-tested with two real test accounts; this is a functional test gap, not
+  an outstanding visual mismatch.
 
 final result: passed
