@@ -1,5 +1,17 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.81 — Media posts, expressive reactions and live mentions (2026-09-06)
+
+- Changes the composer placeholder to “Share your thoughts...” and adds private,
+  signed Supabase CDN delivery for photo and video posts up to 50 MB.
+- Moves the Like/Love/Laugh/Wow/Support, Comment, and Share controls to a
+  familiar footer row and displays a compact reaction summary and count.
+- Adds `$handle` autocomplete to posts and comments; selecting a trader writes
+  the canonical handle so the existing database notification trigger alerts
+  the tagged user.
+- Hardens comment fields against browser credential autofill and removes the
+  accent stripe from the active Social rail item while keeping its filled state.
+
 ## v1.0.80 — Clean modal focus and free-form hashtags (2026-09-06)
 
 - Moves focus styling from nested username inputs to their shared field shell,
