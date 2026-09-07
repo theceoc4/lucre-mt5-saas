@@ -242,6 +242,8 @@ let pendingSocialMediaUrl = '';
 let editingSocialPostId = null;
 let openSocialPostMenuId = null;
 let socialFeedRenderPending = false;
+let socialPostsLoadSequence = 0;
+let socialFeedFingerprint = '';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1017,9 +1019,33 @@ function socialFeedAuthorIds() {
   return [ownId, ...state.socialFollows.filter((follow) => follow.follower_id === ownId).map((follow) => follow.followed_id)].filter(Boolean);
 }
 
-async function loadSocialPosts() {
+function socialFeedDataFingerprint(posts, reactions, shares) {
+  return JSON.stringify({
+    posts: posts.map((post) => [
+      post.id, post.user_id, post.body, post.media_path, post.media_type, post.updated_at,
+      (post.hashtags || []).join(','),
+      (post.comments || []).map((comment) => [comment.id, comment.user_id, comment.body, comment.updated_at || comment.created_at]),
+    ]),
+    reactions: reactions.map((reaction) => [reaction.post_id, reaction.user_id, reaction.reaction]).sort(),
+    shares: shares.map((share) => [share.post_id, share.user_id]).sort(),
+  });
+}
+
+async function loadSocialPosts(options = {}) {
+  const forceRender = options?.forceRender === true;
+  const requestSequence = ++socialPostsLoadSequence;
   const authorIds = [...new Set(socialFeedAuthorIds())];
-  if (!authorIds.length) { state.socialPosts = []; renderSocialFeed(); return; }
+  if (!authorIds.length) {
+    state.socialPosts = [];
+    state.socialReactions = [];
+    state.socialShares = [];
+    const nextFingerprint = socialFeedDataFingerprint([], [], []);
+    if (forceRender || nextFingerprint !== socialFeedFingerprint) {
+      socialFeedFingerprint = nextFingerprint;
+      renderSocialFeed();
+    }
+    return;
+  }
   const { data: posts, error } = await supabase.from('social_posts')
     .select('id,user_id,body,media_path,media_type,media_mime,created_at,updated_at,social_post_hashtags(social_hashtags(slug))')
     .in('user_id', authorIds).order('created_at', { ascending: false }).limit(60);
@@ -1033,20 +1059,30 @@ async function loadSocialPosts() {
       supabase.from('social_post_reactions').select('post_id,user_id,reaction,created_at').in('post_id', ids),
       supabase.from('social_post_shares').select('post_id,user_id,created_at').in('post_id', ids),
     ]);
-    if (!commentResult.error) comments = commentResult.data || [];
-    if (!reactionResult.error) reactions = reactionResult.data || [];
-    if (!shareResult.error) shares = shareResult.data || [];
+    if (commentResult.error || reactionResult.error || shareResult.error) {
+      console.error('loadSocialPostFeedback error', commentResult.error || reactionResult.error || shareResult.error);
+      return;
+    }
+    comments = commentResult.data || [];
+    reactions = reactionResult.data || [];
+    shares = shareResult.data || [];
   }
-  state.socialReactions = reactions;
-  state.socialShares = shares;
-  state.socialPosts = (posts || []).map((post) => ({
+  if (requestSequence !== socialPostsLoadSequence) return;
+  const nextPosts = (posts || []).map((post) => ({
     ...post,
     media_url: post.media_path ? mediaUrls.get(post.media_path) || '' : '',
-    hashtags: (post.social_post_hashtags || []).map((item) => `#${item.social_hashtags?.slug}`).filter((value) => value !== '#undefined'),
+    hashtags: (post.social_post_hashtags || []).map((item) => `#${item.social_hashtags?.slug}`).filter((value) => value !== '#undefined').sort(),
     comments: comments.filter((comment) => comment.post_id === post.id),
   }));
+  const nextFingerprint = socialFeedDataFingerprint(nextPosts, reactions, shares);
+  const feedChanged = nextFingerprint !== socialFeedFingerprint;
   await loadTrendingHashtags();
-  renderSocialFeed();
+  if (requestSequence !== socialPostsLoadSequence) return;
+  state.socialReactions = reactions;
+  state.socialShares = shares;
+  state.socialPosts = nextPosts;
+  socialFeedFingerprint = nextFingerprint;
+  if (forceRender || feedChanged) renderSocialFeed();
 }
 
 async function loadTrendingHashtags() {
@@ -1176,12 +1212,71 @@ function restoreSocialFeedDrafts(drafts) {
   });
 }
 
-function renderSocialFeed(force = false) {
+function captureSocialFeedAnchor(preferredSelector = '') {
+  if (!socialFeed) return null;
+  const preferred = preferredSelector ? socialFeed.querySelector(preferredSelector) : null;
+  const target = preferred || [...socialFeed.querySelectorAll('[data-post-id]')]
+    .find((post) => post.getBoundingClientRect().bottom > 0);
+  if (!target) return null;
+  return {
+    postId: target.closest('[data-post-id]')?.dataset.postId || null,
+    selector: preferredSelector,
+    top: target.getBoundingClientRect().top,
+  };
+}
+
+function restoreSocialFeedAnchor(anchor) {
+  if (!anchor?.postId) return;
+  const post = socialFeed.querySelector(`[data-post-id="${anchor.postId}"]`);
+  const target = anchor.selector ? post?.querySelector(anchor.selector.replace(/^\[data-post-id[^\]]*\]\s*/, '')) : post;
+  if (!target) return;
+  const shift = target.getBoundingClientRect().top - anchor.top;
+  if (Math.abs(shift) > 0.5) window.scrollBy(0, shift);
+}
+
+function socialReactionSummaryMarkup(postReactions) {
+  if (!postReactions.length) return '';
+  const reactionTypes = [...new Set(postReactions.map((reaction) => reaction.reaction))].slice(0, 3);
+  return `<div class="social-reaction-summary" data-reaction-summary><span class="social-reaction-stack" aria-hidden="true">${reactionTypes.map((reaction) => { const meta = socialReactionMeta(reaction); return `<i class="bi ${meta.icon} ${meta.className}"></i>`; }).join('')}</span><span>${postReactions.length.toLocaleString()} ${postReactions.length === 1 ? 'reaction' : 'reactions'}</span></div>`;
+}
+
+function syncSocialPostFeedback(postId) {
+  const article = socialFeed?.querySelector(`[data-post-id="${postId}"]`);
+  if (!article) return;
+  const ownId = state.session?.user?.id;
+  const postReactions = state.socialReactions.filter((reaction) => reaction.post_id === postId);
+  const ownReaction = postReactions.find((reaction) => reaction.user_id === ownId);
+  const ownReactionMeta = socialReactionMeta(ownReaction?.reaction);
+  const reactionButton = article.querySelector('[data-toggle-reactions]');
+  if (reactionButton) {
+    reactionButton.classList.toggle('active', Boolean(ownReaction));
+    reactionButton.title = ownReaction ? ownReactionMeta.label : 'Choose a reaction';
+    reactionButton.querySelector('i').className = `bi ${ownReactionMeta.icon} ${ownReactionMeta.className}`;
+    reactionButton.querySelector('[data-reaction-count]').textContent = postReactions.length || '';
+    reactionButton.setAttribute('aria-expanded', 'false');
+  }
+  const picker = article.querySelector('[data-reaction-picker]');
+  if (picker) {
+    picker.hidden = true;
+    picker.innerHTML = `${Object.entries(SOCIAL_REACTIONS).map(([reaction, meta]) => `<button class="${ownReaction?.reaction === reaction ? 'active' : ''}" type="button" data-set-reaction="${reaction}" data-reaction-post="${postId}" aria-label="${meta.label}" title="${meta.label}"><i class="bi ${meta.icon} ${meta.className}" aria-hidden="true"></i></button>`).join('')}${ownReaction ? `<button class="reaction-remove" type="button" data-remove-reaction="${postId}" aria-label="Remove reaction" title="Remove reaction"><i class="bi bi-x-lg" aria-hidden="true"></i></button>` : ''}`;
+  }
+  const currentSummary = article.querySelector('[data-reaction-summary]');
+  const nextSummary = socialReactionSummaryMarkup(postReactions);
+  if (currentSummary && nextSummary) currentSummary.outerHTML = nextSummary;
+  else if (currentSummary) currentSummary.remove();
+  else if (nextSummary) {
+    const insertionPoint = article.querySelector('.social-comments, .social-comment-form');
+    insertionPoint?.insertAdjacentHTML('beforebegin', nextSummary);
+  }
+}
+
+function renderSocialFeed(force = false, anchorSelector = '') {
   if (!socialFeed) return;
   const activeDraft = document.activeElement?.matches?.('[data-edit-post-form] textarea')
     || (document.activeElement?.matches?.('[data-comment-form] input') && document.activeElement.value.length > 0);
   if (!force && activeDraft) { socialFeedRenderPending = true; return; }
   const drafts = captureSocialFeedDrafts();
+  const anchor = captureSocialFeedAnchor(anchorSelector);
   socialFeedRenderPending = false;
   const ownId = state.session?.user?.id;
   const title = document.getElementById('social-feed-title');
@@ -1203,8 +1298,7 @@ function renderSocialFeed(force = false) {
     const ownReactionMeta = socialReactionMeta(ownReaction?.reaction);
     const shared = postShares.some((share) => share.user_id === ownId);
     const visibleComments = comments.slice(-2);
-    const reactionTypes = [...new Set(postReactions.map((reaction) => reaction.reaction))].slice(0, 3);
-    const reactionSummary = postReactions.length ? `<div class="social-reaction-summary"><span class="social-reaction-stack" aria-hidden="true">${reactionTypes.map((reaction) => { const meta = socialReactionMeta(reaction); return `<i class="bi ${meta.icon} ${meta.className}"></i>`; }).join('')}</span><span>${postReactions.length.toLocaleString()} ${postReactions.length === 1 ? 'reaction' : 'reactions'}</span></div>` : '';
+    const reactionSummary = socialReactionSummaryMarkup(postReactions);
     const mediaMarkup = post.media_url ? `<div class="social-post-media">${post.media_type === 'video'
       ? `<video controls playsinline preload="metadata" src="${escapeHtml(post.media_url)}" aria-label="Video shared by ${escapeHtml(author.display_name)}"></video>`
       : `<img loading="lazy" src="${escapeHtml(post.media_url)}" alt="Photo shared by ${escapeHtml(author.display_name)}" />`}</div>` : '';
@@ -1223,14 +1317,15 @@ function renderSocialFeed(force = false) {
       }).join('')}${comments.length > 2 ? `<small class="social-more-comments">Showing latest 2 of ${comments.length} comments</small>` : ''}</div>` : ''}
       <form class="social-comment-form" data-comment-form="${post.id}">${avatarMarkup(socialProfile(ownId), 'social-avatar social-avatar-sm')}<div class="social-comment-input-wrap"><input type="text" name="social-comment-${post.id}" maxlength="600" placeholder="Write a comment…" aria-label="Comment on ${escapeHtml(author.display_name)}'s post" autocomplete="off" autocapitalize="sentences" spellcheck="true" data-1p-ignore="true" data-lpignore="true" data-form-type="other" /><button class="social-comment-submit" type="submit" aria-label="Post comment"><i class="bi bi-send-fill" aria-hidden="true"></i></button><div class="social-mention-results" hidden></div></div></form>
       <div class="social-post-actions${ownPost ? ' has-more' : ''}">
-        <div class="social-reaction-control"><button class="${ownReaction ? 'active' : ''}" type="button" data-toggle-reactions="${post.id}" aria-label="Choose a reaction" aria-expanded="false" title="${ownReaction ? ownReactionMeta.label : 'Choose a reaction'}"><i class="bi ${ownReactionMeta.icon} ${ownReactionMeta.className}" aria-hidden="true"></i><span class="social-action-count">${postReactions.length || ''}</span></button><div class="social-reaction-picker" data-reaction-picker="${post.id}" hidden>${pickerButtons}${ownReaction ? `<button class="reaction-remove" type="button" data-remove-reaction="${post.id}" aria-label="Remove reaction" title="Remove reaction"><i class="bi bi-x-lg" aria-hidden="true"></i></button>` : ''}</div></div>
-        <button type="button" data-focus-comment="${post.id}"><i class="bi bi-chat" aria-hidden="true"></i><span>Comment</span><strong class="social-action-count">${comments.length || ''}</strong></button>
-        <button class="${shared ? 'active' : ''}" type="button" data-share-post="${post.id}"><i class="bi bi-share" aria-hidden="true"></i><span>Share</span><strong class="social-action-count">${postShares.length || ''}</strong></button>
+        <div class="social-reaction-control"><button class="${ownReaction ? 'active' : ''}" type="button" data-toggle-reactions="${post.id}" aria-label="Choose a reaction" aria-expanded="false" title="${ownReaction ? ownReactionMeta.label : 'Choose a reaction'}"><i class="bi ${ownReactionMeta.icon} ${ownReactionMeta.className}" aria-hidden="true"></i><span class="social-action-count" data-reaction-count>${postReactions.length || ''}</span></button><div class="social-reaction-picker" data-reaction-picker="${post.id}" hidden>${pickerButtons}${ownReaction ? `<button class="reaction-remove" type="button" data-remove-reaction="${post.id}" aria-label="Remove reaction" title="Remove reaction"><i class="bi bi-x-lg" aria-hidden="true"></i></button>` : ''}</div></div>
+        <button type="button" data-focus-comment="${post.id}"><i class="bi bi-chat" aria-hidden="true"></i><span>Comment</span><strong class="social-action-count" data-comment-count>${comments.length || ''}</strong></button>
+        <button class="${shared ? 'active' : ''}" type="button" data-share-post="${post.id}"><i class="bi bi-share" aria-hidden="true"></i><span>Share</span><strong class="social-action-count" data-share-count>${postShares.length || ''}</strong></button>
         ${ownPost ? `<div class="social-post-more"><button class="${openSocialPostMenuId === post.id ? 'active' : ''}" type="button" data-toggle-post-menu="${post.id}" aria-label="More post options" aria-expanded="${openSocialPostMenuId === post.id}"><i class="bi bi-three-dots" aria-hidden="true"></i></button><div class="social-post-menu" data-post-menu="${post.id}" ${openSocialPostMenuId === post.id ? '' : 'hidden'}><button type="button" data-edit-post="${post.id}"><i class="bi bi-pencil" aria-hidden="true"></i><span>Edit post</span></button><button class="danger" type="button" data-delete-post="${post.id}"><i class="bi bi-trash3" aria-hidden="true"></i><span>Delete post</span></button></div></div>` : ''}
       </div>
     </article>`;
   }).join('') : `<div class="social-feed-empty"><strong>Your following feed is quiet.</strong><p>Follow a trader from the suggestions to start building your timeline.</p></div>`;
   renderSocialIdentity();
+  restoreSocialFeedAnchor(anchor);
   restoreSocialFeedDrafts(drafts);
 }
 
@@ -1365,8 +1460,26 @@ socialFeed?.addEventListener('submit', async (event) => {
   const input = form.querySelector('input');
   const body = input.value.trim();
   if (!body) return;
-  const { error } = await supabase.from('social_comments').insert({ post_id: form.dataset.commentForm, user_id: state.session.user.id, body });
-  if (!error) { input.value = ''; await loadSocialPosts(); dispatchSocialPush(); }
+  const postId = form.dataset.commentForm;
+  const submit = form.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  ++socialPostsLoadSequence;
+  const { data: comment, error } = await supabase.from('social_comments')
+    .insert({ post_id: postId, user_id: state.session.user.id, body })
+    .select('id,post_id,user_id,body,created_at,updated_at').single();
+  if (error) { submit.disabled = false; return; }
+  form.reset();
+  input.value = '';
+  input.blur();
+  const mentionResults = form.querySelector('.social-mention-results');
+  if (mentionResults) { mentionResults.hidden = true; mentionResults.innerHTML = ''; }
+  socialFeedRenderPending = false;
+  const post = state.socialPosts.find((item) => item.id === postId);
+  if (post && comment) post.comments = [...(post.comments || []), comment];
+  socialFeedFingerprint = socialFeedDataFingerprint(state.socialPosts, state.socialReactions, state.socialShares);
+  renderSocialFeed(true, `[data-comment-form="${postId}"]`);
+  void loadSocialPosts();
+  dispatchSocialPush();
 });
 
 socialFeed?.addEventListener('click', async (event) => {
@@ -1407,23 +1520,56 @@ socialFeed?.addEventListener('click', async (event) => {
     return;
   }
   if (target.dataset.setReaction) {
+    const postId = target.dataset.reactionPost;
+    ++socialPostsLoadSequence;
     const { error } = await supabase.from('social_post_reactions').upsert({
-      post_id: target.dataset.reactionPost, user_id: state.session.user.id, reaction: target.dataset.setReaction,
+      post_id: postId, user_id: state.session.user.id, reaction: target.dataset.setReaction,
     }, { onConflict: 'post_id,user_id' });
-    if (!error) { await loadSocialPosts(); dispatchSocialPush(); }
+    if (!error) {
+      state.socialReactions = state.socialReactions.filter((reaction) => !(reaction.post_id === postId && reaction.user_id === state.session.user.id));
+      state.socialReactions.push({ post_id: postId, user_id: state.session.user.id, reaction: target.dataset.setReaction });
+      socialFeedFingerprint = socialFeedDataFingerprint(state.socialPosts, state.socialReactions, state.socialShares);
+      syncSocialPostFeedback(postId);
+      void loadSocialPosts();
+      dispatchSocialPush();
+    }
     return;
   }
   if (target.dataset.removeReaction) {
-    await supabase.from('social_post_reactions').delete().eq('post_id', target.dataset.removeReaction).eq('user_id', state.session.user.id);
-    await loadSocialPosts(); return;
+    const postId = target.dataset.removeReaction;
+    ++socialPostsLoadSequence;
+    const { error } = await supabase.from('social_post_reactions').delete().eq('post_id', postId).eq('user_id', state.session.user.id);
+    if (!error) {
+      state.socialReactions = state.socialReactions.filter((reaction) => !(reaction.post_id === postId && reaction.user_id === state.session.user.id));
+      socialFeedFingerprint = socialFeedDataFingerprint(state.socialPosts, state.socialReactions, state.socialShares);
+      syncSocialPostFeedback(postId);
+      void loadSocialPosts();
+    }
+    return;
   }
   if (target.dataset.sharePost) {
-    const ownShare = state.socialShares.find((share) => share.post_id === target.dataset.sharePost && share.user_id === state.session.user.id);
-    if (!ownShare) await supabase.from('social_post_shares').insert({ post_id: target.dataset.sharePost, user_id: state.session.user.id });
-    const shareUrl = `${window.location.origin}/?view=social&post=${target.dataset.sharePost}`;
+    const postId = target.dataset.sharePost;
+    const ownShare = state.socialShares.find((share) => share.post_id === postId && share.user_id === state.session.user.id);
+    let shareCreated = false;
+    if (!ownShare) {
+      ++socialPostsLoadSequence;
+      const { error } = await supabase.from('social_post_shares').insert({ post_id: postId, user_id: state.session.user.id });
+      if (!error) {
+        state.socialShares.push({ post_id: postId, user_id: state.session.user.id });
+        socialFeedFingerprint = socialFeedDataFingerprint(state.socialPosts, state.socialReactions, state.socialShares);
+        const shareButton = socialFeed.querySelector(`[data-post-id="${postId}"] [data-share-post]`);
+        shareButton?.classList.add('active');
+        const count = shareButton?.querySelector('[data-share-count]');
+        if (count) count.textContent = state.socialShares.filter((share) => share.post_id === postId).length;
+        shareCreated = true;
+        void loadSocialPosts();
+      }
+    }
+    const shareUrl = `${window.location.origin}/?view=social&post=${postId}`;
     if (navigator.share) navigator.share({ title: 'Lucre Hub post', url: shareUrl }).catch(() => {});
     else navigator.clipboard?.writeText(shareUrl);
-    await loadSocialPosts(); if (!ownShare) dispatchSocialPush(); return;
+    if (shareCreated) dispatchSocialPush();
+    return;
   }
   if (target.dataset.deletePost) {
     const post = state.socialPosts.find((item) => item.id === target.dataset.deletePost);
@@ -7399,6 +7545,11 @@ function resetDashboardState() {
   state.socialNotifications = [];
   state.directMessages = [];
   state.selectedRecipientId = null;
+  editingSocialPostId = null;
+  openSocialPostMenuId = null;
+  socialFeedRenderPending = false;
+  socialPostsLoadSequence += 1;
+  socialFeedFingerprint = '';
   state.activeView = 'dashboard';
   state.selectedStrategyId = null;
   state.signalChartRange = '30d';

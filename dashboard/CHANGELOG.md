@@ -1,5 +1,13 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.83 — Stable mobile social feed (2026-09-07)
+
+- Prevents iOS/PWA focus zoom and horizontal page drift with an explicit 16px mobile editor floor, viewport-safe sizing, and horizontal overscroll containment.
+- Makes overlapping feed requests latest-wins and fingerprints social data so unchanged background polls no longer rebuild or visibly flash the timeline.
+- Applies reactions and shares directly to the affected post, eliminating temporary count swaps and action-row alignment movement.
+- Clears and blurs a submitted comment field immediately after success, then preserves its on-screen anchor while the new comment is rendered.
+- Reserves stable action-count space so React, Comment, Share, and More controls do not move as counts change.
+
 ## v1.0.82 — Draft-safe timeline and post controls (2026-09-07)
 
 - Removes the post-header delete icon and moves owner-only Edit/Delete actions
