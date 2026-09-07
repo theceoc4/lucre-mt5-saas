@@ -40,8 +40,16 @@ const state = {
   notifications: [],
   socialProfiles: [],
   socialPosts: [],
+  socialTags: [],
+  socialFollows: [],
+  socialFriendRequests: [],
+  socialReactions: [],
+  socialShares: [],
+  socialNotifications: [],
   directMessages: [],
   selectedRecipientId: null,
+  selectedSocialProfileId: null,
+  socialFeedMode: 'following',
   activeView: 'dashboard',
   activeTab: 'overview',
   selectedStrategyId: null,
@@ -73,6 +81,7 @@ const POSITION_POLL_HEALTHY_MS = 60000;
 let realtimeIsHealthy = false;
 let realtimeChannel = null;
 let positionRealtimeChannel = null;
+let socialRealtimeChannel = null;
 let realtimeCommandSubscribed = false;
 let realtimePositionSubscribed = false;
 let realtimeReconnectTimer = null;
@@ -207,7 +216,8 @@ const socialFloatingPl = document.getElementById('social-floating-pl');
 const socialFloatingPlButton = document.getElementById('social-floating-pl-button');
 const buttonInbox = document.getElementById('button-inbox');
 const inboxDot = document.getElementById('inbox-dot');
-const inboxRecipientSelect = document.getElementById('inbox-recipient-select');
+const inboxRecipientSearch = document.getElementById('inbox-recipient-search');
+const inboxRecipientResults = document.getElementById('inbox-recipient-results');
 const inboxConversationList = document.getElementById('inbox-conversation-list');
 const inboxMessageList = document.getElementById('inbox-message-list');
 const inboxThreadHead = document.getElementById('inbox-thread-head');
@@ -577,7 +587,7 @@ async function loadPushNotificationSettings() {
     pushSubscription = await registration.pushManager.getSubscription();
     if (pushSubscription) await savePushSubscription(pushSubscription);
     const { data: preferences, error } = await supabase.from('push_notification_preferences')
-      .select('terminal_disconnected,position_opened,position_closed,trend_extreme,floating_pl_target')
+      .select('terminal_disconnected,position_opened,position_closed,trend_extreme,floating_pl_target,social_messages,social_mentions,social_comments')
       .eq('user_id', state.session.user.id).maybeSingle();
     if (error) throw error;
     if (preferences) {
@@ -866,42 +876,107 @@ document.getElementById('button-confirm-account-action')?.addEventListener('clic
 });
 
 // ---------------------------------------------------------------------------
-// Social timeline and private inbox (v1.0.63)
+// Following-first social network, profiles and private inbox (v1.0.79)
 // ---------------------------------------------------------------------------
 function socialProfile(userId) {
   return state.socialProfiles.find((profile) => profile.user_id === userId) || {
-    user_id: userId, display_name: 'Lucre trader', avatar_path: null,
+    user_id: userId, display_name: 'Lucre trader', handle: 'trader', bio: '', avatar_path: null,
   };
+}
+
+function socialHandle(profile) {
+  return `$${profile?.handle || 'trader'}`;
+}
+
+function socialTextMarkup(value) {
+  return escapeHtml(value || '').replace(/\$([A-Za-z][A-Za-z0-9_]{2,29})/g,
+    '<button class="social-inline-mention" type="button" data-open-handle="$1">$$$1</button>');
+}
+
+async function dispatchSocialPush() {
+  try {
+    const token = state.session?.access_token;
+    if (!token) return;
+    await fetch(`${SUPABASE_URL}/functions/v1/social-notification-dispatch`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY },
+    });
+  } catch (error) { console.warn('social push dispatch error', error); }
 }
 
 async function loadSocialProfiles() {
   const { data, error } = await supabase.from('social_profiles')
-    .select('user_id,display_name,avatar_path,updated_at')
-    .order('display_name', { ascending: true }).limit(200);
+    .select('user_id,display_name,handle,bio,avatar_path,discoverable,updated_at')
+    .eq('discoverable', true).order('display_name', { ascending: true }).limit(300);
   if (error) { console.error('loadSocialProfiles error', error); return; }
   state.socialProfiles = data || [];
+  const ownProfile = socialProfile(state.session?.user?.id);
+  const profileForm = document.getElementById('form-account-profile');
+  if (profileForm?.handle) profileForm.handle.value = ownProfile.handle || '';
   renderSocialIdentity();
-  renderInboxRecipients();
+  renderInboxRecipientResults();
+}
+
+async function loadSocialGraph() {
+  const ownId = state.session?.user?.id;
+  if (!ownId) return;
+  const [followResult, friendResult, tagResult] = await Promise.all([
+    supabase.from('social_follows').select('follower_id,followed_id,created_at'),
+    supabase.from('social_friend_requests').select('id,requester_id,addressee_id,status,created_at,responded_at'),
+    supabase.from('social_tags').select('id,slug,label').order('slug'),
+  ]);
+  if (followResult.error) console.error('loadSocialFollows error', followResult.error);
+  if (friendResult.error) console.error('loadSocialFriendRequests error', friendResult.error);
+  if (tagResult.error) console.error('loadSocialTags error', tagResult.error);
+  state.socialFollows = followResult.data || [];
+  state.socialFriendRequests = friendResult.data || [];
+  state.socialTags = tagResult.data || [];
+  const tagSelect = document.getElementById('social-post-tag');
+  if (tagSelect) tagSelect.innerHTML = '<option value="">Choose a $tag</option>' + state.socialTags.map((tag) =>
+    `<option value="${tag.id}">${escapeHtml(tag.slug)} · ${escapeHtml(tag.label)}</option>`).join('');
+  renderSocialIdentity();
+}
+
+function socialFeedAuthorIds() {
+  const ownId = state.session?.user?.id;
+  if (state.socialFeedMode === 'profile') return [state.selectedSocialProfileId || ownId].filter(Boolean);
+  return [ownId, ...state.socialFollows.filter((follow) => follow.follower_id === ownId).map((follow) => follow.followed_id)].filter(Boolean);
 }
 
 async function loadSocialPosts() {
+  const authorIds = [...new Set(socialFeedAuthorIds())];
+  if (!authorIds.length) { state.socialPosts = []; renderSocialFeed(); return; }
   const { data: posts, error } = await supabase.from('social_posts')
-    .select('id,user_id,body,created_at,updated_at')
-    .order('created_at', { ascending: false }).limit(100);
+    .select('id,user_id,body,tag_id,created_at,updated_at,social_tags(slug,label)')
+    .in('user_id', authorIds).order('created_at', { ascending: false }).limit(60);
   if (error) { console.error('loadSocialPosts error', error); return; }
   const ids = (posts || []).map((post) => post.id);
-  let comments = [];
+  let comments = [], reactions = [], shares = [];
   if (ids.length) {
-    const result = await supabase.from('social_comments')
-      .select('id,post_id,user_id,body,created_at,updated_at')
-      .in('post_id', ids).order('created_at', { ascending: true });
-    if (result.error) console.error('loadSocialComments error', result.error);
-    else comments = result.data || [];
+    const [commentResult, reactionResult, shareResult] = await Promise.all([
+      supabase.from('social_comments').select('id,post_id,user_id,body,created_at,updated_at').in('post_id', ids).order('created_at'),
+      supabase.from('social_post_reactions').select('post_id,user_id,reaction,created_at').in('post_id', ids),
+      supabase.from('social_post_shares').select('post_id,user_id,created_at').in('post_id', ids),
+    ]);
+    if (!commentResult.error) comments = commentResult.data || [];
+    if (!reactionResult.error) reactions = reactionResult.data || [];
+    if (!shareResult.error) shares = shareResult.data || [];
   }
+  state.socialReactions = reactions;
+  state.socialShares = shares;
   state.socialPosts = (posts || []).map((post) => ({
-    ...post, comments: comments.filter((comment) => comment.post_id === post.id),
+    ...post, tag: post.social_tags, comments: comments.filter((comment) => comment.post_id === post.id),
   }));
   renderSocialFeed();
+}
+
+async function loadSocialNotifications() {
+  if (!state.session) return;
+  const { data, error } = await supabase.from('social_notifications')
+    .select('id,user_id,actor_id,event_type,title,detail,url,read_at,created_at')
+    .order('created_at', { ascending: false }).limit(100);
+  if (error) { console.error('loadSocialNotifications error', error); return; }
+  state.socialNotifications = data || [];
+  renderNotifications();
 }
 
 async function loadDirectMessages() {
@@ -914,77 +989,153 @@ async function loadDirectMessages() {
   renderInbox();
 }
 
-async function refreshDirectMessages() {
-  if (!state.session) return;
-  const newestAt = state.directMessages[state.directMessages.length - 1]?.created_at;
-  if (!newestAt) { await loadDirectMessages(); return; }
-  const { data, error } = await supabase.from('direct_messages')
-    .select('id,sender_id,recipient_id,body,read_at,created_at')
-    .gte('created_at', newestAt).order('created_at', { ascending: true }).limit(100);
-  if (error) { console.error('refreshDirectMessages error', error); return; }
-  if (data?.length) {
-    const existing = new Set(state.directMessages.map((message) => message.id));
-    const newMessages = data.filter((message) => !existing.has(message.id));
-    if (!newMessages.length) return;
-    state.directMessages = [...state.directMessages, ...newMessages].slice(-500);
-    renderInbox();
-  }
-}
+async function refreshDirectMessages() { await Promise.all([loadDirectMessages(), loadSocialNotifications()]); }
 
 async function loadSocialData() {
   await loadSocialProfiles();
-  await Promise.all([loadSocialPosts(), loadDirectMessages()]);
+  await loadSocialGraph();
+  await Promise.all([loadSocialPosts(), loadDirectMessages(), loadSocialNotifications()]);
+  startSocialRealtime();
+}
+
+function startSocialRealtime() {
+  const userId = state.session?.user?.id;
+  if (!userId || socialRealtimeChannel) return;
+  socialRealtimeChannel = supabase.channel(`social-private:${userId}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'social_notifications', filter: `user_id=eq.${userId}` }, () => loadSocialNotifications())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'direct_messages', filter: `recipient_id=eq.${userId}` }, () => loadDirectMessages())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'direct_messages', filter: `sender_id=eq.${userId}` }, () => loadDirectMessages())
+    .subscribe();
+}
+
+function isFollowing(userId) {
+  return state.socialFollows.some((follow) => follow.follower_id === state.session?.user?.id && follow.followed_id === userId);
 }
 
 function renderSocialIdentity() {
-  const own = socialProfile(state.session?.user?.id);
-  setAvatarElement(document.getElementById('social-composer-avatar'), own);
-  const name = document.getElementById('social-composer-name');
-  if (name) name.textContent = own.display_name;
+  const ownId = state.session?.user?.id;
+  const own = socialProfile(ownId);
+  ['social-composer-avatar', 'social-self-avatar'].forEach((id) => setAvatarElement(document.getElementById(id), own));
+  const composerName = document.getElementById('social-composer-name');
+  if (composerName) composerName.textContent = own.display_name;
+  const selfName = document.getElementById('social-self-name');
+  const selfHandle = document.getElementById('social-self-handle');
+  const selfBio = document.getElementById('social-self-bio');
+  if (selfName) selfName.textContent = own.display_name;
+  if (selfHandle) selfHandle.textContent = socialHandle(own);
+  if (selfBio) selfBio.textContent = own.bio || 'Add a short profile description so traders know your lane.';
+  const following = state.socialFollows.filter((follow) => follow.follower_id === ownId).length;
+  const followers = state.socialFollows.filter((follow) => follow.followed_id === ownId).length;
+  document.getElementById('social-following-count').textContent = following.toLocaleString();
+  document.getElementById('social-follower-count').textContent = followers.toLocaleString();
+
   if (socialCommunityList) {
-    const people = state.socialProfiles.filter((profile) => profile.user_id !== state.session?.user?.id).slice(0, 12);
+    const people = state.socialProfiles.filter((profile) => profile.user_id !== ownId && !isFollowing(profile.user_id)).slice(0, 5);
     socialCommunityList.innerHTML = people.length ? people.map((profile) => `
-      <button type="button" class="social-person" data-message-user="${profile.user_id}">
-        ${avatarMarkup(profile)}<span><strong>${escapeHtml(profile.display_name)}</strong><small>Message privately</small></span>
-      </button>`).join('') : '<p class="empty-state-text">Other traders will appear here as the community grows.</p>';
+      <div class="social-suggestion">
+        <button type="button" class="social-person" data-open-profile="${profile.user_id}">${avatarMarkup(profile)}<span><strong>${escapeHtml(profile.display_name)}</strong><small>${escapeHtml(socialHandle(profile))}</small></span></button>
+        <button type="button" class="social-follow-button" data-follow-user="${profile.user_id}">Follow</button>
+      </div>`).join('') : '<p class="social-rail-empty">You’re following everyone currently discoverable.</p>';
+  }
+  const trending = document.getElementById('social-trending-tags');
+  if (trending) {
+    const counts = new Map();
+    state.socialPosts.forEach((post) => counts.set(post.tag?.slug, (counts.get(post.tag?.slug) || 0) + 1));
+    const tags = [...state.socialTags].sort((a, b) => (counts.get(b.slug) || 0) - (counts.get(a.slug) || 0)).slice(0, 6);
+    trending.innerHTML = tags.map((tag) => `<button type="button" data-social-tag="${tag.id}"><span>${escapeHtml(tag.slug)}</span><small>${counts.get(tag.slug) || 0} recent</small></button>`).join('');
   }
 }
 
 function renderSocialFeed() {
   if (!socialFeed) return;
   const ownId = state.session?.user?.id;
+  const title = document.getElementById('social-feed-title');
+  const subtitle = document.getElementById('social-feed-subtitle');
+  if (state.socialFeedMode === 'profile') {
+    const profile = socialProfile(state.selectedSocialProfileId || ownId);
+    if (title) title.textContent = profile.user_id === ownId ? 'My posts' : profile.display_name;
+    if (subtitle) subtitle.textContent = `${socialHandle(profile)} · ${state.socialPosts.length} posts`;
+  } else {
+    if (title) title.textContent = 'Following';
+    if (subtitle) subtitle.textContent = 'Posts from traders you follow';
+  }
   socialFeed.innerHTML = state.socialPosts.length ? state.socialPosts.map((post) => {
     const author = socialProfile(post.user_id);
     const comments = post.comments || [];
-    return `<article class="card card-pad social-post" data-post-id="${post.id}">
-      <header>${avatarMarkup(author)}<div><strong>${escapeHtml(author.display_name)}</strong><time>${escapeHtml(formatDateTime(post.created_at, { dateStyle: 'medium', timeStyle: 'short' }))}</time></div>${post.user_id === ownId ? `<button class="social-delete" type="button" data-delete-post="${post.id}" aria-label="Delete post">×</button>` : ''}</header>
-      <p class="social-post-body">${escapeHtml(post.body)}</p>
-      <div class="social-comments">${comments.map((comment) => {
+    const postReactions = state.socialReactions.filter((reaction) => reaction.post_id === post.id);
+    const postShares = state.socialShares.filter((share) => share.post_id === post.id);
+    const reacted = postReactions.some((reaction) => reaction.user_id === ownId);
+    const shared = postShares.some((share) => share.user_id === ownId);
+    const visibleComments = comments.slice(-2);
+    return `<article class="social-post" data-post-id="${post.id}">
+      <header><button class="social-post-author" type="button" data-open-profile="${author.user_id}">${avatarMarkup(author)}<span><strong>${escapeHtml(author.display_name)}</strong><small>${escapeHtml(socialHandle(author))} · ${notificationRelativeTime(post.created_at)}</small></span></button>${post.user_id === ownId ? `<button class="social-delete" type="button" data-delete-post="${post.id}" aria-label="Delete post">×</button>` : ''}</header>
+      <button class="social-topic-tag" type="button" data-social-tag="${post.tag_id}">${escapeHtml(post.tag?.slug || '$GENERAL')}</button>
+      <p class="social-post-body">${socialTextMarkup(post.body)}</p>
+      <div class="social-post-actions">
+        <button class="${reacted ? 'active' : ''}" type="button" data-react-post="${post.id}"><span>React</span><strong>${postReactions.length}</strong></button>
+        <button type="button" data-focus-comment="${post.id}"><span>Comment</span><strong>${comments.length}</strong></button>
+        <button class="${shared ? 'active' : ''}" type="button" data-share-post="${post.id}"><span>Share</span><strong>${postShares.length}</strong></button>
+      </div>
+      ${comments.length ? `<div class="social-comments">${visibleComments.map((comment) => {
         const commenter = socialProfile(comment.user_id);
-        return `<div class="social-comment">${avatarMarkup(commenter, 'social-avatar social-avatar-sm')}<div><strong>${escapeHtml(commenter.display_name)}</strong><p>${escapeHtml(comment.body)}</p><time>${escapeHtml(formatDateTime(comment.created_at, { dateStyle: 'medium', timeStyle: 'short' }))}</time></div>${comment.user_id === ownId ? `<button class="social-delete" type="button" data-delete-comment="${comment.id}" aria-label="Delete comment">×</button>` : ''}</div>`;
-      }).join('')}</div>
-      <form class="social-comment-form" data-comment-form="${post.id}"><input maxlength="600" placeholder="Add a comment…" aria-label="Comment on ${escapeHtml(author.display_name)}'s post" /><button class="btn-secondary btn-xs" type="submit">Comment</button></form>
+        return `<div class="social-comment">${avatarMarkup(commenter, 'social-avatar social-avatar-sm')}<div><button type="button" data-open-profile="${commenter.user_id}"><strong>${escapeHtml(commenter.display_name)}</strong> <span>${escapeHtml(socialHandle(commenter))}</span></button><p>${socialTextMarkup(comment.body)}</p><time>${notificationRelativeTime(comment.created_at)}</time></div>${comment.user_id === ownId ? `<button class="social-delete" type="button" data-delete-comment="${comment.id}" aria-label="Delete comment">×</button>` : ''}</div>`;
+      }).join('')}${comments.length > 2 ? `<small class="social-more-comments">Showing latest 2 of ${comments.length} comments</small>` : ''}</div>` : ''}
+      <form class="social-comment-form" data-comment-form="${post.id}">${avatarMarkup(socialProfile(ownId), 'social-avatar social-avatar-sm')}<input maxlength="600" placeholder="Comment or tag $username…" aria-label="Comment on ${escapeHtml(author.display_name)}'s post" /><button class="btn-secondary btn-xs" type="submit">Post</button></form>
     </article>`;
-  }).join('') : '<div class="card card-pad"><p class="empty-state-text">No posts yet. Drop the first one and get the timeline moving.</p></div>';
+  }).join('') : `<div class="social-feed-empty"><strong>Your following feed is quiet.</strong><p>Follow a trader from the suggestions to start building your timeline.</p></div>`;
+  renderSocialIdentity();
+}
+
+async function toggleFollow(userId) {
+  if (!userId || userId === state.session?.user?.id) return;
+  const existing = isFollowing(userId);
+  const query = existing
+    ? supabase.from('social_follows').delete().eq('follower_id', state.session.user.id).eq('followed_id', userId)
+    : supabase.from('social_follows').insert({ follower_id: state.session.user.id, followed_id: userId });
+  const { error } = await query;
+  if (error) { console.error('follow update error', error); return; }
+  await loadSocialGraph();
+  await loadSocialPosts();
+  if (!existing) dispatchSocialPush();
+}
+
+async function openSocialProfile(userId) {
+  const profile = socialProfile(userId);
+  state.selectedSocialProfileId = userId;
+  const own = userId === state.session?.user?.id;
+  const followingCount = state.socialFollows.filter((follow) => follow.follower_id === userId).length;
+  const followerCount = state.socialFollows.filter((follow) => follow.followed_id === userId).length;
+  const friend = state.socialFriendRequests.find((request) => [request.requester_id, request.addressee_id].includes(userId));
+  const { data: profilePosts } = await supabase.from('social_posts')
+    .select('id,body,tag_id,created_at,social_tags(slug,label)').eq('user_id', userId)
+    .order('created_at', { ascending: false }).limit(10);
+  const friendLabel = friend
+    ? friend.status === 'accepted' ? 'Friends'
+      : friend.addressee_id === state.session.user.id ? 'Accept friend' : 'Request sent'
+    : 'Add friend';
+  const body = document.getElementById('social-profile-modal-body');
+  body.innerHTML = `<section class="social-profile-hero">${avatarMarkup(profile, 'social-avatar social-avatar-profile')}<div><h2>${escapeHtml(profile.display_name)}</h2><span>${escapeHtml(socialHandle(profile))}</span><p>${escapeHtml(profile.bio || 'No profile description yet.')}</p><div class="social-profile-counts"><div><strong>${followerCount}</strong><span>Followers</span></div><div><strong>${followingCount}</strong><span>Following</span></div></div></div></section>
+    <div class="social-profile-actions">${own ? '<button class="btn-secondary" type="button" id="social-profile-edit">Edit profile</button>' : `<button class="btn-accent" type="button" data-follow-user="${userId}">${isFollowing(userId) ? 'Following' : 'Follow'}</button><button class="btn-secondary" type="button" data-friend-user="${userId}" ${friend?.status === 'accepted' || (friend?.status === 'pending' && friend.requester_id === state.session.user.id) ? 'disabled' : ''}>${friendLabel}</button><button class="btn-secondary" type="button" data-message-user="${userId}">Message</button>`}<button class="btn-secondary" type="button" data-view-profile-feed="${userId}">View posts</button></div>
+    <section class="social-profile-posts"><h3>Posts</h3>${profilePosts?.length ? profilePosts.map((post) => `<article><div><span>${escapeHtml(post.social_tags?.slug || '$GENERAL')}</span><time>${notificationRelativeTime(post.created_at)}</time></div><p>${socialTextMarkup(post.body)}</p></article>`).join('') : '<p class="social-rail-empty">No posts yet.</p>'}</section>`;
+  window.LucreUI?.openModal('modal-social-profile');
 }
 
 document.getElementById('social-post-input')?.addEventListener('input', (event) => {
-  const count = document.getElementById('social-post-count');
-  if (count) count.textContent = `${event.target.value.length} / 1200`;
+  document.getElementById('social-post-count').textContent = `${event.target.value.length} / 1200`;
 });
 
 document.getElementById('social-post-form')?.addEventListener('submit', async (event) => {
   event.preventDefault();
   const input = document.getElementById('social-post-input');
+  const tag = document.getElementById('social-post-tag');
   const status = document.getElementById('social-post-status');
   const body = input.value.trim();
-  if (!body) return;
-  const { error } = await supabase.from('social_posts').insert({ user_id: state.session.user.id, body });
+  if (!body || !tag.value) { status.textContent = 'Write a post and choose one required $tag.'; return; }
+  const { error } = await supabase.from('social_posts').insert({ user_id: state.session.user.id, body, tag_id: tag.value });
   if (error) { status.textContent = error.message; return; }
-  input.value = '';
+  input.value = ''; tag.value = ''; status.textContent = '';
   document.getElementById('social-post-count').textContent = '0 / 1200';
-  status.textContent = '';
-  await loadSocialPosts();
+  await loadSocialPosts(); dispatchSocialPush();
 });
 
 socialFeed?.addEventListener('submit', async (event) => {
@@ -994,30 +1145,45 @@ socialFeed?.addEventListener('submit', async (event) => {
   const input = form.querySelector('input');
   const body = input.value.trim();
   if (!body) return;
-  const { error } = await supabase.from('social_comments').insert({
-    post_id: form.dataset.commentForm, user_id: state.session.user.id, body,
-  });
-  if (!error) { input.value = ''; await loadSocialPosts(); }
+  const { error } = await supabase.from('social_comments').insert({ post_id: form.dataset.commentForm, user_id: state.session.user.id, body });
+  if (!error) { input.value = ''; await loadSocialPosts(); dispatchSocialPush(); }
 });
 
 socialFeed?.addEventListener('click', async (event) => {
-  const deletePost = event.target.closest('[data-delete-post]');
-  const deleteComment = event.target.closest('[data-delete-comment]');
-  if (deletePost) {
-    await supabase.from('social_posts').delete().eq('id', deletePost.dataset.deletePost);
-    await loadSocialPosts();
-  } else if (deleteComment) {
-    await supabase.from('social_comments').delete().eq('id', deleteComment.dataset.deleteComment);
-    await loadSocialPosts();
+  const target = event.target.closest('button');
+  if (!target) return;
+  if (target.dataset.openProfile) return openSocialProfile(target.dataset.openProfile);
+  if (target.dataset.openHandle) {
+    const profile = state.socialProfiles.find((item) => item.handle.toLowerCase() === target.dataset.openHandle.toLowerCase());
+    if (profile) return openSocialProfile(profile.user_id);
   }
+  if (target.dataset.focusComment) return socialFeed.querySelector(`[data-comment-form="${target.dataset.focusComment}"] input`)?.focus();
+  if (target.dataset.reactPost) {
+    const ownReaction = state.socialReactions.find((reaction) => reaction.post_id === target.dataset.reactPost && reaction.user_id === state.session.user.id);
+    const query = ownReaction ? supabase.from('social_post_reactions').delete().eq('post_id', target.dataset.reactPost).eq('user_id', state.session.user.id)
+      : supabase.from('social_post_reactions').insert({ post_id: target.dataset.reactPost, user_id: state.session.user.id, reaction: 'like' });
+    await query; await loadSocialPosts(); if (!ownReaction) dispatchSocialPush(); return;
+  }
+  if (target.dataset.sharePost) {
+    const ownShare = state.socialShares.find((share) => share.post_id === target.dataset.sharePost && share.user_id === state.session.user.id);
+    if (!ownShare) await supabase.from('social_post_shares').insert({ post_id: target.dataset.sharePost, user_id: state.session.user.id });
+    const shareUrl = `${window.location.origin}/?view=social&post=${target.dataset.sharePost}`;
+    if (navigator.share) navigator.share({ title: 'Lucre Hub post', url: shareUrl }).catch(() => {});
+    else navigator.clipboard?.writeText(shareUrl);
+    await loadSocialPosts(); if (!ownShare) dispatchSocialPush(); return;
+  }
+  if (target.dataset.deletePost) { await supabase.from('social_posts').delete().eq('id', target.dataset.deletePost); await loadSocialPosts(); return; }
+  if (target.dataset.deleteComment) { await supabase.from('social_comments').delete().eq('id', target.dataset.deleteComment); await loadSocialPosts(); }
 });
 
-function renderInboxRecipients() {
-  if (!inboxRecipientSelect) return;
-  const others = state.socialProfiles.filter((profile) => profile.user_id !== state.session?.user?.id);
-  inboxRecipientSelect.innerHTML = '<option value="">Choose a user</option>' + others.map((profile) =>
-    `<option value="${profile.user_id}">${escapeHtml(profile.display_name)}</option>`).join('');
-  if (state.selectedRecipientId) inboxRecipientSelect.value = state.selectedRecipientId;
+function renderInboxRecipientResults() {
+  if (!inboxRecipientSearch || !inboxRecipientResults) return;
+  const query = inboxRecipientSearch.value.trim().replace(/^\$/, '').toLowerCase();
+  if (!query) { inboxRecipientResults.hidden = true; inboxRecipientResults.innerHTML = ''; return; }
+  const matches = state.socialProfiles.filter((profile) => profile.user_id !== state.session?.user?.id
+    && (profile.handle.toLowerCase().startsWith(query) || profile.display_name.toLowerCase().includes(query))).slice(0, 8);
+  inboxRecipientResults.innerHTML = matches.length ? matches.map((profile) => `<button type="button" data-message-user="${profile.user_id}">${avatarMarkup(profile, 'social-avatar social-avatar-sm')}<span><strong>${escapeHtml(socialHandle(profile))}</strong><small>${escapeHtml(profile.display_name)}</small></span></button>`).join('') : '<p>No matching traders.</p>';
+  inboxRecipientResults.hidden = false;
 }
 
 function conversationPartners() {
@@ -1039,11 +1205,11 @@ function renderInbox() {
   if (inboxConversationList) inboxConversationList.innerHTML = partners.length ? partners.map(([partnerId, latest]) => {
     const profile = socialProfile(partnerId);
     const hasUnread = state.directMessages.some((message) => message.sender_id === partnerId && message.recipient_id === ownId && !message.read_at);
-    return `<button class="inbox-conversation${partnerId === state.selectedRecipientId ? ' active' : ''}" type="button" data-message-user="${partnerId}">${avatarMarkup(profile)}<span><strong>${escapeHtml(profile.display_name)}${hasUnread ? ' · New' : ''}</strong><small>${escapeHtml(latest.body)}</small></span></button>`;
+    return `<button class="inbox-conversation${partnerId === state.selectedRecipientId ? ' active' : ''}" type="button" data-message-user="${partnerId}">${avatarMarkup(profile)}<span><strong>${escapeHtml(profile.display_name)}${hasUnread ? ' · New' : ''}</strong><small>${escapeHtml(socialHandle(profile))} · ${escapeHtml(latest.body)}</small></span><time>${notificationRelativeTime(latest.created_at)}</time></button>`;
   }).join('') : '<p class="empty-state-text">No conversations yet.</p>';
 
   const recipient = state.selectedRecipientId ? socialProfile(state.selectedRecipientId) : null;
-  if (inboxThreadHead) inboxThreadHead.innerHTML = recipient ? `${avatarMarkup(recipient)}<strong>${escapeHtml(recipient.display_name)}</strong>` : 'Choose a trader to start a conversation.';
+  if (inboxThreadHead) inboxThreadHead.innerHTML = recipient ? `${avatarMarkup(recipient)}<span><strong>${escapeHtml(recipient.display_name)}</strong><small>${escapeHtml(socialHandle(recipient))}</small></span>` : 'Search for a $username to start a conversation.';
   if (inboxMessageInput) inboxMessageInput.disabled = !recipient;
   const send = inboxComposeForm?.querySelector('button');
   if (send) send.disabled = !recipient;
@@ -1061,7 +1227,8 @@ function renderInbox() {
 async function selectInboxRecipient(userId) {
   if (!userId || userId === state.session?.user?.id) return;
   state.selectedRecipientId = userId;
-  renderInboxRecipients();
+  if (inboxRecipientSearch) inboxRecipientSearch.value = '';
+  if (inboxRecipientResults) inboxRecipientResults.hidden = true;
   renderInbox();
   await supabase.from('direct_messages').update({ read_at: new Date().toISOString() })
     .eq('sender_id', userId).eq('recipient_id', state.session.user.id).is('read_at', null);
@@ -1071,17 +1238,50 @@ async function selectInboxRecipient(userId) {
 buttonInbox?.addEventListener('click', async () => {
   await loadSocialData();
   window.LucreUI?.openModal('modal-inbox');
+  window.requestAnimationFrame(() => inboxRecipientSearch?.focus());
 });
-inboxRecipientSelect?.addEventListener('change', (event) => selectInboxRecipient(event.target.value));
+document.querySelectorAll('[data-open-social-inbox]').forEach((button) => button.addEventListener('click', () => buttonInbox?.click()));
+inboxRecipientSearch?.addEventListener('input', renderInboxRecipientResults);
 document.getElementById('modal-inbox')?.addEventListener('click', (event) => {
   const user = event.target.closest('[data-message-user]');
   if (user) selectInboxRecipient(user.dataset.messageUser);
 });
 socialCommunityList?.addEventListener('click', async (event) => {
-  const user = event.target.closest('[data-message-user]');
-  if (!user) return;
-  await selectInboxRecipient(user.dataset.messageUser);
-  window.LucreUI?.openModal('modal-inbox');
+  const follow = event.target.closest('[data-follow-user]');
+  const profile = event.target.closest('[data-open-profile]');
+  if (follow) await toggleFollow(follow.dataset.followUser);
+  else if (profile) openSocialProfile(profile.dataset.openProfile);
+});
+document.getElementById('social-self-profile-button')?.addEventListener('click', () => openSocialProfile(state.session?.user?.id));
+document.getElementById('social-feed-refresh')?.addEventListener('click', loadSocialPosts);
+document.querySelector('.social-local-nav')?.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-social-view]');
+  if (!button) return;
+  document.querySelectorAll('[data-social-view]').forEach((item) => item.classList.toggle('active', item === button));
+  state.socialFeedMode = button.dataset.socialView;
+  if (state.socialFeedMode === 'profile') state.selectedSocialProfileId = state.session?.user?.id;
+  await loadSocialPosts();
+});
+document.getElementById('modal-social-profile')?.addEventListener('click', async (event) => {
+  const follow = event.target.closest('[data-follow-user]');
+  const message = event.target.closest('[data-message-user]');
+  const friend = event.target.closest('[data-friend-user]');
+  const viewPosts = event.target.closest('[data-view-profile-feed]');
+  if (follow) { await toggleFollow(follow.dataset.followUser); await openSocialProfile(follow.dataset.followUser); }
+  else if (message) { await selectInboxRecipient(message.dataset.messageUser); window.LucreUI?.closeModal(document.getElementById('modal-social-profile')); window.LucreUI?.openModal('modal-inbox'); }
+  else if (friend) {
+    const existing = state.socialFriendRequests.find((request) => [request.requester_id, request.addressee_id].includes(friend.dataset.friendUser));
+    const query = existing?.status === 'pending' && existing.addressee_id === state.session.user.id
+      ? supabase.from('social_friend_requests').update({ status: 'accepted', responded_at: new Date().toISOString() }).eq('id', existing.id)
+      : supabase.from('social_friend_requests').insert({ requester_id: state.session.user.id, addressee_id: friend.dataset.friendUser });
+    const { error } = await query;
+    if (!error) { await loadSocialGraph(); await openSocialProfile(friend.dataset.friendUser); dispatchSocialPush(); }
+  } else if (viewPosts) {
+    state.socialFeedMode = 'profile'; state.selectedSocialProfileId = viewPosts.dataset.viewProfileFeed;
+    await loadSocialPosts(); window.LucreUI?.closeModal(document.getElementById('modal-social-profile'));
+  } else if (event.target.closest('#social-profile-edit')) {
+    window.LucreUI?.closeModal(document.getElementById('modal-social-profile')); window.LucreUI?.openModal('modal-account-settings');
+  }
 });
 inboxComposeForm?.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -1095,6 +1295,7 @@ inboxComposeForm?.addEventListener('submit', async (event) => {
   inboxMessageInput.value = '';
   status.textContent = '';
   await loadDirectMessages();
+  dispatchSocialPush();
 });
 
 // ---------------------------------------------------------------------------
@@ -3035,6 +3236,13 @@ function markVisibleNotificationsRead() {
     return Number.isFinite(timestamp) ? Math.max(latest, timestamp) : latest;
   }, 0);
   localStorage.setItem(notificationReadKey(), String(Math.max(Date.now(), latestVisibleAt)));
+  const unreadIds = state.socialNotifications.filter((item) => !item.read_at).map((item) => item.id);
+  if (unreadIds.length) {
+    supabase.from('social_notifications').update({ read_at: new Date().toISOString() }).in('id', unreadIds)
+      .then(({ error }) => { if (error) console.error('social notification read error', error); });
+    state.socialNotifications = state.socialNotifications.map((item) => unreadIds.includes(item.id)
+      ? { ...item, read_at: new Date().toISOString() } : item);
+  }
 }
 
 function applySignalDeliveryChange(payload) {
@@ -3154,6 +3362,15 @@ function buildNotifications() {
       }));
   });
 
+  state.socialNotifications.forEach((notification) => items.push({
+    id: `social:${notification.id}`,
+    tone: ['message', 'mention', 'comment'].includes(notification.event_type) ? 'signal' : 'success',
+    title: notification.title,
+    detail: notification.detail,
+    at: notification.created_at,
+    url: notification.url || '/?view=social',
+  }));
+
   return items
     .filter((item) => item.at)
     .sort((a, b) => new Date(b.at) - new Date(a.at))
@@ -3170,10 +3387,10 @@ function renderNotifications() {
   buttonNotifications.setAttribute('aria-label', unread ? `Notifications, ${unread} unread` : 'Notifications');
   notificationList.innerHTML = state.notifications.length
     ? state.notifications.map((item) => `
-        <div class="notification-item notification-${item.tone}">
+        <button class="notification-item notification-${item.tone}" type="button" ${item.url ? `data-notification-url="${escapeHtml(item.url)}"` : ''}>
           <span class="notification-item-dot" aria-hidden="true"></span>
           <div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.detail)}</p><time datetime="${escapeHtml(item.at)}">${notificationRelativeTime(item.at)}</time></div>
-        </div>`).join('')
+        </button>`).join('')
     : '<p class="empty-state-text">No activity yet.</p>';
 }
 
@@ -3205,6 +3422,14 @@ buttonNotifications?.addEventListener('click', () => {
     markVisibleNotificationsRead();
     renderNotifications();
   }
+});
+notificationList?.addEventListener('click', (event) => {
+  const item = event.target.closest('[data-notification-url]');
+  if (!item) return;
+  const url = new URL(item.dataset.notificationUrl, window.location.origin);
+  if (url.searchParams.get('view') === 'social') setActiveView('social');
+  notificationPanel.hidden = true;
+  buttonNotifications?.setAttribute('aria-expanded', 'false');
 });
 
 document.addEventListener('click', (event) => {
@@ -6879,6 +7104,12 @@ function resetDashboardState() {
   state.notifications = [];
   state.socialProfiles = [];
   state.socialPosts = [];
+  state.socialTags = [];
+  state.socialFollows = [];
+  state.socialFriendRequests = [];
+  state.socialReactions = [];
+  state.socialShares = [];
+  state.socialNotifications = [];
   state.directMessages = [];
   state.selectedRecipientId = null;
   state.activeView = 'dashboard';
@@ -6914,6 +7145,8 @@ function resetDashboardState() {
   setActiveTab('overview');
   stopPositionPolling();
   stopRealtime();
+  if (socialRealtimeChannel) supabase.removeChannel(socialRealtimeChannel);
+  socialRealtimeChannel = null;
   stopSymbolRescanPoll();
   pushSubscription = null;
   if (dailyRiskOverrideTimer) clearTimeout(dailyRiskOverrideTimer);

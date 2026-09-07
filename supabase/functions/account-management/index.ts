@@ -32,20 +32,31 @@ Deno.serve(async (req) => {
 
   if (body.action === "update_profile") {
     const displayName = text(body.display_name, 80) || "Lucre trader";
+    const handle = String(body.handle ?? "").trim().replace(/^\$+/, "").toLowerCase();
+    if (!/^[a-z][a-z0-9_]{2,29}$/.test(handle)) {
+      return reply({ error: "invalid_social_handle", detail: "Use 3–30 lowercase letters, numbers, or underscores, beginning with a letter." }, 422);
+    }
     const requestedAvatarPath = text(body.avatar_path, 300);
     if (requestedAvatarPath && !requestedAvatarPath.startsWith(`${userId}/`)) {
       return reply({ error: "invalid_avatar_path" }, 422);
     }
     const avatarPath = requestedAvatarPath;
+    const { data: handleOwner, error: handleLookupError } = await admin.from("social_profiles")
+      .select("user_id").eq("handle", handle).neq("user_id", userId).maybeSingle();
+    if (handleLookupError) return reply({ error: "social_handle_lookup_failed", detail: handleLookupError.message }, 500);
+    if (handleOwner) return reply({ error: "social_handle_taken", detail: "That $handle is already taken." }, 409);
     const { error } = await admin.from("profiles").update({
       display_name: displayName, bio: text(body.bio, 500), location: text(body.location, 100),
       website: text(body.website, 300), trading_style: text(body.trading_style, 100), avatar_path: avatarPath,
     }).eq("id", userId);
     if (error) return reply({ error: "profile_update_failed", detail: error.message }, 500);
     const { error: socialError } = await admin.from("social_profiles").upsert({
-      user_id: userId, display_name: displayName, avatar_path: avatarPath,
+      user_id: userId, display_name: displayName, handle, bio: text(body.bio, 240), avatar_path: avatarPath,
     }, { onConflict: "user_id" });
-    if (socialError) return reply({ error: "social_profile_update_failed", detail: socialError.message }, 500);
+    if (socialError) return reply({
+      error: socialError.code === "23505" ? "social_handle_taken" : "social_profile_update_failed",
+      detail: socialError.code === "23505" ? "That $handle is already taken." : socialError.message,
+    }, socialError.code === "23505" ? 409 : 500);
     return reply({ ok: true });
   }
   if (body.action === "update_timezone") {

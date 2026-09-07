@@ -1,43 +1,37 @@
-# Design QA — Position ledger alignment v1.0.78
+# Design QA — Social v1.0.79
 
-## Evidence
+## Source of truth
 
-- Source visual truth: `/var/folders/s1/w5hdt7dn595dy2x09p26qf5r0000gn/T/TemporaryItems/NSIRD_screencaptureui_SkGtZB/Screenshot 2026-09-06 at 2.54.59 PM.png` (2086 × 776).
-- Browser-rendered implementation: `/private/tmp/lucre-position-ledger-v1.0.78.png` (2086 × 776).
-- Combined comparison: `/private/tmp/lucre-position-ledger-comparison-v1.0.78.png` (2086 × 1632).
-- Desktop viewport: 2086 × 776 CSS px. Mobile viewport: 390 × 844 CSS px.
-- Density normalization: both desktop captures use the same 2086 × 776 pixel canvas at device scale 1. The mobile check used its native CSS viewport.
-- State: dark Seaside palette; open-position ledger with two representative rows, including short and long strategy names.
-
-## Full-view comparison
-
-The reported screen showed the strategy value drifting far to the right of its header because the generic mini-table flex rule overrode the position row's grid. The revised implementation gives the header and every position row one shared four-track grid. Desktop measurements confirm identical x coordinates and widths for Symbol, Strategy, Live P/L, and Actions across the header and both rows, with zero horizontal overflow.
-
-## Focused-region comparison
-
-- Fonts and typography: existing Lucre type families, sizes, weights, truncation, and tabular P/L figures are preserved.
-- Spacing and layout rhythm: header and rows share tracks at x=118, 854.17, 1446.31, and 1808, with widths 720.17, 576.14, 345.69, and 160 pixels respectively. Divider lines and action spacing remain consistent.
-- Colors and visual tokens: all values and controls continue to use the active palette's semantic positive, negative, border, and text tokens.
-- Image quality and asset fidelity: this component contains no raster imagery or new icon assets.
-- Copy and content: Symbol, Strategy, Live P/L, and Actions remain unchanged; the sample live value is explicitly net of costs.
-
-## Responsive and interaction verification
-
-- Desktop: both sample rows align exactly to the four header tracks.
-- Mobile: rows retain the established stacked layout at 390 × 844 with zero document overflow.
-- Modify and Close remain normal interactive buttons; no control layer or pointer behavior changed.
+- Selected visual direction: `/Users/rayevelyn/.codex/generated_images/01a02ffc-090a-7373-8d71-3aeedabdfb9b/exec-8e2cb5e7-8051-4a39-9f47-ab9fa75da7e6.png`
+- Implementation surface: `dashboard/index.html` (`#view-social` only)
+- Desktop capture: `/private/tmp/lucre-social-v1.0.79-desktop.jpg`
 
 ## Comparison history
 
-- Earlier P1: Strategy, Live P/L, and Actions were rendered by a flex row while the header used a grid, so columns could not align. Fixed by increasing selector specificity and binding both header and row to `--position-ledger-columns`.
-- Post-fix evidence: every measured row child has the same x coordinate and width as its corresponding header cell at the reference desktop viewport.
+### Pass 1
 
-## Findings
+- Confirmed the selected three-column social structure: profile/navigation rail,
+  centered composer and following feed, and suggestions/trending rail.
+- Confirmed the compact floating P/L action remains above the social content.
+- Confirmed cards, spacing, type hierarchy, and responsive collapse inherit the
+  active Lucre palette rather than introducing a separate visual system.
+- Confirmed posts expose the required market tag, reactions, comments, sharing,
+  `$handle` mentions, and author profile entry points.
+- Confirmed the global `.topnav` markup and its CSS rules were not modified.
+- Confirmed the static desktop fixture has no horizontal document overflow at
+  the tested 1440px viewport.
 
-No remaining actionable P0, P1, or P2 issues were found in the requested position-ledger alignment or responsive behavior.
+## Functional checks
 
-## Follow-up polish
+- `dashboard/main.js` passes JavaScript syntax validation.
+- Production HTML and the isolated Social fixture pass HTML parsing.
+- Following-feed queries are scoped to the signed-in user plus followed IDs.
+- Direct-message reads remain participant-only through RLS.
+- Social notifications are user-scoped through RLS and realtime filters.
+- The Social implementation never selects terminal, strategy, position, order,
+  balance, equity, margin, or other private trading records.
 
-No P3 follow-up is required for this scoped correction.
+## Final result
 
-final result: passed
+Passed. The implementation follows the selected Option 1 structure while
+preserving the current top navigation component unchanged.

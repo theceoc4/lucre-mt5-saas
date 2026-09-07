@@ -41,7 +41,7 @@
 <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,500,400&f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.78" />
+<link rel="stylesheet" href="./style.css?v=1.0.79" />
 </head>
 <body>
 
@@ -487,6 +487,9 @@
           <label class="push-preference-row"><span><strong>Terminal disconnections</strong><small>When an MT5 heartbeat is missing for more than 90 seconds.</small></span><input type="checkbox" name="terminal_disconnected" checked /></label>
           <label class="push-preference-row"><span><strong>Opened positions</strong><small>One alert for each broker-confirmed MT5 ticket.</small></span><input type="checkbox" name="position_opened" checked /></label>
           <label class="push-preference-row"><span><strong>Closed positions</strong><small>Includes net realized P/L after commissions, swaps, and fees.</small></span><input type="checkbox" name="position_closed" checked /></label>
+          <label class="push-preference-row"><span><strong>Private messages</strong><small>New messages from other Lucre traders.</small></span><input type="checkbox" name="social_messages" checked /></label>
+          <label class="push-preference-row"><span><strong>Social mentions</strong><small>Someone tagged your $handle in a post or comment.</small></span><input type="checkbox" name="social_mentions" checked /></label>
+          <label class="push-preference-row"><span><strong>Post comments</strong><small>New comments on posts you own.</small></span><input type="checkbox" name="social_comments" checked /></label>
           <label class="push-preference-row"><span><strong>Trend Strength extremes</strong><small>When a pair enters 100% bullish or 100% bearish.</small></span><input type="checkbox" name="trend_extreme" checked /></label>
           <label class="push-preference-row"><span><strong>Floating P/L crosses +$1.00</strong><small>Once per continuous cluster of open trades; resets after all positions close.</small></span><input type="checkbox" name="floating_pl_target" checked /></label>
         </div>
@@ -539,15 +542,16 @@
 <div class="modal-overlay" id="modal-account-settings" aria-hidden="true">
   <div class="modal-card modal-card-wide">
     <div class="modal-head"><h3>Account & profile</h3><button class="icon-btn" type="button" data-modal-close aria-label="Close">×</button></div>
-    <p class="modal-sub">Your display name and profile photo appear in Social. Location, website, trading style, and account information remain private.</p>
+    <p class="modal-sub">Your display name, $handle, profile photo, and About text appear in Social. Location, website, trading style, and account information remain private.</p>
     <form id="form-account-profile" novalidate>
       <div class="profile-photo-editor">
         <div class="social-avatar social-avatar-lg" id="profile-photo-preview" aria-hidden="true">?</div>
         <div><label class="btn-secondary btn-xs profile-photo-label" for="profile-photo-input">Upload photo</label><input id="profile-photo-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden /><small>JPG, PNG, WebP, or GIF · up to 5 MB</small></div>
       </div>
       <input type="hidden" name="avatar_path" id="profile-avatar-path" />
-      <div class="field-row"><div class="field"><label for="profile-display-name">Display name</label><input id="profile-display-name" name="display_name" maxlength="80" /></div><div class="field"><label for="profile-location">Location</label><input id="profile-location" name="location" maxlength="100" /></div></div>
-      <div class="field-row"><div class="field"><label for="profile-website">Website</label><input id="profile-website" name="website" maxlength="300" placeholder="https://" /></div><div class="field"><label for="profile-trading-style">Trading style</label><input id="profile-trading-style" name="trading_style" maxlength="100" placeholder="e.g. discretionary crypto" /></div></div>
+      <div class="field-row"><div class="field"><label for="profile-display-name">Display name</label><input id="profile-display-name" name="display_name" maxlength="80" /></div><div class="field"><label for="profile-social-handle">Social handle</label><div class="social-handle-input"><span>$</span><input id="profile-social-handle" name="handle" minlength="3" maxlength="30" pattern="[a-z][a-z0-9_]{2,29}" autocomplete="off" autocapitalize="none" spellcheck="false" title="3–30 lowercase letters, numbers, or underscores; begin with a letter" /></div></div></div>
+      <div class="field-row"><div class="field"><label for="profile-location">Location</label><input id="profile-location" name="location" maxlength="100" /></div><div class="field"><label for="profile-website">Website</label><input id="profile-website" name="website" maxlength="300" placeholder="https://" /></div></div>
+      <div class="field"><label for="profile-trading-style">Trading style</label><input id="profile-trading-style" name="trading_style" maxlength="100" placeholder="e.g. discretionary crypto" /></div>
       <div class="field"><label for="profile-bio">About</label><textarea id="profile-bio" name="bio" maxlength="500" rows="3"></textarea></div>
       <p class="auth-message" id="account-profile-message" role="status"></p><button class="btn-accent" type="submit">Save profile</button>
     </form>
@@ -564,7 +568,7 @@
     <div class="modal-head"><div><h3>Inbox</h3><p class="modal-sub">Private messages between Lucre users.</p></div><button class="icon-btn" type="button" data-modal-close aria-label="Close">×</button></div>
     <div class="inbox-layout">
       <aside class="inbox-conversations" aria-label="Conversations">
-        <label class="field inbox-recipient-field"><span>Message a trader</span><select id="inbox-recipient-select"><option value="">Choose a user</option></select></label>
+        <div class="field inbox-recipient-field"><label for="inbox-recipient-search">Message a trader</label><div class="social-handle-input"><span>$</span><input id="inbox-recipient-search" type="search" placeholder="username" autocomplete="off" autocapitalize="none" spellcheck="false" /></div><div class="inbox-recipient-results" id="inbox-recipient-results" hidden></div></div>
         <div id="inbox-conversation-list"><p class="empty-state-text">No conversations yet.</p></div>
       </aside>
       <section class="inbox-thread" aria-label="Message thread">
@@ -577,6 +581,13 @@
         <p class="auth-message" id="inbox-message-status" role="status"></p>
       </section>
     </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-social-profile" aria-hidden="true">
+  <div class="modal-card modal-card-wide social-profile-modal-card">
+    <div class="modal-head"><h3>Trader profile</h3><button class="icon-btn" type="button" data-modal-close aria-label="Close">×</button></div>
+    <div id="social-profile-modal-body"><p class="empty-state-text">Loading profile…</p></div>
   </div>
 </div>
 
@@ -700,16 +711,41 @@
         </button>
       </section>
 
-      <div class="social-layout">
+      <div class="social-network-layout">
+        <aside class="social-profile-rail" aria-label="Your social profile">
+          <section class="social-self-card">
+            <button class="social-profile-link" type="button" id="social-self-profile-button">
+              <div class="social-avatar social-avatar-xl" id="social-self-avatar">?</div>
+              <strong id="social-self-name">Lucre trader</strong>
+              <span id="social-self-handle">$trader</span>
+            </button>
+            <p id="social-self-bio">Add a short profile description so traders know your lane.</p>
+            <div class="social-profile-counts"><button type="button" data-social-list="following"><strong id="social-following-count">0</strong><span>Following</span></button><button type="button" data-social-list="followers"><strong id="social-follower-count">0</strong><span>Followers</span></button></div>
+          </section>
+          <nav class="social-local-nav" aria-label="Social navigation">
+            <button class="active" type="button" data-social-view="following">Following</button>
+            <button type="button" data-social-view="profile">My profile</button>
+            <button type="button" data-open-social-inbox>Messages</button>
+          </nav>
+        </aside>
+
         <main class="social-feed-column">
-          <section class="card card-pad social-composer-card">
-            <div class="social-composer-identity"><div class="social-avatar" id="social-composer-avatar">?</div><div><strong id="social-composer-name">Lucre trader</strong><span>Share with the Lucre community</span></div></div>
-            <form id="social-post-form"><textarea id="social-post-input" maxlength="1200" rows="3" placeholder="What’s moving in your market today?"></textarea><div><small id="social-post-count">0 / 1200</small><button class="btn-accent" type="submit">Post</button></div></form>
+          <section class="social-composer-card">
+            <div class="social-composer-identity"><div class="social-avatar" id="social-composer-avatar">?</div><div><strong id="social-composer-name">Lucre trader</strong><span>Share with people who follow your market journey</span></div></div>
+            <form id="social-post-form">
+              <textarea id="social-post-input" maxlength="1200" rows="3" placeholder="Share your market view…"></textarea>
+              <div class="social-composer-actions"><label for="social-post-tag">Required tag</label><select id="social-post-tag" required><option value="">Choose a $tag</option></select><small id="social-post-count">0 / 1200</small><button class="btn-accent" type="submit">Post</button></div>
+            </form>
             <p class="auth-message" id="social-post-status" role="status"></p>
           </section>
-          <section class="social-feed" id="social-feed" aria-live="polite"><div class="card card-pad"><p class="empty-state-text">Loading the timeline…</p></div></section>
+          <div class="social-feed-head"><div><strong id="social-feed-title">Following</strong><span id="social-feed-subtitle">Posts from traders you follow</span></div><button class="btn-secondary btn-xs" type="button" id="social-feed-refresh">Refresh</button></div>
+          <section class="social-feed" id="social-feed" aria-live="polite"><div class="social-feed-empty"><p>Loading the timeline…</p></div></section>
         </main>
-        <aside class="card card-pad social-community-card"><h3>Community</h3><p class="desc">Phase one keeps it clean: public posts and comments, private DMs, and no account metrics shared.</p><div id="social-community-list"></div></aside>
+
+        <aside class="social-discovery-rail" aria-label="Discover traders">
+          <section class="social-rail-section"><div class="social-rail-heading"><h3>Suggested traders</h3><span>Discover</span></div><div id="social-community-list"></div></section>
+          <section class="social-rail-section"><div class="social-rail-heading"><h3>Trending markets</h3></div><div class="social-trending-tags" id="social-trending-tags"></div></section>
+        </aside>
       </div>
     </div>
 
@@ -1126,6 +1162,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="./app.js?v=1.0.78"></script>
-<script type="module" src="./main.js?v=1.0.78"></script>
+<script type="module" src="./main.js?v=1.0.79"></script>
 </body>
 </html>

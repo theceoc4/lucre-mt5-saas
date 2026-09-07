@@ -1,5 +1,20 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.79 — Following-first Social network (2026-09-06)
+
+- Rebuilds the Social page beneath the existing global navigation as a focused,
+  centered timeline with a profile rail and trader/market discovery rail.
+- Adds unique `$handles`, short public bios, required market tags, following,
+  friend requests, reactions, comments, native sharing, and profile views.
+- Restricts the default timeline to the signed-in trader and accounts they
+  follow; private trading, terminal, position, and account data remain outside
+  every social query.
+- Upgrades private messaging with `$handle` autocomplete, conversation previews,
+  realtime delivery, and participant-only database policies.
+- Adds in-app and optional PWA notifications for messages, mentions, and comments
+  while preserving user-level notification controls.
+- Leaves the existing Lucre top navigation markup and styling unchanged.
+
 ## v1.0.78 — Net P/L contract and aligned position ledger (2026-09-06)
 
 - Makes net account impact the single displayed P/L value across open and
