@@ -1,5 +1,19 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.80 — Clean modal focus and free-form hashtags (2026-09-06)
+
+- Moves focus styling from nested username inputs to their shared field shell,
+  removing Safari's clipped blue focus slice over the `$` prefix.
+- Standardizes text-field focus rings without changing checkbox, radio, or
+  switch visuals.
+- Makes the active modal the only focusable interface layer and traps keyboard
+  focus inside it, preventing message composition from jumping into an
+  underlying timeline comment field during realtime refreshes.
+- Removes the required curated post tag and supports optional, free-form
+  `#hashtags` parsed from post text.
+- Replaces Trending Markets with a global Trending list ranked by hashtag use
+  across the last 30 days.
+
 ## v1.0.79 — Following-first Social network (2026-09-06)
 
 - Rebuilds the Social page beneath the existing global navigation as a focused,

@@ -2019,10 +2019,21 @@ body {
   overflow-x: hidden;
 }
 
+body.has-open-modal { overflow: hidden; }
+
 .field input:focus,
 .field select:focus {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 1px;
+  outline: 0;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 72%, transparent);
+}
+
+input:not([type='checkbox']):not([type='radio']):focus,
+select:focus,
+textarea:focus {
+  outline: 0;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 72%, transparent);
 }
 
 .field-checkbox {
@@ -3772,9 +3783,8 @@ body {
 .social-composer-identity span { color: var(--color-text-muted); font-size: var(--text-xs); }
 .social-composer-card textarea, .social-comment-form input, .inbox-compose textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--color-border-strong); border-radius: var(--radius-lg); background: var(--color-surface-sunken); color: var(--color-text); padding: var(--space-3); font: inherit; resize: vertical; }
 .social-composer-card textarea { min-height: 84px; resize: none; }
-.social-composer-actions { display: grid; grid-template-columns: auto minmax(150px, 1fr) auto auto; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
+.social-composer-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
 .social-composer-actions label, .social-composer-actions small { color: var(--color-text-faint); font-size: var(--text-xs); }
-.social-composer-actions select { min-width: 0; height: 38px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-full); padding: 0 var(--space-3); background: var(--color-surface-sunken); color: var(--color-text); }
 .social-feed-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-1); }
 .social-feed-head > div { display: grid; gap: 2px; }
 .social-feed-head strong { font-family: var(--font-display); font-size: var(--text-base); }
@@ -3785,9 +3795,9 @@ body {
 .social-post-author, .social-person { display: flex; align-items: center; gap: var(--space-3); min-width: 0; color: var(--color-text); text-align: left; }
 .social-post-author > span, .social-person > span { min-width: 0; display: grid; gap: 2px; }
 .social-post-author small, .social-person small { color: var(--color-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.social-topic-tag { margin-top: var(--space-3); padding: 5px 10px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-full); color: var(--color-accent); font-size: var(--text-xs); font-weight: 700; }
 .social-post-body { margin: var(--space-3) 0 var(--space-4); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.62; color: var(--color-text); }
 .social-inline-mention { display: inline; color: var(--color-accent); font: inherit; font-weight: 650; }
+.social-inline-hashtag { display: inline; color: var(--color-accent); font-weight: 700; }
 .social-delete { margin-left: auto; align-self: flex-start; color: var(--color-text-faint); font-size: var(--text-lg); line-height: 1; padding: var(--space-1); }
 .social-delete:hover { color: var(--color-negative); }
 .social-post-actions { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--color-border); border-bottom: 1px solid var(--color-border); }
@@ -3815,13 +3825,14 @@ body {
 .social-follow-button:hover { background: var(--color-surface-sunken); }
 .social-rail-empty { margin: 0; color: var(--color-text-muted); font-size: var(--text-xs); line-height: 1.5; }
 .social-trending-tags { display: grid; gap: var(--space-1); }
-.social-trending-tags button { display: flex; justify-content: space-between; gap: var(--space-2); padding: var(--space-2) 0; color: var(--color-text-muted); text-align: left; }
-.social-trending-tags span { color: var(--color-accent); font-weight: 700; }
-.social-trending-tags small { color: var(--color-text-faint); }
+.social-trending-item { display: flex; justify-content: space-between; gap: var(--space-2); padding: var(--space-2) 0; color: var(--color-text-muted); }
+.social-trending-item span { color: var(--color-accent); font-weight: 700; }
+.social-trending-item small { color: var(--color-text-faint); }
 
 .social-handle-input { display: flex; align-items: center; min-height: 42px; overflow: hidden; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); background: var(--color-surface-sunken); }
 .social-handle-input > span { padding-left: var(--space-3); color: var(--color-accent); font-weight: 800; }
-.social-handle-input input { min-width: 0; flex: 1; border: 0 !important; background: transparent !important; box-shadow: none !important; }
+.social-handle-input input { min-width: 0; flex: 1; border: 0 !important; outline: 0 !important; background: transparent !important; box-shadow: none !important; }
+.social-handle-input:focus-within { border-color: var(--color-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 72%, transparent); }
 .social-profile-modal-card { max-width: 700px; }
 .social-profile-hero { display: flex; gap: var(--space-5); align-items: center; padding: var(--space-4) 0; }
 .social-profile-hero h2 { margin: 0 0 2px; font-family: var(--font-display); font-size: var(--text-xl); }
@@ -3877,8 +3888,7 @@ body {
   .social-network-layout { grid-template-columns: minmax(0, 680px); }
   .social-profile-rail, .social-discovery-rail { display: none; }
   .social-composer-actions { grid-template-columns: minmax(0, 1fr) auto; }
-  .social-composer-actions label { display: none; }
-  .social-composer-actions small { grid-row: 2; }
+  .social-composer-actions small:first-child { grid-column: 1 / -1; }
   .inbox-modal-card { width: min(100% - 20px, 1040px); max-height: calc(100dvh - 20px); }
   .inbox-layout { min-height: 0; height: min(680px, calc(100dvh - 130px)); grid-template-columns: 1fr; grid-template-rows: minmax(150px, 32%) minmax(0, 1fr); }
   .inbox-conversations { border-right: 0; border-bottom: 1px solid var(--color-border); }

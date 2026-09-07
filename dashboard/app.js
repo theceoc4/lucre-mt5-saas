@@ -52,15 +52,43 @@
   });
 
   // ---- Modal open/close (generic — works for any [data-modal] target) ----
+  const modalFocusReturn = new WeakMap();
+  let activeModal = null;
+
+  function setModalIsolation(modal) {
+    activeModal = modal;
+    document.body.classList.toggle('has-open-modal', Boolean(modal));
+    [...document.body.children].forEach((child) => {
+      if (child.tagName === 'SCRIPT') return;
+      if (modal && child !== modal) child.setAttribute('inert', '');
+      else child.removeAttribute('inert');
+    });
+    document.querySelectorAll('.modal-overlay').forEach((overlay) => {
+      if (modal && overlay !== modal) overlay.setAttribute('inert', '');
+      else overlay.removeAttribute('inert');
+    });
+    if (modal) modal.removeAttribute('inert');
+  }
+
   function openModal(id) {
     const el = document.getElementById(id);
     if (!el) return;
+    modalFocusReturn.set(el, document.activeElement);
     el.setAttribute('aria-hidden', 'false');
     el.classList.add('is-open');
+    setModalIsolation(el);
   }
   function closeModal(el) {
+    if (!el) return;
     el.setAttribute('aria-hidden', 'true');
     el.classList.remove('is-open');
+    const nextOpen = [...document.querySelectorAll('.modal-overlay.is-open')].pop() || null;
+    setModalIsolation(nextOpen);
+    const returnTarget = modalFocusReturn.get(el);
+    const nextTarget = returnTarget instanceof HTMLElement && (!nextOpen || nextOpen.contains(returnTarget))
+      ? returnTarget
+      : nextOpen?.querySelector('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])');
+    if (nextTarget instanceof HTMLElement) window.requestAnimationFrame(() => nextTarget.focus({ preventScroll: true }));
   }
   window.LucreUI = { openModal, closeModal };
 
@@ -71,6 +99,22 @@
     overlay.querySelectorAll('[data-modal-close]').forEach((btn) => {
       btn.addEventListener('click', () => closeModal(overlay));
     });
+  });
+
+  document.addEventListener('focusin', (event) => {
+    if (!activeModal || activeModal.contains(event.target)) return;
+    const fallback = activeModal.querySelector('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])');
+    fallback?.focus({ preventScroll: true });
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab' || !activeModal) return;
+    const focusable = [...activeModal.querySelectorAll('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')]
+      .filter((element) => element.getClientRects().length > 0);
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   });
 
   // ---- Account menu toggle ----

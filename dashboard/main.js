@@ -40,7 +40,7 @@ const state = {
   notifications: [],
   socialProfiles: [],
   socialPosts: [],
-  socialTags: [],
+  socialTrendingHashtags: [],
   socialFollows: [],
   socialFriendRequests: [],
   socialReactions: [],
@@ -889,8 +889,11 @@ function socialHandle(profile) {
 }
 
 function socialTextMarkup(value) {
-  return escapeHtml(value || '').replace(/\$([A-Za-z][A-Za-z0-9_]{2,29})/g,
-    '<button class="social-inline-mention" type="button" data-open-handle="$1">$$$1</button>');
+  return escapeHtml(value || '')
+    .replace(/\$([A-Za-z][A-Za-z0-9_]{2,29})/g,
+      '<button class="social-inline-mention" type="button" data-open-handle="$1">$$$1</button>')
+    .replace(/(^|\s)#([A-Za-z0-9][A-Za-z0-9_]{0,39})/g,
+      '$1<span class="social-inline-hashtag">#$2</span>');
 }
 
 async function dispatchSocialPush() {
@@ -919,20 +922,14 @@ async function loadSocialProfiles() {
 async function loadSocialGraph() {
   const ownId = state.session?.user?.id;
   if (!ownId) return;
-  const [followResult, friendResult, tagResult] = await Promise.all([
+  const [followResult, friendResult] = await Promise.all([
     supabase.from('social_follows').select('follower_id,followed_id,created_at'),
     supabase.from('social_friend_requests').select('id,requester_id,addressee_id,status,created_at,responded_at'),
-    supabase.from('social_tags').select('id,slug,label').order('slug'),
   ]);
   if (followResult.error) console.error('loadSocialFollows error', followResult.error);
   if (friendResult.error) console.error('loadSocialFriendRequests error', friendResult.error);
-  if (tagResult.error) console.error('loadSocialTags error', tagResult.error);
   state.socialFollows = followResult.data || [];
   state.socialFriendRequests = friendResult.data || [];
-  state.socialTags = tagResult.data || [];
-  const tagSelect = document.getElementById('social-post-tag');
-  if (tagSelect) tagSelect.innerHTML = '<option value="">Choose a $tag</option>' + state.socialTags.map((tag) =>
-    `<option value="${tag.id}">${escapeHtml(tag.slug)} · ${escapeHtml(tag.label)}</option>`).join('');
   renderSocialIdentity();
 }
 
@@ -946,7 +943,7 @@ async function loadSocialPosts() {
   const authorIds = [...new Set(socialFeedAuthorIds())];
   if (!authorIds.length) { state.socialPosts = []; renderSocialFeed(); return; }
   const { data: posts, error } = await supabase.from('social_posts')
-    .select('id,user_id,body,tag_id,created_at,updated_at,social_tags(slug,label)')
+    .select('id,user_id,body,created_at,updated_at,social_post_hashtags(social_hashtags(slug))')
     .in('user_id', authorIds).order('created_at', { ascending: false }).limit(60);
   if (error) { console.error('loadSocialPosts error', error); return; }
   const ids = (posts || []).map((post) => post.id);
@@ -964,9 +961,18 @@ async function loadSocialPosts() {
   state.socialReactions = reactions;
   state.socialShares = shares;
   state.socialPosts = (posts || []).map((post) => ({
-    ...post, tag: post.social_tags, comments: comments.filter((comment) => comment.post_id === post.id),
+    ...post,
+    hashtags: (post.social_post_hashtags || []).map((item) => `#${item.social_hashtags?.slug}`).filter((value) => value !== '#undefined'),
+    comments: comments.filter((comment) => comment.post_id === post.id),
   }));
+  await loadTrendingHashtags();
   renderSocialFeed();
+}
+
+async function loadTrendingHashtags() {
+  const { data, error } = await supabase.rpc('social_trending_hashtags', { p_limit: 8 });
+  if (error) { console.error('loadTrendingHashtags error', error); state.socialTrendingHashtags = []; return; }
+  state.socialTrendingHashtags = data || [];
 }
 
 async function loadSocialNotifications() {
@@ -1039,10 +1045,9 @@ function renderSocialIdentity() {
   }
   const trending = document.getElementById('social-trending-tags');
   if (trending) {
-    const counts = new Map();
-    state.socialPosts.forEach((post) => counts.set(post.tag?.slug, (counts.get(post.tag?.slug) || 0) + 1));
-    const tags = [...state.socialTags].sort((a, b) => (counts.get(b.slug) || 0) - (counts.get(a.slug) || 0)).slice(0, 6);
-    trending.innerHTML = tags.map((tag) => `<button type="button" data-social-tag="${tag.id}"><span>${escapeHtml(tag.slug)}</span><small>${counts.get(tag.slug) || 0} recent</small></button>`).join('');
+    trending.innerHTML = state.socialTrendingHashtags.length
+      ? state.socialTrendingHashtags.map((tag) => `<div class="social-trending-item"><span>#${escapeHtml(tag.hashtag)}</span><small>${Number(tag.post_count || 0).toLocaleString()} posts</small></div>`).join('')
+      : '<p class="social-rail-empty">Hashtags used in new posts will begin trending here.</p>';
   }
 }
 
@@ -1069,7 +1074,6 @@ function renderSocialFeed() {
     const visibleComments = comments.slice(-2);
     return `<article class="social-post" data-post-id="${post.id}">
       <header><button class="social-post-author" type="button" data-open-profile="${author.user_id}">${avatarMarkup(author)}<span><strong>${escapeHtml(author.display_name)}</strong><small>${escapeHtml(socialHandle(author))} · ${notificationRelativeTime(post.created_at)}</small></span></button>${post.user_id === ownId ? `<button class="social-delete" type="button" data-delete-post="${post.id}" aria-label="Delete post">×</button>` : ''}</header>
-      <button class="social-topic-tag" type="button" data-social-tag="${post.tag_id}">${escapeHtml(post.tag?.slug || '$GENERAL')}</button>
       <p class="social-post-body">${socialTextMarkup(post.body)}</p>
       <div class="social-post-actions">
         <button class="${reacted ? 'active' : ''}" type="button" data-react-post="${post.id}"><span>React</span><strong>${postReactions.length}</strong></button>
@@ -1107,7 +1111,7 @@ async function openSocialProfile(userId) {
   const followerCount = state.socialFollows.filter((follow) => follow.followed_id === userId).length;
   const friend = state.socialFriendRequests.find((request) => [request.requester_id, request.addressee_id].includes(userId));
   const { data: profilePosts } = await supabase.from('social_posts')
-    .select('id,body,tag_id,created_at,social_tags(slug,label)').eq('user_id', userId)
+    .select('id,body,created_at').eq('user_id', userId)
     .order('created_at', { ascending: false }).limit(10);
   const friendLabel = friend
     ? friend.status === 'accepted' ? 'Friends'
@@ -1116,7 +1120,7 @@ async function openSocialProfile(userId) {
   const body = document.getElementById('social-profile-modal-body');
   body.innerHTML = `<section class="social-profile-hero">${avatarMarkup(profile, 'social-avatar social-avatar-profile')}<div><h2>${escapeHtml(profile.display_name)}</h2><span>${escapeHtml(socialHandle(profile))}</span><p>${escapeHtml(profile.bio || 'No profile description yet.')}</p><div class="social-profile-counts"><div><strong>${followerCount}</strong><span>Followers</span></div><div><strong>${followingCount}</strong><span>Following</span></div></div></div></section>
     <div class="social-profile-actions">${own ? '<button class="btn-secondary" type="button" id="social-profile-edit">Edit profile</button>' : `<button class="btn-accent" type="button" data-follow-user="${userId}">${isFollowing(userId) ? 'Following' : 'Follow'}</button><button class="btn-secondary" type="button" data-friend-user="${userId}" ${friend?.status === 'accepted' || (friend?.status === 'pending' && friend.requester_id === state.session.user.id) ? 'disabled' : ''}>${friendLabel}</button><button class="btn-secondary" type="button" data-message-user="${userId}">Message</button>`}<button class="btn-secondary" type="button" data-view-profile-feed="${userId}">View posts</button></div>
-    <section class="social-profile-posts"><h3>Posts</h3>${profilePosts?.length ? profilePosts.map((post) => `<article><div><span>${escapeHtml(post.social_tags?.slug || '$GENERAL')}</span><time>${notificationRelativeTime(post.created_at)}</time></div><p>${socialTextMarkup(post.body)}</p></article>`).join('') : '<p class="social-rail-empty">No posts yet.</p>'}</section>`;
+    <section class="social-profile-posts"><h3>Posts</h3>${profilePosts?.length ? profilePosts.map((post) => `<article><div><time>${notificationRelativeTime(post.created_at)}</time></div><p>${socialTextMarkup(post.body)}</p></article>`).join('') : '<p class="social-rail-empty">No posts yet.</p>'}</section>`;
   window.LucreUI?.openModal('modal-social-profile');
 }
 
@@ -1127,13 +1131,12 @@ document.getElementById('social-post-input')?.addEventListener('input', (event) 
 document.getElementById('social-post-form')?.addEventListener('submit', async (event) => {
   event.preventDefault();
   const input = document.getElementById('social-post-input');
-  const tag = document.getElementById('social-post-tag');
   const status = document.getElementById('social-post-status');
   const body = input.value.trim();
-  if (!body || !tag.value) { status.textContent = 'Write a post and choose one required $tag.'; return; }
-  const { error } = await supabase.from('social_posts').insert({ user_id: state.session.user.id, body, tag_id: tag.value });
+  if (!body) { status.textContent = 'Write something before posting.'; return; }
+  const { error } = await supabase.from('social_posts').insert({ user_id: state.session.user.id, body });
   if (error) { status.textContent = error.message; return; }
-  input.value = ''; tag.value = ''; status.textContent = '';
+  input.value = ''; status.textContent = '';
   document.getElementById('social-post-count').textContent = '0 / 1200';
   await loadSocialPosts(); dispatchSocialPush();
 });
@@ -1198,6 +1201,9 @@ function conversationPartners() {
 
 function renderInbox() {
   if (!state.session) return;
+  const preserveComposerFocus = document.activeElement === inboxMessageInput;
+  const selectionStart = preserveComposerFocus ? inboxMessageInput.selectionStart : null;
+  const selectionEnd = preserveComposerFocus ? inboxMessageInput.selectionEnd : null;
   const ownId = state.session.user.id;
   const unread = state.directMessages.filter((message) => message.recipient_id === ownId && !message.read_at).length;
   if (inboxDot) inboxDot.hidden = unread === 0;
@@ -1222,6 +1228,10 @@ function renderInbox() {
     `<div class="inbox-message ${message.sender_id === ownId ? 'sent' : 'received'}"><p>${escapeHtml(message.body)}</p><time>${escapeHtml(formatDateTime(message.created_at, { dateStyle: 'medium', timeStyle: 'short' }))}</time></div>`
   ).join('') : '<p class="empty-state-text">No messages yet. Say what’s up.</p>';
   inboxMessageList.scrollTop = inboxMessageList.scrollHeight;
+  if (preserveComposerFocus) window.requestAnimationFrame(() => {
+    inboxMessageInput.focus({ preventScroll: true });
+    if (selectionStart !== null && selectionEnd !== null) inboxMessageInput.setSelectionRange(selectionStart, selectionEnd);
+  });
 }
 
 async function selectInboxRecipient(userId) {
@@ -7104,7 +7114,7 @@ function resetDashboardState() {
   state.notifications = [];
   state.socialProfiles = [];
   state.socialPosts = [];
-  state.socialTags = [];
+  state.socialTrendingHashtags = [];
   state.socialFollows = [];
   state.socialFriendRequests = [];
   state.socialReactions = [];
