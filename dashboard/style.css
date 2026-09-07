@@ -3816,12 +3816,17 @@ textarea:focus {
 .social-reaction-stack .reaction-love { background: var(--color-negative); color: #fff; }
 .social-reaction-stack .reaction-laugh { background: var(--color-warning); color: var(--color-warning-ink, #201700); }
 .social-reaction-stack .reaction-wow { background: color-mix(in srgb, var(--color-accent) 58%, var(--color-surface)); color: var(--color-accent-ink); }
-.social-post-actions { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: var(--space-3); border-top: 1px solid var(--color-border); }
-.social-post-actions button { display: flex; align-items: center; justify-content: center; gap: var(--space-2); min-height: 44px; padding: 9px var(--space-2); color: var(--color-text-muted); font-size: var(--text-xs); }
+.social-post-actions { display: grid; grid-template-columns: repeat(3, 1fr); margin: var(--space-3) calc(var(--space-4) * -1) calc(var(--space-4) * -1); border-top: 1px solid var(--color-border); border-radius: 0 0 var(--radius-xl) var(--radius-xl); background: var(--color-surface-sunken); }
+.social-post-actions.has-more { grid-template-columns: repeat(3, minmax(0, 1fr)) 58px; }
+.social-post-actions > * { min-width: 0; }
+.social-post-actions > * + * { border-left: 1px solid var(--color-border); }
+.social-post-actions button { display: flex; width: 100%; align-items: center; justify-content: center; gap: var(--space-2); min-height: 48px; padding: 9px var(--space-2); color: var(--color-text-muted); font-size: var(--text-xs); background: transparent; }
 .social-post-actions button i { font-size: 17px; }
-.social-post-actions button:hover, .social-post-actions button.active { color: var(--color-accent); background: var(--color-surface-sunken); }
+.social-post-actions button:hover, .social-post-actions button.active { color: var(--color-accent); background: color-mix(in srgb, var(--color-surface) 54%, var(--color-surface-sunken)); }
 .social-reaction-control { position: relative; min-width: 0; }
 .social-reaction-control > button { width: 100%; }
+.social-reaction-control:first-child > button { border-radius: 0 0 0 var(--radius-xl); }
+.social-post-actions:not(.has-more) > button:last-child { border-radius: 0 0 var(--radius-xl) 0; }
 .social-reaction-picker { position: absolute; z-index: 15; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%); display: flex; align-items: center; gap: 4px; padding: 6px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-full); background: color-mix(in srgb, var(--color-surface) 96%, transparent); box-shadow: var(--shadow-card-lg); }
 .social-reaction-picker[hidden] { display: none; }
 .social-reaction-picker button { width: 38px; min-height: 38px; padding: 0; border-radius: 50%; font-size: 20px; }
@@ -3834,8 +3839,20 @@ textarea:focus {
 .social-comment > div span, .social-comment time { color: var(--color-text-faint); font-size: var(--text-xs); }
 .social-comment p { margin: 4px 0; color: var(--color-text-muted); overflow-wrap: anywhere; }
 .social-more-comments { color: var(--color-text-faint); padding-left: 38px; }
-.social-comment-form { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); margin-top: var(--space-3); }
-.social-comment-form input { min-height: 42px; resize: none; }
+.social-comment-form { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-2); margin-top: var(--space-3); }
+.social-comment-form input { min-height: 42px; padding-right: 46px; resize: none; }
+.social-comment-submit { position: absolute; z-index: 2; top: 50%; right: 5px; display: grid; width: 34px; height: 34px; place-items: center; transform: translateY(-50%); border-radius: 50%; color: var(--color-accent); }
+.social-comment-submit:hover { background: color-mix(in srgb, var(--color-accent) 14%, transparent); }
+.social-post-more { position: relative; }
+.social-post-more > button { border-radius: 0 0 var(--radius-xl) 0; }
+.social-post-menu { position: absolute; z-index: 18; right: var(--space-2); bottom: calc(100% + 8px); width: 156px; overflow: hidden; padding: var(--space-1); border: 1px solid var(--color-border-strong); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--color-surface) 97%, transparent); box-shadow: var(--shadow-card-lg); }
+.social-post-menu[hidden] { display: none; }
+.social-post-menu button { justify-content: flex-start; min-height: 40px; padding: 8px 10px; border-radius: var(--radius-md); color: var(--color-text); }
+.social-post-menu button.danger { color: var(--color-negative); }
+.social-post-menu button:hover { background: var(--color-surface-sunken); }
+.social-post-edit-form { display: grid; gap: var(--space-2); margin-top: var(--space-3); }
+.social-post-edit-form textarea { width: 100%; min-height: 96px; box-sizing: border-box; padding: var(--space-3); border: 1px solid var(--color-border-strong); border-radius: var(--radius-lg); background: var(--color-surface-sunken); color: var(--color-text); font: inherit; resize: vertical; }
+.social-post-edit-form > div { display: flex; justify-content: flex-end; gap: var(--space-2); }
 .social-mention-results { position: absolute; z-index: 20; right: 0; left: 0; top: calc(100% + 6px); overflow: hidden; max-height: 270px; overflow-y: auto; border: 1px solid var(--color-border-strong); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--color-surface) 97%, transparent); box-shadow: var(--shadow-card-lg); }
 .social-mention-results[hidden] { display: none; }
 .social-mention-results button { display: flex; width: 100%; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); color: var(--color-text); text-align: left; }
@@ -3931,6 +3948,10 @@ textarea:focus {
   .social-post, .social-composer-card { padding: var(--space-3); border-radius: var(--radius-lg); }
   .social-post-actions button span:not(.social-action-count) { display: none; }
   .social-post-media { margin-right: calc(var(--space-3) * -1); margin-left: calc(var(--space-3) * -1); }
+  .social-post-actions { margin-right: calc(var(--space-3) * -1); margin-bottom: calc(var(--space-3) * -1); margin-left: calc(var(--space-3) * -1); border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
+  .social-reaction-control:first-child > button { border-radius: 0 0 0 var(--radius-lg); }
+  .social-post-actions:not(.has-more) > button:last-child { border-radius: 0 0 var(--radius-lg) 0; }
+  .social-post-more > button { border-radius: 0 0 var(--radius-lg) 0; }
   .social-reaction-picker { left: 0; transform: none; }
   .social-profile-hero { align-items: flex-start; }
   .social-avatar-profile { width: 76px; height: 76px; flex-basis: 76px; }

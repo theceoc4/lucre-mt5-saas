@@ -1,5 +1,16 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.82 — Draft-safe timeline and post controls (2026-09-07)
+
+- Removes the post-header delete icon and moves owner-only Edit/Delete actions
+  into a three-dot menu at the far right of the post action bar.
+- Extends the comment bubble to the card edge with an integrated send control.
+- Makes the React, Comment, Share, and More footer a full-bleed surface whose
+  hover and active states follow the card's lower corner radii.
+- Defers background feed replacement while a comment or post edit is active,
+  then captures and restores draft text, focus, and caret position across any
+  subsequent timeline render.
+
 ## v1.0.81 — Media posts, expressive reactions and live mentions (2026-09-06)
 
 - Changes the composer placeholder to “Share your thoughts...” and adds private,

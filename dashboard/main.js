@@ -239,6 +239,9 @@ let viewTransitionId = 0;
 let dashboardBootSessionId = null;
 let pendingSocialMediaFile = null;
 let pendingSocialMediaUrl = '';
+let editingSocialPostId = null;
+let openSocialPostMenuId = null;
+let socialFeedRenderPending = false;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1128,8 +1131,58 @@ function renderSocialIdentity() {
   }
 }
 
-function renderSocialFeed() {
+function captureSocialFeedDrafts() {
+  if (!socialFeed) return { comments: new Map(), edits: new Map(), focus: null };
+  const comments = new Map();
+  const edits = new Map();
+  socialFeed.querySelectorAll('[data-comment-form] input').forEach((input) => {
+    if (input.value) comments.set(input.closest('[data-comment-form]').dataset.commentForm, input.value);
+  });
+  socialFeed.querySelectorAll('[data-edit-post-form] textarea').forEach((input) => {
+    edits.set(input.closest('[data-edit-post-form]').dataset.editPostForm, input.value);
+  });
+  const active = document.activeElement;
+  let focus = null;
+  if (active?.matches?.('[data-comment-form] input')) {
+    focus = { type: 'comment', id: active.closest('[data-comment-form]').dataset.commentForm,
+      start: active.selectionStart, end: active.selectionEnd };
+  } else if (active?.matches?.('[data-edit-post-form] textarea')) {
+    focus = { type: 'edit', id: active.closest('[data-edit-post-form]').dataset.editPostForm,
+      start: active.selectionStart, end: active.selectionEnd };
+  }
+  return { comments, edits, focus };
+}
+
+function restoreSocialFeedDrafts(drafts) {
+  drafts.comments.forEach((value, postId) => {
+    const input = socialFeed.querySelector(`[data-comment-form="${postId}"] input`);
+    if (input) input.value = value;
+  });
+  drafts.edits.forEach((value, postId) => {
+    const input = socialFeed.querySelector(`[data-edit-post-form="${postId}"] textarea`);
+    if (input) input.value = value;
+  });
+  if (!drafts.focus) return;
+  const selector = drafts.focus.type === 'comment'
+    ? `[data-comment-form="${drafts.focus.id}"] input`
+    : `[data-edit-post-form="${drafts.focus.id}"] textarea`;
+  window.requestAnimationFrame(() => {
+    const input = socialFeed.querySelector(selector);
+    if (!input) return;
+    input.focus({ preventScroll: true });
+    if (drafts.focus.start !== null && drafts.focus.end !== null) {
+      input.setSelectionRange(drafts.focus.start, drafts.focus.end);
+    }
+  });
+}
+
+function renderSocialFeed(force = false) {
   if (!socialFeed) return;
+  const activeDraft = document.activeElement?.matches?.('[data-edit-post-form] textarea')
+    || (document.activeElement?.matches?.('[data-comment-form] input') && document.activeElement.value.length > 0);
+  if (!force && activeDraft) { socialFeedRenderPending = true; return; }
+  const drafts = captureSocialFeedDrafts();
+  socialFeedRenderPending = false;
   const ownId = state.session?.user?.id;
   const title = document.getElementById('social-feed-title');
   const subtitle = document.getElementById('social-feed-subtitle');
@@ -1156,23 +1209,29 @@ function renderSocialFeed() {
       ? `<video controls playsinline preload="metadata" src="${escapeHtml(post.media_url)}" aria-label="Video shared by ${escapeHtml(author.display_name)}"></video>`
       : `<img loading="lazy" src="${escapeHtml(post.media_url)}" alt="Photo shared by ${escapeHtml(author.display_name)}" />`}</div>` : '';
     const pickerButtons = Object.entries(SOCIAL_REACTIONS).map(([reaction, meta]) => `<button class="${ownReaction?.reaction === reaction ? 'active' : ''}" type="button" data-set-reaction="${reaction}" data-reaction-post="${post.id}" aria-label="${meta.label}" title="${meta.label}"><i class="bi ${meta.icon} ${meta.className}" aria-hidden="true"></i></button>`).join('');
+    const editing = editingSocialPostId === post.id;
+    const ownPost = post.user_id === ownId;
+    const postContent = editing ? `<form class="social-post-edit-form" data-edit-post-form="${post.id}"><textarea maxlength="1200" rows="4" aria-label="Edit post" autocomplete="off" autocapitalize="sentences" spellcheck="true">${escapeHtml(post.body)}</textarea><div><button class="btn-secondary btn-xs" type="button" data-cancel-edit-post="${post.id}">Cancel</button><button class="btn-accent btn-xs" type="submit">Save</button></div></form>`
+      : `<p class="social-post-body">${socialTextMarkup(post.body)}</p>`;
     return `<article class="social-post" data-post-id="${post.id}">
-      <header><button class="social-post-author" type="button" data-open-profile="${author.user_id}">${avatarMarkup(author)}<span><strong>${escapeHtml(author.display_name)}</strong><small>${escapeHtml(socialHandle(author))} · ${notificationRelativeTime(post.created_at)}</small></span></button>${post.user_id === ownId ? `<button class="social-delete" type="button" data-delete-post="${post.id}" aria-label="Delete post"><i class="bi bi-x-lg" aria-hidden="true"></i></button>` : ''}</header>
-      <p class="social-post-body">${socialTextMarkup(post.body)}</p>
+      <header><button class="social-post-author" type="button" data-open-profile="${author.user_id}">${avatarMarkup(author)}<span><strong>${escapeHtml(author.display_name)}</strong><small>${escapeHtml(socialHandle(author))} · ${notificationRelativeTime(post.created_at)}</small></span></button></header>
+      ${postContent}
       ${mediaMarkup}${reactionSummary}
       ${comments.length ? `<div class="social-comments">${visibleComments.map((comment) => {
         const commenter = socialProfile(comment.user_id);
         return `<div class="social-comment">${avatarMarkup(commenter, 'social-avatar social-avatar-sm')}<div><button type="button" data-open-profile="${commenter.user_id}"><strong>${escapeHtml(commenter.display_name)}</strong> <span>${escapeHtml(socialHandle(commenter))}</span></button><p>${socialTextMarkup(comment.body)}</p><time>${notificationRelativeTime(comment.created_at)}</time></div>${comment.user_id === ownId ? `<button class="social-delete" type="button" data-delete-comment="${comment.id}" aria-label="Delete comment"><i class="bi bi-x-lg" aria-hidden="true"></i></button>` : ''}</div>`;
       }).join('')}${comments.length > 2 ? `<small class="social-more-comments">Showing latest 2 of ${comments.length} comments</small>` : ''}</div>` : ''}
-      <form class="social-comment-form" data-comment-form="${post.id}">${avatarMarkup(socialProfile(ownId), 'social-avatar social-avatar-sm')}<div class="social-comment-input-wrap"><input type="text" name="social-comment-${post.id}" maxlength="600" placeholder="Write a comment…" aria-label="Comment on ${escapeHtml(author.display_name)}'s post" autocomplete="off" autocapitalize="sentences" spellcheck="true" data-1p-ignore="true" data-lpignore="true" data-form-type="other" /><div class="social-mention-results" hidden></div></div><button class="btn-secondary btn-xs" type="submit">Post</button></form>
-      <div class="social-post-actions">
+      <form class="social-comment-form" data-comment-form="${post.id}">${avatarMarkup(socialProfile(ownId), 'social-avatar social-avatar-sm')}<div class="social-comment-input-wrap"><input type="text" name="social-comment-${post.id}" maxlength="600" placeholder="Write a comment…" aria-label="Comment on ${escapeHtml(author.display_name)}'s post" autocomplete="off" autocapitalize="sentences" spellcheck="true" data-1p-ignore="true" data-lpignore="true" data-form-type="other" /><button class="social-comment-submit" type="submit" aria-label="Post comment"><i class="bi bi-send-fill" aria-hidden="true"></i></button><div class="social-mention-results" hidden></div></div></form>
+      <div class="social-post-actions${ownPost ? ' has-more' : ''}">
         <div class="social-reaction-control"><button class="${ownReaction ? 'active' : ''}" type="button" data-toggle-reactions="${post.id}" aria-label="Choose a reaction" aria-expanded="false" title="${ownReaction ? ownReactionMeta.label : 'Choose a reaction'}"><i class="bi ${ownReactionMeta.icon} ${ownReactionMeta.className}" aria-hidden="true"></i><span class="social-action-count">${postReactions.length || ''}</span></button><div class="social-reaction-picker" data-reaction-picker="${post.id}" hidden>${pickerButtons}${ownReaction ? `<button class="reaction-remove" type="button" data-remove-reaction="${post.id}" aria-label="Remove reaction" title="Remove reaction"><i class="bi bi-x-lg" aria-hidden="true"></i></button>` : ''}</div></div>
         <button type="button" data-focus-comment="${post.id}"><i class="bi bi-chat" aria-hidden="true"></i><span>Comment</span><strong class="social-action-count">${comments.length || ''}</strong></button>
         <button class="${shared ? 'active' : ''}" type="button" data-share-post="${post.id}"><i class="bi bi-share" aria-hidden="true"></i><span>Share</span><strong class="social-action-count">${postShares.length || ''}</strong></button>
+        ${ownPost ? `<div class="social-post-more"><button class="${openSocialPostMenuId === post.id ? 'active' : ''}" type="button" data-toggle-post-menu="${post.id}" aria-label="More post options" aria-expanded="${openSocialPostMenuId === post.id}"><i class="bi bi-three-dots" aria-hidden="true"></i></button><div class="social-post-menu" data-post-menu="${post.id}" ${openSocialPostMenuId === post.id ? '' : 'hidden'}><button type="button" data-edit-post="${post.id}"><i class="bi bi-pencil" aria-hidden="true"></i><span>Edit post</span></button><button class="danger" type="button" data-delete-post="${post.id}"><i class="bi bi-trash3" aria-hidden="true"></i><span>Delete post</span></button></div></div>` : ''}
       </div>
     </article>`;
   }).join('') : `<div class="social-feed-empty"><strong>Your following feed is quiet.</strong><p>Follow a trader from the suggestions to start building your timeline.</p></div>`;
   renderSocialIdentity();
+  restoreSocialFeedDrafts(drafts);
 }
 
 async function toggleFollow(userId) {
@@ -1284,6 +1343,22 @@ socialFeed?.addEventListener('input', (event) => {
 });
 
 socialFeed?.addEventListener('submit', async (event) => {
+  const editForm = event.target.closest('[data-edit-post-form]');
+  if (editForm) {
+    event.preventDefault();
+    const body = editForm.querySelector('textarea').value.trim();
+    if (!body) return;
+    const save = editForm.querySelector('button[type="submit"]');
+    save.disabled = true;
+    const { error } = await supabase.from('social_posts').update({ body })
+      .eq('id', editForm.dataset.editPostForm).eq('user_id', state.session.user.id);
+    if (error) { save.disabled = false; return; }
+    editingSocialPostId = null;
+    openSocialPostMenuId = null;
+    document.activeElement?.blur();
+    await loadSocialPosts();
+    return;
+  }
   const form = event.target.closest('[data-comment-form]');
   if (!form) return;
   event.preventDefault();
@@ -1307,6 +1382,23 @@ socialFeed?.addEventListener('click', async (event) => {
     if (profile) return openSocialProfile(profile.user_id);
   }
   if (target.dataset.focusComment) return socialFeed.querySelector(`[data-comment-form="${target.dataset.focusComment}"] input`)?.focus();
+  if (target.dataset.togglePostMenu) {
+    openSocialPostMenuId = openSocialPostMenuId === target.dataset.togglePostMenu ? null : target.dataset.togglePostMenu;
+    renderSocialFeed(true);
+    return;
+  }
+  if (target.dataset.editPost) {
+    editingSocialPostId = target.dataset.editPost;
+    openSocialPostMenuId = null;
+    renderSocialFeed(true);
+    window.requestAnimationFrame(() => socialFeed.querySelector(`[data-edit-post-form="${editingSocialPostId}"] textarea`)?.focus());
+    return;
+  }
+  if (target.dataset.cancelEditPost) {
+    editingSocialPostId = null;
+    renderSocialFeed(true);
+    return;
+  }
   if (target.dataset.toggleReactions) {
     const picker = socialFeed.querySelector(`[data-reaction-picker="${target.dataset.toggleReactions}"]`);
     socialFeed.querySelectorAll('[data-reaction-picker]').forEach((item) => { if (item !== picker) item.hidden = true; });
@@ -1337,6 +1429,7 @@ socialFeed?.addEventListener('click', async (event) => {
     const post = state.socialPosts.find((item) => item.id === target.dataset.deletePost);
     const { error } = await supabase.from('social_posts').delete().eq('id', target.dataset.deletePost);
     if (!error && post?.media_path) await supabase.storage.from('social-media').remove([post.media_path]);
+    editingSocialPostId = null; openSocialPostMenuId = null;
     await loadSocialPosts(); return;
   }
   if (target.dataset.deleteComment) { await supabase.from('social_comments').delete().eq('id', target.dataset.deleteComment); await loadSocialPosts(); }
@@ -1348,6 +1441,19 @@ document.addEventListener('click', (event) => {
   }
   if (!event.target.closest('.social-composer-input-wrap') && socialPostMentionResults) socialPostMentionResults.hidden = true;
   if (!event.target.closest('.social-comment-input-wrap')) socialFeed?.querySelectorAll('.social-comment-input-wrap .social-mention-results').forEach((results) => { results.hidden = true; });
+  if (!event.target.closest('.social-post-more') && openSocialPostMenuId) {
+    openSocialPostMenuId = null;
+    socialFeed?.querySelectorAll('[data-post-menu]').forEach((menu) => { menu.hidden = true; });
+    socialFeed?.querySelectorAll('[data-toggle-post-menu]').forEach((button) => button.setAttribute('aria-expanded', 'false'));
+  }
+});
+
+socialFeed?.addEventListener('focusout', () => {
+  window.setTimeout(() => {
+    if (socialFeedRenderPending && !document.activeElement?.matches?.('[data-comment-form] input, [data-edit-post-form] textarea')) {
+      renderSocialFeed(true);
+    }
+  }, 0);
 });
 
 function renderInboxRecipientResults() {
