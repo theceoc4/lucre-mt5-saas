@@ -42,7 +42,7 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.84" />
+<link rel="stylesheet" href="./style.css?v=1.0.85" />
 </head>
 <body>
 
@@ -160,6 +160,14 @@
           <option value="generic_webhook">Generic webhook</option>
         </select>
         <p class="field-hint" id="strategy-source-hint">Lucre evaluates the indicator stack on each newly closed broker candle.</p>
+        <div class="tradingview-alert-type" id="tradingview-alert-type" hidden>
+          <label for="strategy-tradingview-alert-type">TradingView source type</label>
+          <select id="strategy-tradingview-alert-type" name="tradingview_alert_type">
+            <option value="strategy" selected>Strategy — order fill alert</option>
+            <option value="indicator">Indicator — condition alert</option>
+          </select>
+          <p class="field-hint">This keeps the connection page focused on only the payload your TradingView alert needs.</p>
+        </div>
       </div>
       <div class="strategy-builder-grid strategy-builder-grid-3" data-strategy-editor-section="general" hidden>
         <div class="field">
@@ -247,9 +255,51 @@
           <code id="external-endpoint-url"></code>
           <button class="btn-secondary btn-xs" type="button" id="button-copy-external-endpoint">Copy URL</button>
         </div>
-        <div class="external-template-display" id="external-template-display" hidden>
-          <code id="external-signal-template"></code>
-          <button class="btn-secondary btn-xs" type="button" id="button-copy-external-template">Copy JSON</button>
+        <div class="external-template-options" id="tradingview-strategy-template-actions" hidden>
+          <article class="external-template-option">
+            <div>
+              <strong>Strategy order-fill JSON</strong>
+              <p>Paste this into the TradingView alert's <b>Message</b> field. Choose <b>Order fills only</b> and send entry fills only; exit fills must stay disabled.</p>
+            </div>
+            <div class="external-template-buttons">
+              <button class="btn-secondary btn-xs" type="button" data-copy-external-template="tradingview_strategy">Copy</button>
+              <button class="btn-secondary btn-xs" type="button" data-view-external-template="tradingview_strategy">View</button>
+            </div>
+          </article>
+        </div>
+        <div class="external-template-options" id="tradingview-indicator-template-actions" hidden>
+          <article class="external-template-option">
+            <div>
+              <strong>BUY condition JSON</strong>
+              <p>Use this in the <b>Message</b> field of the alert whose condition represents your indicator's BUY setup.</p>
+            </div>
+            <div class="external-template-buttons">
+              <button class="btn-secondary btn-xs" type="button" data-copy-external-template="tradingview_indicator_buy">Copy</button>
+              <button class="btn-secondary btn-xs" type="button" data-view-external-template="tradingview_indicator_buy">View</button>
+            </div>
+          </article>
+          <article class="external-template-option">
+            <div>
+              <strong>SELL condition JSON</strong>
+              <p>Use this in the <b>Message</b> field of the alert whose condition represents your indicator's SELL setup.</p>
+            </div>
+            <div class="external-template-buttons">
+              <button class="btn-secondary btn-xs" type="button" data-copy-external-template="tradingview_indicator_sell">Copy</button>
+              <button class="btn-secondary btn-xs" type="button" data-view-external-template="tradingview_indicator_sell">View</button>
+            </div>
+          </article>
+        </div>
+        <div class="external-template-options" id="generic-webhook-template-actions" hidden>
+          <article class="external-template-option">
+            <div>
+              <strong>Generic webhook JSON</strong>
+              <p>Copy this example into your provider's JSON request body, then replace the sample values with its live signal fields.</p>
+            </div>
+            <div class="external-template-buttons">
+              <button class="btn-secondary btn-xs" type="button" data-copy-external-template="generic_webhook">Copy</button>
+              <button class="btn-secondary btn-xs" type="button" data-view-external-template="generic_webhook">View</button>
+            </div>
+          </article>
         </div>
         <div class="external-endpoint-actions" id="external-endpoint-actions" hidden>
           <button class="btn-secondary btn-xs" type="button" id="button-rotate-external-endpoint">Rotate URL</button>
@@ -594,6 +644,23 @@
 
 <div class="modal-overlay" id="modal-account-confirm" aria-hidden="true">
   <div class="modal-card"><div class="modal-head"><h3 id="account-confirm-title">Confirm action</h3><button class="icon-btn" type="button" data-modal-close aria-label="Close">×</button></div><p class="modal-sub" id="account-confirm-copy"></p><label class="field" for="account-confirmation-input">Type the confirmation phrase exactly<input id="account-confirmation-input" autocomplete="off" /></label><p class="auth-message" id="account-confirm-message" role="status"></p><button class="btn-danger" type="button" id="button-confirm-account-action">Confirm</button></div>
+</div>
+
+<div class="modal-overlay" id="modal-external-json" aria-hidden="true">
+  <div class="modal-card modal-card-wide external-json-modal-card">
+    <div class="modal-head">
+      <h3 id="external-json-modal-title">Webhook JSON</h3>
+      <button class="icon-btn" type="button" data-modal-close aria-label="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="modal-sub" id="external-json-modal-description"></p>
+    <pre class="external-json-preview"><code id="external-json-modal-code"></code></pre>
+    <div class="external-json-modal-actions">
+      <button class="btn-secondary" type="button" data-modal-close>Close</button>
+      <button class="btn-accent" type="button" id="button-copy-external-json-modal">Copy JSON</button>
+    </div>
+  </div>
 </div>
 
 <div class="page" id="dashboard-root" aria-hidden="true" style="display:none">
@@ -1170,7 +1237,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.84"></script>
-<script type="module" src="./main.js?v=1.0.84"></script>
+<script src="./app.js?v=1.0.85"></script>
+<script type="module" src="./main.js?v=1.0.85"></script>
 </body>
 </html>

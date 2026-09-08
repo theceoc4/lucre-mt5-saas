@@ -2082,16 +2082,46 @@ document.querySelectorAll('[data-strategy-editor-target]').forEach((button) => {
 });
 document.getElementById('button-strategy-editor-back')?.addEventListener('click', () => showStrategyEditorPage('home'));
 
-function externalSignalTemplate(strategy) {
+const EXTERNAL_TEMPLATE_DETAILS = {
+  tradingview_strategy: {
+    title: 'TradingView strategy order-fill JSON',
+    description: 'Paste into the alert Message field. Use Order fills only and allow entry fills only; an exit fill can otherwise look like a new opposite-side entry.',
+  },
+  tradingview_indicator_buy: {
+    title: 'TradingView indicator BUY JSON',
+    description: 'Paste into the Message field for the alert condition that represents a BUY signal.',
+  },
+  tradingview_indicator_sell: {
+    title: 'TradingView indicator SELL JSON',
+    description: 'Paste into the Message field for the alert condition that represents a SELL signal.',
+  },
+  generic_webhook: {
+    title: 'Generic webhook JSON',
+    description: 'Use this as the request body shape and replace the sample values with live fields from your provider.',
+  },
+};
+
+function externalSignalTemplate(strategy, templateKind = null) {
   const symbol = strategySelectedSymbols[0] || 'EURUSD';
   const timeframe = document.getElementById('strategy-timeframe')?.value || strategy?.timeframe || 'M5';
   const source = document.getElementById('strategy-signal-source')?.value || strategy?.signal_source || 'tradingview';
-  if (source === 'tradingview') {
+  const kind = templateKind || (source === 'tradingview'
+    ? (document.getElementById('strategy-tradingview-alert-type')?.value === 'indicator' ? 'tradingview_indicator_buy' : 'tradingview_strategy')
+    : 'generic_webhook');
+  if (kind === 'tradingview_strategy') {
     return JSON.stringify({
-      event_id: '{{ticker}}-{{interval}}-{{time}}-buy', symbol: '{{ticker}}',
-      timeframe: '{{interval}}', side: 'buy', source_price: '{{close}}',
+      event_id: '{{ticker}}-{{interval}}-{{timenow}}-{{strategy.order.id}}-{{strategy.order.action}}-{{strategy.order.price}}',
+      symbol: '{{ticker}}', timeframe: '{{interval}}', side: '{{strategy.order.action}}', source_price: '{{strategy.order.price}}',
       sl: '{{plot("Stop Loss")}}', tp: '{{plot("Take Profit")}}', occurred_at: '{{timenow}}',
-    });
+    }, null, 2);
+  }
+  if (kind === 'tradingview_indicator_buy' || kind === 'tradingview_indicator_sell') {
+    const side = kind.endsWith('_sell') ? 'sell' : 'buy';
+    return JSON.stringify({
+      event_id: `{{ticker}}-{{interval}}-{{time}}-${side}`, symbol: '{{ticker}}',
+      timeframe: '{{interval}}', side, source_price: '{{close}}',
+      sl: '{{plot("Stop Loss")}}', tp: '{{plot("Take Profit")}}', occurred_at: '{{timenow}}',
+    }, null, 2);
   }
   return JSON.stringify({
     event_id: `unique-event-${Date.now()}`, symbol, timeframe, side: 'buy',
@@ -2107,8 +2137,17 @@ function updateStrategySourceUi(strategy = null) {
   const indicatorHeading = document.getElementById('strategy-indicators-label');
   const backtestButton = document.getElementById('button-run-strategy-backtest');
   const connectionButton = document.getElementById('strategy-editor-connection-button');
+  const tradingViewType = document.getElementById('tradingview-alert-type');
+  const alertType = document.getElementById('strategy-tradingview-alert-type')?.value || 'strategy';
+  const tradingViewStrategyActions = document.getElementById('tradingview-strategy-template-actions');
+  const tradingViewIndicatorActions = document.getElementById('tradingview-indicator-template-actions');
+  const genericWebhookActions = document.getElementById('generic-webhook-template-actions');
   if (setup) setup.hidden = !isExternal || activeStrategyEditorPage !== 'connection';
   if (connectionButton) connectionButton.hidden = !isExternal;
+  if (tradingViewType) tradingViewType.hidden = source !== 'tradingview';
+  if (tradingViewStrategyActions) tradingViewStrategyActions.hidden = source !== 'tradingview' || alertType !== 'strategy';
+  if (tradingViewIndicatorActions) tradingViewIndicatorActions.hidden = source !== 'tradingview' || alertType !== 'indicator';
+  if (genericWebhookActions) genericWebhookActions.hidden = source !== 'generic_webhook';
   if (!isExternal && activeStrategyEditorPage === 'connection') showStrategyEditorPage('home');
   if (indicatorHeading) indicatorHeading.textContent = isExternal ? 'Confirmation indicators (optional)' : 'Indicators';
   if (backtestButton) {
@@ -2128,19 +2167,15 @@ function updateStrategySourceUi(strategy = null) {
   const savedUrl = strategy?.id ? externalEndpointUrls.get(strategy.id) : null;
   const status = document.getElementById('external-endpoint-status');
   const display = document.getElementById('external-endpoint-display');
-  const templateDisplay = document.getElementById('external-template-display');
   const actions = document.getElementById('external-endpoint-actions');
   const copy = document.getElementById('external-signal-copy');
   const urlEl = document.getElementById('external-endpoint-url');
-  const template = document.getElementById('external-signal-template');
   if (status) status.textContent = endpoint ? (endpoint.enabled ? `Connected · …${endpoint.token_last_four}` : 'Disabled') : 'Not connected';
   if (copy) copy.textContent = savedUrl
     ? 'This private URL is shown for this session. Store it in the provider now.'
     : endpoint ? 'The secret URL is hidden after creation. Rotate it to receive a new copyable URL.' : 'Save the strategy to create its private connection.';
   if (display) display.hidden = !savedUrl;
   if (urlEl) urlEl.textContent = savedUrl || '';
-  if (templateDisplay) templateDisplay.hidden = !endpoint;
-  if (template) template.textContent = externalSignalTemplate(strategy);
   if (actions) actions.hidden = !endpoint;
   const toggle = document.getElementById('button-toggle-external-endpoint');
   if (toggle && endpoint) toggle.textContent = endpoint.enabled ? 'Disable endpoint' : 'Enable endpoint';
@@ -2150,6 +2185,7 @@ document.getElementById('strategy-signal-source')?.addEventListener('change', ()
   updateStrategySourceUi();
   renderStrategyIndicators();
 });
+document.getElementById('strategy-tradingview-alert-type')?.addEventListener('change', () => updateStrategySourceUi());
 
 async function manageExternalEndpoint(action) {
   const strategyId = document.getElementById('strategy-edit-id')?.value;
@@ -2171,9 +2207,43 @@ document.getElementById('button-copy-external-endpoint')?.addEventListener('clic
   const value = document.getElementById('external-endpoint-url')?.textContent || '';
   if (value) await navigator.clipboard.writeText(value);
 });
-document.getElementById('button-copy-external-template')?.addEventListener('click', async () => {
-  const value = document.getElementById('external-signal-template')?.textContent || '';
-  if (value) await navigator.clipboard.writeText(value);
+function currentExternalStrategy() {
+  const strategyId = document.getElementById('strategy-edit-id')?.value;
+  return state.strategies.find((row) => row.id === strategyId) || null;
+}
+
+async function copyExternalTemplate(kind, button = null) {
+  const value = externalSignalTemplate(currentExternalStrategy(), kind);
+  if (!value) return;
+  await navigator.clipboard.writeText(value);
+  if (!button) return;
+  const prior = button.textContent;
+  button.textContent = 'Copied';
+  window.setTimeout(() => { button.textContent = prior; }, 1200);
+}
+
+document.querySelectorAll('[data-copy-external-template]').forEach((button) => {
+  button.addEventListener('click', async () => {
+    try { await copyExternalTemplate(button.dataset.copyExternalTemplate, button); }
+    catch (error) { console.error('Could not copy webhook JSON', error); }
+  });
+});
+
+document.querySelectorAll('[data-view-external-template]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const kind = button.dataset.viewExternalTemplate;
+    const details = EXTERNAL_TEMPLATE_DETAILS[kind] || EXTERNAL_TEMPLATE_DETAILS.generic_webhook;
+    document.getElementById('external-json-modal-title').textContent = details.title;
+    document.getElementById('external-json-modal-description').textContent = details.description;
+    document.getElementById('external-json-modal-code').textContent = externalSignalTemplate(currentExternalStrategy(), kind);
+    document.getElementById('button-copy-external-json-modal').dataset.templateKind = kind;
+    window.LucreUI.openModal('modal-external-json');
+  });
+});
+
+document.getElementById('button-copy-external-json-modal')?.addEventListener('click', async (event) => {
+  try { await copyExternalTemplate(event.currentTarget.dataset.templateKind, event.currentTarget); }
+  catch (error) { console.error('Could not copy webhook JSON', error); }
 });
 document.getElementById('button-rotate-external-endpoint')?.addEventListener('click', async () => {
   try { await manageExternalEndpoint('rotate'); } catch (error) { alert(error.message); }
@@ -2402,6 +2472,7 @@ function openAddStrategyModal() {
   const form = document.getElementById('form-add-strategy');
   form.reset();
   form.signal_source.value = 'internal';
+  form.tradingview_alert_type.value = 'strategy';
   form.execution_mode.value = 'shadow';
   form.trend_filter_enabled.checked = false;
   form.override_account_risk.checked = false;
@@ -2446,6 +2517,7 @@ function openEditStrategyModal(id) {
   const allowedSessions = strategy.allowed_sessions || ['asia', 'london', 'overlap', 'ny'];
   form.querySelectorAll('input[name="allowed_sessions"]').forEach((input) => { input.checked = allowedSessions.includes(input.value); });
   const config = strategy.config || {};
+  form.tradingview_alert_type.value = config.tradingview_alert_type === 'indicator' ? 'indicator' : 'strategy';
   form.trend_filter_enabled.checked = config.trend_filter_enabled === true;
   form.mt5_indicator_name.value = config.mt5_indicator_name || '';
   form.mt5_buy_buffer.value = config.mt5_buy_buffer ?? 0;
@@ -2649,6 +2721,7 @@ document.getElementById('form-add-strategy')?.addEventListener('submit', async (
     stop_atr: numeric('stop_atr', 1.8), target_r: numeric('target_r', 2.2),
     trend_filter_enabled: Boolean(form.trend_filter_enabled.checked),
     trend_filter_version: 'trend-alignment-v1',
+    tradingview_alert_type: signalSource === 'tradingview' ? form.tradingview_alert_type.value : undefined,
     mt5_indicator_name: signalSource === 'mt5_indicator' ? form.mt5_indicator_name.value.trim() : undefined,
     mt5_buy_buffer: signalSource === 'mt5_indicator' ? Math.max(0, Math.min(31, Math.round(numeric('mt5_buy_buffer', 0)))) : undefined,
     mt5_sell_buffer: signalSource === 'mt5_indicator' ? Math.max(0, Math.min(31, Math.round(numeric('mt5_sell_buffer', 1)))) : undefined,

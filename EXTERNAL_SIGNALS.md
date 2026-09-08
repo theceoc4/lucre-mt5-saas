@@ -9,15 +9,36 @@ portfolio risk, broker mapping, position capacity, and finally execution mode.
 ## Dashboard setup
 
 1. Add or edit a strategy and choose **TradingView webhook**, **Generic
-   webhook**, or **MT5 custom indicator** as its Signal source.
+   webhook**, or **MT5 custom indicator** as its Signal source. For TradingView,
+   choose whether the alert comes from a **Strategy** or **Indicator** so the
+   editor exposes only the matching payload.
 2. Choose the symbols, timeframe, sessions, direction, risk settings, and
    **Shadow**, **Signal Only**, or **Auto** execution.
 3. Optionally add up to four Lucre indicators. For an external strategy these
    are confirmation filters; the external trigger is still required.
 4. Save and copy the private webhook URL while it is visible. Lucre stores only
    its SHA-256 hash. Rotate the URL if the original is lost or exposed.
-5. Use **Test only** to validate the credential, symbol, timeframe, and side
+5. Use **Copy** to send the correct JSON directly to the clipboard, or **View**
+   to inspect it in a focused modal. TradingView Strategy mode provides one
+   dynamic order-fill payload. Indicator mode provides separate BUY and SELL
+   payloads because indicators do not expose a universal direction placeholder.
+6. Use **Test only** to validate the credential, symbol, timeframe, and side
    without creating a signal or order.
+
+## TradingView alert modes
+
+For a TradingView **Strategy**, paste the Strategy payload into the alert's
+**Message** field and select **Order fills only**. The payload maps
+`{{strategy.order.action}}` to Lucre's side and `{{strategy.order.price}}` to
+the source price. The connected TradingView strategy must send entry fills
+only. An exit fill uses the transaction's opposite action and could otherwise
+be interpreted as a new entry by any external execution receiver.
+
+For a TradingView **Indicator**, create one alert for the BUY condition and one
+for the SELL condition. Paste the matching payload into each alert's
+**Message** field. These payloads intentionally hardcode their direction;
+TradingView indicators do not provide an equivalent universal BUY/SELL action
+placeholder.
 
 ## Webhook contract
 
