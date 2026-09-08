@@ -42,7 +42,7 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.85" />
+<link rel="stylesheet" href="./style.css?v=1.0.86" />
 </head>
 <body>
 
@@ -1083,6 +1083,10 @@
     </div>
 
     <div class="view strategies-view" id="view-strategies" hidden>
+      <section class="strategy-summary-strip" id="strategy-summary-strip" aria-label="Strategy performance snapshots">
+        <p class="empty-state-text">Strategy snapshots will appear here.</p>
+      </section>
+
       <section class="strategies-view-head" aria-labelledby="strategies-page-title">
         <div>
           <h2 id="strategies-page-title">Strategy Performance</h2>
@@ -1147,7 +1151,7 @@
 
         <div class="strategy-primary-metrics">
           <section class="card card-pad strategy-pl-card" aria-label="Selected strategy profit and loss">
-            <div class="card-title-row"><h3>P/L</h3><span class="strategy-kpi-period">Verified closed trades</span></div>
+            <div class="card-title-row"><h3>P/L</h3><span class="strategy-kpi-period" id="strategy-page-period-label">Past 30 days</span></div>
             <div class="strategy-pl-total" id="strategy-page-pl-total">—</div>
             <div class="strategy-pl-detail" id="strategy-page-pl-detail">No closed trades yet</div>
             <div class="mini-chart-wrap"><canvas id="strategyPlChart" role="img" aria-label="Cumulative profit and loss for selected strategy"></canvas></div>
@@ -1167,11 +1171,21 @@
           <div id="strategy-page-news-policy"></div>
         </section>
 
+        <section class="card card-pad strategy-open-positions-card" aria-label="Open positions for selected strategy">
+          <div class="card-title-row">
+            <div><h3>Open Positions</h3><p class="desc">Live positions · selected strategy only</p></div>
+            <span class="strategy-blocked-count" id="strategy-page-open-position-count">0 open</span>
+          </div>
+          <div class="mini-table positions-data-list" id="strategy-page-open-positions-list">
+            <p class="empty-state-text">No open positions for this strategy.</p>
+          </div>
+        </section>
+
         <section class="card card-pad strategy-blocked-signals-card" aria-label="Blocked signals for selected strategy">
           <div class="card-title-row">
             <div>
               <h3>Blocked Signals</h3>
-              <p class="desc">Newest first · selected strategy only</p>
+              <p class="desc" id="strategy-page-blocked-list-description">Newest first · selected strategy only</p>
             </div>
             <span class="strategy-blocked-count" id="strategy-page-blocked-list-count">0 blocked</span>
           </div>
@@ -1237,7 +1251,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.85"></script>
-<script type="module" src="./main.js?v=1.0.85"></script>
+<script src="./app.js?v=1.0.86"></script>
+<script type="module" src="./main.js?v=1.0.86"></script>
 </body>
 </html>

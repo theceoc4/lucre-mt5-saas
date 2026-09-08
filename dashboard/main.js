@@ -193,6 +193,7 @@ const notificationCount = document.getElementById('notification-count');
 const strategyPageSelect = document.getElementById('strategy-page-select');
 const strategyPageEdit = document.getElementById('strategy-page-edit');
 const strategyPageEnabled = document.getElementById('strategy-page-enabled');
+const strategySummaryStrip = document.getElementById('strategy-summary-strip');
 const strategyChartRange = document.getElementById('strategy-chart-range');
 const signalSessionBands = document.getElementById('signal-session-bands');
 const strategySessionBands = document.getElementById('strategy-session-bands');
@@ -4630,15 +4631,15 @@ function getPositionInitiator(position) {
   return { name: 'Dashboard order', detail: 'Manual · Dashboard' };
 }
 
-function renderPositionRows(list, emptyMessage) {
+function renderPositionRows(list, emptyMessage, positions = state.positions) {
   if (!list) return;
 
-  if (state.positions.length === 0) {
-    list.innerHTML = `<p class="empty-state-text">${emptyMessage}</p>`;
+  if (positions.length === 0) {
+    list.innerHTML = `<p class="empty-state-text">${escapeHtml(emptyMessage)}</p>`;
     return;
   }
 
-  const rows = state.positions
+  const rows = positions
     .map((p) => {
       const plValue = positionNetProfit(p);
       const plColor = plValue > 0 ? 'var(--color-positive)' : plValue < 0 ? 'var(--color-negative)' : 'var(--color-text-muted)';
@@ -4700,6 +4701,7 @@ function renderPositions() {
   );
   renderFloatingPl();
   renderCloseAllControls();
+  renderSelectedStrategyOpenPositions();
 }
 
 function renderCloseAllControls() {
@@ -6983,6 +6985,76 @@ function signalsInChartRange(signals, range) {
   return signals.filter((signal) => signalChartBucketIndex(signal, buckets, range) >= 0);
 }
 
+function tradesInChartRange(trades, range) {
+  const buckets = buildSignalChartBuckets(range);
+  return trades.filter((trade) => trade.close_time
+    && signalChartBucketIndex({ generated_at: trade.close_time }, buckets, range) >= 0);
+}
+
+const STRATEGY_RANGE_LABELS = {
+  today: 'Today',
+  '7d': 'Past 7 days',
+  '30d': 'Past 30 days',
+  year: 'Past 52 weeks',
+};
+
+function signedPlMarkup(value) {
+  const amount = Number(value) || 0;
+  const className = amount > 0 ? 'is-positive' : amount < 0 ? 'is-negative' : '';
+  const label = amount === 0 ? '$0.00' : `${amount > 0 ? '+' : '−'}$${Math.abs(amount).toFixed(2)}`;
+  return `<strong class="${className}">${label}</strong>`;
+}
+
+function strategySnapshotProfit(strategyId) {
+  const nowParts = zonedDateParts(new Date());
+  const todayOrdinal = dateOrdinal(nowParts);
+  const weekday = new Date(todayOrdinal).getUTCDay();
+  const weekStartOrdinal = todayOrdinal - (weekday === 0 ? 6 : weekday - 1) * 86400000;
+  const monthStartOrdinal = Date.UTC(nowParts.year, nowParts.month - 1, 1);
+  const totals = { daily: 0, weekly: 0, monthly: 0 };
+  getVerifiedTradeHistory().forEach((trade) => {
+    if (trade.strategy_id !== strategyId || !trade.close_time) return;
+    const parts = zonedDateParts(trade.close_time);
+    if (!parts) return;
+    const ordinal = dateOrdinal(parts);
+    const net = tradeNetProfit(trade);
+    if (ordinal === todayOrdinal) totals.daily += net;
+    if (ordinal >= weekStartOrdinal && ordinal <= todayOrdinal) totals.weekly += net;
+    if (ordinal >= monthStartOrdinal && ordinal <= todayOrdinal) totals.monthly += net;
+  });
+  return totals;
+}
+
+function renderStrategySummaryStrip() {
+  if (!strategySummaryStrip) return;
+  if (state.strategies.length === 0) {
+    strategySummaryStrip.innerHTML = '<p class="empty-state-text">Strategy snapshots will appear here.</p>';
+    return;
+  }
+  strategySummaryStrip.innerHTML = state.strategies.map((strategy) => {
+    const profit = strategySnapshotProfit(strategy.id);
+    const pairCount = (strategy.symbols || []).length;
+    return `<button class="strategy-summary-card${strategy.id === state.selectedStrategyId ? ' is-selected' : ''}" type="button" data-strategy-summary-select="${strategy.id}" aria-label="View ${escapeHtml(strategy.name)} performance">
+      <div class="strategy-summary-head">
+        <div><h3 class="strategy-summary-name">${escapeHtml(strategy.name)}</h3><p class="strategy-summary-meta">${escapeHtml(strategyBrief(strategy))} · ${escapeHtml(strategy.timeframe || 'M5')} · ${pairCount} pair${pairCount === 1 ? '' : 's'}</p></div>
+        <span class="strategy-summary-status${strategy.enabled ? ' is-enabled' : ''}">${strategy.enabled ? 'Enabled' : 'Disabled'}</span>
+      </div>
+      <div class="strategy-summary-pl-grid">
+        <span class="strategy-summary-pl"><span>Daily P/L</span>${signedPlMarkup(profit.daily)}</span>
+        <span class="strategy-summary-pl"><span>Weekly P/L</span>${signedPlMarkup(profit.weekly)}</span>
+        <span class="strategy-summary-pl"><span>Monthly P/L</span>${signedPlMarkup(profit.monthly)}</span>
+      </div>
+    </button>`;
+  }).join('');
+  strategySummaryStrip.querySelectorAll('[data-strategy-summary-select]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.selectedStrategyId = button.dataset.strategySummarySelect;
+      renderStrategyPage();
+      document.querySelector('.strategies-view-head')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+}
+
 function summarizeSignalsForRange(signals, deliveries, range) {
   const filteredSignals = signalsInChartRange(signals, range);
   const signalIds = new Set(filteredSignals.map((signal) => signal.id));
@@ -7175,12 +7247,25 @@ function renderStrategyNewsPolicy(strategy) {
   });
 }
 
+function renderSelectedStrategyOpenPositions() {
+  const list = document.getElementById('strategy-page-open-positions-list');
+  const count = document.getElementById('strategy-page-open-position-count');
+  if (!list || !count) return;
+  const strategy = selectedStrategy();
+  const positions = strategy
+    ? state.positions.filter((position) => position.strategy_id === strategy.id)
+    : [];
+  count.textContent = `${positions.length.toLocaleString()} open`;
+  renderPositionRows(list, strategy ? `No open positions for ${strategy.name}.` : 'Select a strategy to view its open positions.', positions);
+}
+
 function renderStrategyPage() {
   if (!viewStrategies || !strategyPageSelect) return;
   const empty = document.getElementById('strategy-page-empty');
   const content = document.getElementById('strategy-page-content');
   if (state.strategies.length === 0) {
     state.selectedStrategyId = null;
+    renderStrategySummaryStrip();
     strategyPageSelect.innerHTML = '<option>No strategies</option>';
     strategyPageSelect.disabled = true;
     strategyPageEdit.disabled = true;
@@ -7198,8 +7283,14 @@ function renderStrategyPage() {
   if (!state.strategies.some((strategy) => strategy.id === state.selectedStrategyId)) {
     state.selectedStrategyId = state.strategies.find((strategy) => strategy.enabled)?.id || state.strategies[0].id;
   }
+  renderStrategySummaryStrip();
   const strategy = selectedStrategy();
   const scoped = strategyScopedData(strategy.id);
+  const rangeSignals = signalsInChartRange(scoped.signals, state.strategyChartRange);
+  const rangeSignalIds = new Set(rangeSignals.map((signal) => signal.id));
+  const rangeDeliveries = scoped.deliveries.filter((delivery) => rangeSignalIds.has(delivery.signal_id));
+  const rangeBlockedSignalIds = blockedSignalIdSet(rangeSignals, rangeDeliveries);
+  const rangeTrades = tradesInChartRange(scoped.trades, state.strategyChartRange);
   const signalSummary = summarizeSignalsForRange(scoped.signals, scoped.deliveries, state.strategyChartRange);
   strategyPageSelect.disabled = false;
   strategyPageEdit.disabled = false;
@@ -7225,18 +7316,21 @@ function renderStrategyPage() {
   document.getElementById('strategy-page-expired').textContent = signalSummary.expired.toLocaleString();
   if (strategyChartRange) strategyChartRange.value = state.strategyChartRange;
   if (strategySessionBands) strategySessionBands.checked = state.strategySessionBands;
+  const rangeLabel = STRATEGY_RANGE_LABELS[state.strategyChartRange] || 'Selected range';
+  document.getElementById('strategy-page-period-label').textContent = rangeLabel;
+  document.getElementById('strategy-page-blocked-list-description').textContent = `Newest first · ${rangeLabel.toLowerCase()}`;
 
-  const netPl = scoped.trades.reduce((sum, trade) => sum + tradeNetProfit(trade), 0);
+  const netPl = rangeTrades.reduce((sum, trade) => sum + tradeNetProfit(trade), 0);
   const plTotal = document.getElementById('strategy-page-pl-total');
-  plTotal.textContent = scoped.trades.length ? `${netPl >= 0 ? '+' : '−'}$${Math.abs(netPl).toFixed(2)}` : '—';
-  plTotal.style.color = scoped.trades.length ? (netPl >= 0 ? 'var(--color-positive)' : 'var(--color-negative)') : '';
-  document.getElementById('strategy-page-pl-detail').textContent = scoped.trades.length
-    ? `Net P/L after all costs · ${scoped.trades.length} verified trades`
-    : 'No verified closed trades yet';
+  plTotal.textContent = rangeTrades.length ? `${netPl >= 0 ? '+' : '−'}$${Math.abs(netPl).toFixed(2)}` : '—';
+  plTotal.style.color = rangeTrades.length ? (netPl >= 0 ? 'var(--color-positive)' : 'var(--color-negative)') : '';
+  document.getElementById('strategy-page-pl-detail').textContent = rangeTrades.length
+    ? `Net P/L after all costs · ${rangeTrades.length} verified trades · ${rangeLabel}`
+    : `No verified closed trades · ${rangeLabel}`;
 
   const pairStats = new Map();
   const sessionStats = new Map();
-  scoped.trades.forEach((trade) => {
+  rangeTrades.forEach((trade) => {
     const symbol = canonicalSymbolForTrade(trade) || 'Unknown';
     const pair = pairStats.get(symbol) || { count: 0, wins: 0, net: 0 };
     pair.count += 1;
@@ -7253,11 +7347,11 @@ function renderStrategyPage() {
   });
   const topPair = [...pairStats.entries()].sort((a, b) => b[1].net - a[1].net || b[1].count - a[1].count)[0];
   const bestSession = [...sessionStats.entries()].sort((a, b) => (b[1].wins / b[1].count) - (a[1].wins / a[1].count) || b[1].count - a[1].count)[0];
-  const wins = scoped.trades.filter(isWinningTrade).length;
-  const winRate = scoped.trades.length ? Math.round((wins / scoped.trades.length) * 100) : null;
-  const tradesWithR = scoped.trades.filter((trade) => trade.r_multiple != null && Number.isFinite(Number(trade.r_multiple)));
+  const wins = rangeTrades.filter(isWinningTrade).length;
+  const winRate = rangeTrades.length ? Math.round((wins / rangeTrades.length) * 100) : null;
+  const tradesWithR = rangeTrades.filter((trade) => trade.r_multiple != null && Number.isFinite(Number(trade.r_multiple)));
   const averageR = tradesWithR.length ? tradesWithR.reduce((sum, trade) => sum + Number(trade.r_multiple), 0) / tradesWithR.length : null;
-  const tradesWithDuration = scoped.trades.filter((trade) => {
+  const tradesWithDuration = rangeTrades.filter((trade) => {
     const opened = trade.open_time ? new Date(trade.open_time).getTime() : NaN;
     const closed = trade.close_time ? new Date(trade.close_time).getTime() : NaN;
     return Number.isFinite(opened) && Number.isFinite(closed) && closed >= opened;
@@ -7265,23 +7359,23 @@ function renderStrategyPage() {
   const averageDurationMs = tradesWithDuration.length
     ? tradesWithDuration.reduce((sum, trade) => sum + (new Date(trade.close_time).getTime() - new Date(trade.open_time).getTime()), 0) / tradesWithDuration.length
     : null;
-  const blockedPct = scoped.signals.length ? Math.round((scoped.blocked / scoped.signals.length) * 100) : 0;
+  const blockedPct = rangeSignals.length ? Math.round((rangeBlockedSignalIds.size / rangeSignals.length) * 100) : 0;
 
   document.getElementById('strategy-page-top-pair').textContent = topPair?.[0] || '—';
   document.getElementById('strategy-page-top-pair-detail').textContent = topPair ? `${topPair[1].net >= 0 ? '+' : '−'}$${Math.abs(topPair[1].net).toFixed(2)} net · ${topPair[1].count} trades` : 'No closed trades';
   document.getElementById('strategy-page-best-session').textContent = bestSession ? SESSION_LABELS[bestSession[0]] || bestSession[0] : '—';
   document.getElementById('strategy-page-best-session-detail').textContent = bestSession ? `${Math.round((bestSession[1].wins / bestSession[1].count) * 100)}% win · ${bestSession[1].count} trades` : 'No session data';
-  document.getElementById('strategy-page-blocked-total').textContent = scoped.blocked.toLocaleString();
-  document.getElementById('strategy-page-blocked-detail').textContent = `${blockedPct}% of ${scoped.signals.length.toLocaleString()} signals`;
+  document.getElementById('strategy-page-blocked-total').textContent = rangeBlockedSignalIds.size.toLocaleString();
+  document.getElementById('strategy-page-blocked-detail').textContent = `${blockedPct}% of ${rangeSignals.length.toLocaleString()} signals · ${rangeLabel}`;
   document.getElementById('strategy-page-win-rate').textContent = winRate == null ? '—' : `${winRate}%`;
-  document.getElementById('strategy-page-win-detail').textContent = scoped.trades.length ? `${wins} wins · ${scoped.trades.length} trades` : 'No closed trades';
+  document.getElementById('strategy-page-win-detail').textContent = rangeTrades.length ? `${wins} wins · ${rangeTrades.length} trades · ${rangeLabel}` : `No closed trades · ${rangeLabel}`;
   document.getElementById('strategy-page-average-r').textContent = averageR == null ? '—' : `${averageR.toFixed(2)}R`;
   document.getElementById('strategy-page-average-r-detail').textContent = tradesWithR.length ? `${tradesWithR.length} risk-defined trades` : 'No risk-defined outcomes';
   document.getElementById('strategy-page-average-duration').textContent = averageDurationMs == null ? '—' : formatTradeDuration(averageDurationMs);
   document.getElementById('strategy-page-average-duration-detail').textContent = tradesWithDuration.length ? `${tradesWithDuration.length} completed trades` : 'No closed trades';
 
-  const blockedSignals = scoped.signals
-    .filter((signal) => scoped.blockedSignalIds.has(signal.id))
+  const blockedSignals = rangeSignals
+    .filter((signal) => rangeBlockedSignalIds.has(signal.id))
     .sort((left, right) => new Date(right.generated_at) - new Date(left.generated_at));
   const blockedList = document.getElementById('strategy-page-blocked-list');
   document.getElementById('strategy-page-blocked-list-count').textContent =
@@ -7302,9 +7396,10 @@ function renderStrategyPage() {
     : '<p class="empty-state-text">No blocked signals for this strategy.</p>';
 
   renderStrategyVolumeChart(scoped);
-  renderStrategyPlChart(scoped.trades);
+  renderStrategyPlChart(rangeTrades);
   renderActivityHeatmap('strategy-heatmap', 'strategy-heatmap-legend', scoped.signals, scoped.trades, state.strategyHeatmapMode);
   renderStrategyNewsPolicy(strategy);
+  renderSelectedStrategyOpenPositions();
 }
 
 strategyPageSelect?.addEventListener('change', (event) => {
