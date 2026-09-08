@@ -1,5 +1,11 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.87 — Interactive strategy snapshot cards (2026-09-08)
+
+- Matches strategy snapshot titles and top-left spacing to the Pairs cards and applies the shared glass glare treatment.
+- Replaces Enabled/Disabled text badges with direct strategy toggles that do not accidentally select the card.
+- Uses a slower eased scroll when selecting a strategy card, with reduced-motion support and cancellation for repeated selections.
+
 ## v1.0.84 — Locked mobile viewport (2026-09-07)
 
 - Locks the dashboard viewport to a 1:1 scale and disables manual page zoom, preventing accidental pinch zoom and residual iOS/PWA focus zoom.

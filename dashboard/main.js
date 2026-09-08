@@ -4386,7 +4386,7 @@ async function handleStrategyToggle(input, strategyId) {
   const enabled = input.checked;
   const strategy = state.strategies.find((item) => item.id === strategyId);
   const previous = strategy?.enabled ?? !enabled;
-  document.querySelectorAll(`[data-strategy-toggle="${strategyId}"], [data-strategy-card-toggle="${strategyId}"]`)
+  document.querySelectorAll(`[data-strategy-toggle="${strategyId}"], [data-strategy-card-toggle="${strategyId}"], [data-strategy-summary-toggle="${strategyId}"]`)
     .forEach((control) => { control.disabled = true; });
   try {
     const saved = await persistStrategyEnabled(strategyId, enabled);
@@ -7034,25 +7034,71 @@ function renderStrategySummaryStrip() {
   strategySummaryStrip.innerHTML = state.strategies.map((strategy) => {
     const profit = strategySnapshotProfit(strategy.id);
     const pairCount = (strategy.symbols || []).length;
-    return `<button class="strategy-summary-card${strategy.id === state.selectedStrategyId ? ' is-selected' : ''}" type="button" data-strategy-summary-select="${strategy.id}" aria-label="View ${escapeHtml(strategy.name)} performance">
+    return `<article class="card strategy-summary-card${strategy.id === state.selectedStrategyId ? ' is-selected' : ''}" data-strategy-summary-select="${strategy.id}" role="button" tabindex="0" aria-label="View ${escapeHtml(strategy.name)} performance">
       <div class="strategy-summary-head">
         <div><h3 class="strategy-summary-name">${escapeHtml(strategy.name)}</h3><p class="strategy-summary-meta">${escapeHtml(strategyBrief(strategy))} · ${escapeHtml(strategy.timeframe || 'M5')} · ${pairCount} pair${pairCount === 1 ? '' : 's'}</p></div>
-        <span class="strategy-summary-status${strategy.enabled ? ' is-enabled' : ''}">${strategy.enabled ? 'Enabled' : 'Disabled'}</span>
+        <label class="strategy-toggle strategy-toggle-icon-only strategy-summary-toggle" title="${strategy.enabled ? 'Disable' : 'Enable'} ${escapeHtml(strategy.name)}">
+          <input type="checkbox" class="strategy-toggle-input" data-strategy-summary-toggle="${strategy.id}" aria-label="${strategy.enabled ? 'Disable' : 'Enable'} ${escapeHtml(strategy.name)}" ${strategy.enabled ? 'checked' : ''} />
+        </label>
       </div>
       <div class="strategy-summary-pl-grid">
         <span class="strategy-summary-pl"><span>Daily P/L</span>${signedPlMarkup(profit.daily)}</span>
         <span class="strategy-summary-pl"><span>Weekly P/L</span>${signedPlMarkup(profit.weekly)}</span>
         <span class="strategy-summary-pl"><span>Monthly P/L</span>${signedPlMarkup(profit.monthly)}</span>
       </div>
-    </button>`;
+    </article>`;
   }).join('');
-  strategySummaryStrip.querySelectorAll('[data-strategy-summary-select]').forEach((button) => {
-    button.addEventListener('click', () => {
-      state.selectedStrategyId = button.dataset.strategySummarySelect;
-      renderStrategyPage();
-      document.querySelector('.strategies-view-head')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  strategySummaryStrip.querySelectorAll('[data-strategy-summary-toggle]').forEach((input) => {
+    input.addEventListener('click', (event) => event.stopPropagation());
+    input.addEventListener('change', (event) => {
+      event.stopPropagation();
+      handleStrategyToggle(input, input.dataset.strategySummaryToggle);
     });
   });
+
+  const selectStrategyCard = (card) => {
+    state.selectedStrategyId = card.dataset.strategySummarySelect;
+    renderStrategyPage();
+    smoothScrollToElement(document.querySelector('.strategies-view-head'), 950);
+  };
+
+  strategySummaryStrip.querySelectorAll('[data-strategy-summary-select]').forEach((card) => {
+    card.addEventListener('click', (event) => {
+      if (event.target.closest('.strategy-summary-toggle')) return;
+      selectStrategyCard(card);
+    });
+    card.addEventListener('keydown', (event) => {
+      if (event.target !== card || !['Enter', ' '].includes(event.key)) return;
+      event.preventDefault();
+      selectStrategyCard(card);
+    });
+  });
+}
+
+function smoothScrollToElement(element, duration = 950) {
+  if (!element) return;
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    element.scrollIntoView({ block: 'start' });
+    return;
+  }
+  const startY = window.scrollY;
+  const targetY = Math.max(0, startY + element.getBoundingClientRect().top - 12);
+  const distance = targetY - startY;
+  if (Math.abs(distance) < 2) return;
+  const runId = (smoothScrollToElement.runId || 0) + 1;
+  smoothScrollToElement.runId = runId;
+  const startedAt = performance.now();
+  const easeInOutCubic = (progress) => progress < 0.5
+    ? 4 * progress * progress * progress
+    : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+  const step = (now) => {
+    if (smoothScrollToElement.runId !== runId) return;
+    const progress = Math.min(1, (now - startedAt) / duration);
+    window.scrollTo(0, startY + distance * easeInOutCubic(progress));
+    if (progress < 1) window.requestAnimationFrame(step);
+  };
+  window.requestAnimationFrame(step);
 }
 
 function summarizeSignalsForRange(signals, deliveries, range) {
