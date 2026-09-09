@@ -1,0 +1,17 @@
+{
+  "name": "lucre-mt5-saas",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "check": "node --check api/ai-assistant.js && node --check dashboard/app.js && node --check dashboard/main.js"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^4.0.60",
+    "ai": "^7.0.93",
+    "zod": "^4.5.4"
+  }
+}

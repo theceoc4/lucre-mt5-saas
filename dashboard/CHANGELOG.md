@@ -1,5 +1,12 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.88 — Lucre AI v1 + Appearance controls (2026-09-08)
+
+- Replaced the bottom theme button with an authenticated Lucre AI assistant for terminal-scoped, read-only account analysis.
+- Added strategy performance, recent-trade, account snapshot, pair-trend, and price-feed health tools with tenant ownership checks.
+- Added quick prompts, browser voice dictation, and optional spoken responses while keeping all trade and settings mutations out of v1.
+- Moved light/dark mode into Settings → Appearance beside the existing palette controls.
+
 ## v1.0.87 — Interactive strategy snapshot cards (2026-09-08)
 
 - Matches strategy snapshot titles and top-left spacing to the Pairs cards and applies the shared glass glare treatment.

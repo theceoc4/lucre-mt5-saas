@@ -210,6 +210,17 @@ const settingsModalSubtitle = document.getElementById('settings-modal-subtitle')
 const settingsBackButton = document.getElementById('button-settings-back');
 const paletteSettingsForm = document.getElementById('form-palette-settings');
 const paletteSettingsMessage = document.getElementById('palette-settings-message');
+const aiAssistantPanel = document.getElementById('ai-assistant-panel');
+const aiAssistantButton = document.getElementById('button-ai-assistant');
+const aiAssistantClose = document.getElementById('button-ai-close');
+const aiAssistantClear = document.getElementById('button-ai-clear');
+const aiAssistantMessages = document.getElementById('ai-assistant-messages');
+const aiAssistantScope = document.getElementById('ai-assistant-scope');
+const aiAssistantForm = document.getElementById('form-ai-assistant');
+const aiAssistantInput = document.getElementById('ai-assistant-input');
+const aiAssistantSend = document.getElementById('button-ai-send');
+const aiAssistantVoice = document.getElementById('button-ai-voice');
+const aiAssistantPrompts = document.getElementById('ai-assistant-prompts');
 const socialFeed = document.getElementById('social-feed');
 const socialCommunityList = document.getElementById('social-community-list');
 const socialPlDock = document.getElementById('social-pl-dock');
@@ -354,6 +365,8 @@ function showAuthGate() {
   authGate.classList.add('is-open');
   dashboardRoot.setAttribute('aria-hidden', 'true');
   dashboardRoot.style.display = 'none';
+  if (aiAssistantButton) aiAssistantButton.hidden = true;
+  setAssistantOpen(false);
 }
 
 function showDashboard() {
@@ -361,6 +374,7 @@ function showDashboard() {
   authGate.classList.remove('is-open');
   dashboardRoot.setAttribute('aria-hidden', 'false');
   dashboardRoot.style.display = 'flex';
+  if (aiAssistantButton) aiAssistantButton.hidden = false;
   dashboardRoot.classList.remove('app-entering');
   void dashboardRoot.offsetWidth;
   dashboardRoot.classList.add('app-entering');
@@ -469,7 +483,7 @@ function rerenderTimezoneSurfaces() {
 const SETTINGS_PAGES = {
   appearance: {
     title: 'Appearance',
-    subtitle: 'Choose the dashboard color palette that feels like home.',
+    subtitle: 'Choose the display mode and color palette that feel like home.',
   },
   timezone: {
     title: 'Timezone',
@@ -526,6 +540,151 @@ document.getElementById('button-settings')?.addEventListener('click', () => {
   showSettingsPage('home');
   window.LucreUI?.openModal('modal-platform-settings');
 });
+
+// ---------------------------------------------------------------------------
+// Lucre AI v1 — authenticated, terminal-scoped, read-only analysis.
+// ---------------------------------------------------------------------------
+let assistantConversation = [];
+let assistantRequestInFlight = false;
+let assistantRecognition = null;
+
+function assistantTerminalLabel() {
+  return state.terminals.find((terminal) => terminal.id === state.activeTerminalId)?.label || 'No terminal selected';
+}
+
+function addAssistantMessage(role, content, { loading = false } = {}) {
+  if (!aiAssistantMessages) return null;
+  const row = document.createElement('div');
+  row.className = `ai-message ai-message-${role}${loading ? ' ai-message-loading' : ''}`;
+  const bubble = document.createElement('div');
+  bubble.className = 'ai-message-bubble';
+  bubble.textContent = content;
+  row.appendChild(bubble);
+  if (role === 'assistant' && !loading && 'speechSynthesis' in window) {
+    const actions = document.createElement('div');
+    actions.className = 'ai-message-actions';
+    const speak = document.createElement('button');
+    speak.type = 'button';
+    speak.textContent = 'Listen';
+    speak.setAttribute('aria-label', 'Read this response aloud');
+    speak.addEventListener('click', () => {
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(new SpeechSynthesisUtterance(content));
+    });
+    actions.appendChild(speak);
+    row.appendChild(actions);
+  }
+  aiAssistantMessages.appendChild(row);
+  aiAssistantMessages.scrollTop = aiAssistantMessages.scrollHeight;
+  return row;
+}
+
+function resetAssistantConversation() {
+  assistantConversation = [];
+  if (aiAssistantMessages) aiAssistantMessages.replaceChildren();
+  addAssistantMessage('assistant', 'I’m ready. Ask me about this account’s strategies, trades, pair trends, or price-feed health.');
+}
+
+function setAssistantOpen(open) {
+  if (!aiAssistantPanel || !aiAssistantButton) return;
+  aiAssistantPanel.classList.toggle('is-open', open);
+  aiAssistantPanel.setAttribute('aria-hidden', String(!open));
+  aiAssistantButton.setAttribute('aria-expanded', String(open));
+  aiAssistantButton.setAttribute('aria-label', open ? 'Close Lucre AI' : 'Open Lucre AI');
+  if (aiAssistantScope) aiAssistantScope.textContent = state.activeTerminalId
+    ? `${assistantTerminalLabel()} · read-only`
+    : 'Connect an MT5 account to begin';
+  if (open) {
+    if (!aiAssistantMessages?.children.length) resetAssistantConversation();
+    window.requestAnimationFrame(() => aiAssistantInput?.focus({ preventScroll: true }));
+  }
+}
+
+function setAssistantBusy(busy) {
+  assistantRequestInFlight = busy;
+  if (aiAssistantSend) aiAssistantSend.disabled = busy;
+  if (aiAssistantInput) aiAssistantInput.disabled = busy;
+  if (aiAssistantPrompts) aiAssistantPrompts.querySelectorAll('button').forEach((button) => { button.disabled = busy; });
+}
+
+async function askLucreAssistant(rawQuestion) {
+  const question = String(rawQuestion || '').trim();
+  if (!question || assistantRequestInFlight) return;
+  if (!state.session || !state.activeTerminalId) {
+    addAssistantMessage('assistant', 'Connect and select an MT5 account first so I know which private dataset to analyze.');
+    return;
+  }
+  assistantConversation.push({ role: 'user', content: question });
+  assistantConversation = assistantConversation.slice(-11);
+  addAssistantMessage('user', question);
+  if (aiAssistantInput) { aiAssistantInput.value = ''; aiAssistantInput.style.height = 'auto'; }
+  const loading = addAssistantMessage('assistant', 'Checking your Lucre data…', { loading: true });
+  setAssistantBusy(true);
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error('Your session expired. Please sign in again.');
+    const response = await fetch('/api/ai-assistant', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({ terminal_id: state.activeTerminalId, messages: assistantConversation.slice(-12) }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.message || 'Lucre AI could not complete that request.');
+    const reply = String(payload.reply || 'I could not produce an answer from the available data.');
+    assistantConversation.push({ role: 'assistant', content: reply });
+    assistantConversation = assistantConversation.slice(-12);
+    loading?.remove();
+    addAssistantMessage('assistant', reply);
+  } catch (error) {
+    loading?.remove();
+    addAssistantMessage('assistant', error?.message || 'Something interrupted the analysis. Please try again.');
+  } finally {
+    setAssistantBusy(false);
+    aiAssistantInput?.focus({ preventScroll: true });
+  }
+}
+
+aiAssistantButton?.addEventListener('click', () => setAssistantOpen(aiAssistantButton.getAttribute('aria-expanded') !== 'true'));
+aiAssistantClose?.addEventListener('click', () => setAssistantOpen(false));
+aiAssistantClear?.addEventListener('click', resetAssistantConversation);
+aiAssistantForm?.addEventListener('submit', (event) => { event.preventDefault(); askLucreAssistant(aiAssistantInput?.value); });
+aiAssistantInput?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); aiAssistantForm?.requestSubmit(); }
+});
+aiAssistantInput?.addEventListener('input', () => {
+  aiAssistantInput.style.height = 'auto';
+  aiAssistantInput.style.height = `${Math.min(aiAssistantInput.scrollHeight, 112)}px`;
+});
+aiAssistantPrompts?.addEventListener('click', (event) => {
+  const prompt = event.target.closest('[data-ai-prompt]')?.dataset.aiPrompt;
+  if (prompt) askLucreAssistant(prompt);
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && aiAssistantPanel?.classList.contains('is-open')) setAssistantOpen(false);
+});
+
+const BrowserSpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (aiAssistantVoice && BrowserSpeechRecognition) {
+  assistantRecognition = new BrowserSpeechRecognition();
+  assistantRecognition.lang = navigator.language || 'en-US';
+  assistantRecognition.interimResults = true;
+  assistantRecognition.continuous = false;
+  assistantRecognition.addEventListener('start', () => aiAssistantVoice.classList.add('is-listening'));
+  assistantRecognition.addEventListener('end', () => aiAssistantVoice.classList.remove('is-listening'));
+  assistantRecognition.addEventListener('result', (event) => {
+    const transcript = [...event.results].map((result) => result[0].transcript).join('');
+    if (aiAssistantInput) { aiAssistantInput.value = transcript; aiAssistantInput.dispatchEvent(new Event('input')); }
+  });
+  aiAssistantVoice.addEventListener('click', () => {
+    try { assistantRecognition.start(); } catch (_) { assistantRecognition.stop(); }
+  });
+} else if (aiAssistantVoice) {
+  aiAssistantVoice.disabled = true;
+  aiAssistantVoice.title = 'Voice dictation is not supported in this browser.';
+}
 
 function base64UrlToUint8Array(value) {
   const padding = '='.repeat((4 - value.length % 4) % 4);
@@ -4180,6 +4339,8 @@ function renderTerminalPicker() {
 
 terminalSelect?.addEventListener('change', async (e) => {
   state.activeTerminalId = e.target.value;
+  resetAssistantConversation();
+  if (aiAssistantScope) aiAssistantScope.textContent = `${assistantTerminalLabel()} · read-only`;
   renderTerminalPicker();
   startRealtime(state.activeTerminalId);
   stopSymbolRescanPoll();
@@ -7738,6 +7899,9 @@ function resetDashboardState() {
   state.portfolioRisk = null;
   state.terminals = [];
   state.activeTerminalId = null;
+  assistantConversation = [];
+  if (aiAssistantMessages) aiAssistantMessages.replaceChildren();
+  setAssistantOpen(false);
   state.strategies = [];
   state.signals = [];
   state.signalDeliveries = [];

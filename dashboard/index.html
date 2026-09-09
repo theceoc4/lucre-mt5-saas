@@ -42,7 +42,7 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.87" />
+<link rel="stylesheet" href="./style.css?v=1.0.88" />
 </head>
 <body>
 
@@ -484,7 +484,7 @@
 
     <div class="settings-page" data-settings-page="home">
       <div class="settings-category-list">
-        <button class="settings-category-button" type="button" data-settings-page-target="appearance"><span class="settings-category-icon settings-category-icon-text" aria-hidden="true">UI</span><span><strong>Appearance</strong><small>Choose the color palette used across your dashboard.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
+        <button class="settings-category-button" type="button" data-settings-page-target="appearance"><span class="settings-category-icon settings-category-icon-text" aria-hidden="true">UI</span><span><strong>Appearance</strong><small>Choose your display mode and dashboard palette.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
         <button class="settings-category-button" type="button" data-settings-page-target="timezone"><span class="settings-category-icon" aria-hidden="true">◷</span><span><strong>Timezone</strong><small>Localize charts, activity, news, and trade times.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
         <button class="settings-category-button" type="button" data-settings-page-target="notifications"><span class="settings-category-icon" aria-hidden="true">⌁</span><span><strong>Notifications</strong><small>Choose which live alerts reach this device.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
         <button class="settings-category-button" type="button" data-settings-page-target="risk"><span class="settings-category-icon" aria-hidden="true">◇</span><span><strong>Risk Management</strong><small>Set account-wide automatic trading guardrails.</small></span><span class="settings-category-chevron" aria-hidden="true">›</span></button>
@@ -493,8 +493,16 @@
     </div>
 
     <div class="settings-page" data-settings-page="appearance" hidden>
+      <section class="symbol-settings-section" aria-labelledby="display-mode-settings-title">
+        <div class="symbol-settings-heading"><div><h4 id="display-mode-settings-title">Display mode</h4><p class="desc">Switch Lucre Hub between light and dark mode.</p></div></div>
+        <fieldset class="appearance-mode-control" aria-label="Display mode">
+          <legend class="sr-only">Display mode</legend>
+          <label><input type="radio" name="dashboard_theme" value="light" /><span>Light</span></label>
+          <label><input type="radio" name="dashboard_theme" value="dark" /><span>Dark</span></label>
+        </fieldset>
+      </section>
       <section class="symbol-settings-section" aria-labelledby="appearance-settings-title">
-        <div class="symbol-settings-heading"><div><h4 id="appearance-settings-title">Dashboard palette</h4><p class="desc">Choose the color system used across Lucre Hub. Your light or dark mode remains separate.</p></div></div>
+        <div class="symbol-settings-heading"><div><h4 id="appearance-settings-title">Dashboard palette</h4><p class="desc">Choose the color system used across Lucre Hub.</p></div></div>
         <form id="form-palette-settings" class="palette-settings-form">
           <label class="palette-option">
             <input type="radio" name="dashboard_palette" value="lucre" />
@@ -1246,12 +1254,39 @@
   </div>
 </div>
 
-<button class="theme-toggle" data-theme-toggle aria-label="Switch to dark mode" data-testid="button-theme-toggle">
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+<aside class="ai-assistant-panel" id="ai-assistant-panel" aria-hidden="true" aria-label="Lucre AI assistant">
+  <header class="ai-assistant-head">
+    <div class="ai-assistant-title"><span class="ai-assistant-mark" aria-hidden="true">✦</span><span><strong>Lucre AI</strong><small id="ai-assistant-scope">Read-only account analysis</small></span></div>
+    <div class="ai-assistant-head-actions">
+      <button class="icon-btn" type="button" id="button-ai-clear" aria-label="Clear conversation" title="Clear conversation">↺</button>
+      <button class="icon-btn" type="button" id="button-ai-close" aria-label="Close Lucre AI">×</button>
+    </div>
+  </header>
+  <div class="ai-assistant-messages" id="ai-assistant-messages" aria-live="polite"></div>
+  <div class="ai-assistant-prompts" id="ai-assistant-prompts">
+    <button type="button" data-ai-prompt="How is my account performing today?">Today’s performance</button>
+    <button type="button" data-ai-prompt="Which strategy needs the most attention over the last 30 days, and why?">Strategy check</button>
+    <button type="button" data-ai-prompt="Are any pairs stale or out of sync right now?">Feed health</button>
+  </div>
+  <form class="ai-assistant-form" id="form-ai-assistant" autocomplete="off">
+    <label class="sr-only" for="ai-assistant-input">Ask Lucre AI</label>
+    <textarea id="ai-assistant-input" rows="1" maxlength="4000" placeholder="Ask about your trading data…" autocomplete="off"></textarea>
+    <button class="ai-voice-button" id="button-ai-voice" type="button" aria-label="Dictate a question" title="Dictate a question">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
+    </button>
+    <button class="ai-send-button" id="button-ai-send" type="submit" aria-label="Send question">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+    </button>
+  </form>
+  <p class="ai-assistant-disclaimer">Analysis only · Lucre AI cannot place or change trades in v1.</p>
+</aside>
+
+<button class="theme-toggle ai-assistant-launcher" id="button-ai-assistant" aria-label="Open Lucre AI" aria-expanded="false" aria-controls="ai-assistant-panel" data-testid="button-ai-assistant" hidden>
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3 1.4 4.1L17.5 8.5l-4.1 1.4L12 14l-1.4-4.1-4.1-1.4 4.1-1.4Z"/><path d="m18 14 .9 2.6 2.6.9-2.6.9L18 21l-.9-2.6-2.6-.9 2.6-.9Z"/></svg>
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.87"></script>
-<script type="module" src="./main.js?v=1.0.87"></script>
+<script src="./app.js?v=1.0.88"></script>
+<script type="module" src="./main.js?v=1.0.88"></script>
 </body>
 </html>
