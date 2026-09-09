@@ -3,6 +3,7 @@
 ## v1.0.88 — Lucre AI v1 + Appearance controls (2026-09-08)
 
 - Fixed OpenAI strict-tool schema validation by making every tool property required and using an explicit nullable strategy selector.
+- Removed automatic retries for non-transient AI failures and now surfaces a direct OpenAI API billing message when the connected project has no credits.
 - Sanitized AI failure logs so only the error name, message, status, and provider code are recorded.
 - Replaced the bottom theme button with an authenticated Lucre AI assistant for terminal-scoped, read-only account analysis.
 - Added strategy performance, recent-trade, account snapshot, pair-trend, and price-feed health tools with tenant ownership checks.

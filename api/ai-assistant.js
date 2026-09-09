@@ -75,6 +75,9 @@ Never claim guaranteed returns or certainty. Separate observed facts from interp
 Keep responses practical and concise. Explain trading and statistics in plain language. Never reveal IDs, tokens, private implementation details, or raw tool payloads.
 This v1 cannot place, modify, or close trades and cannot change strategies or risk settings. If asked to make a change, explain what you recommend and clearly say the user must apply it manually for now.`,
     stopWhen: isStepCount(6),
+    // Billing, schema, and authorization failures are not transient. Avoid
+    // making a user wait through repeated provider calls that cannot succeed.
+    maxRetries: 0,
     maxOutputTokens: 900,
     providerOptions: {
       openai: {
@@ -251,12 +254,26 @@ export default async function handler(req, res) {
     });
     return json(res, 200, { reply: result.text || 'I could not produce an answer from the available data.', mode: 'read_only' });
   } catch (error) {
+    const nestedMessages = [
+      error?.message,
+      error?.lastError?.message,
+      ...(Array.isArray(error?.errors) ? error.errors.map((item) => item?.message) : []),
+    ].filter(Boolean).join(' | ');
     console.error('ai-assistant failure', {
       name: error?.name || 'Error',
-      message: error?.message || String(error),
+      message: nestedMessages || String(error),
       statusCode: error?.statusCode || null,
       code: error?.data?.error?.code || null,
     });
+    if (/no credits remaining|insufficient_quota|billing/i.test(nestedMessages)) {
+      return json(res, 402, {
+        error: 'ai_billing_required',
+        message: 'The OpenAI API project has no credits remaining. Add API credits in OpenAI Platform Billing, then try again.',
+      });
+    }
+    if (/rate limit|too many requests/i.test(nestedMessages)) {
+      return json(res, 429, { error: 'ai_rate_limited', message: 'OpenAI is rate limiting requests. Please try again shortly.' });
+    }
     const message = error instanceof SyntaxError ? 'Invalid JSON request.' : 'Lucre AI could not complete that analysis. Please try again.';
     return json(res, error instanceof SyntaxError ? 400 : 500, { error: 'assistant_failed', message });
   }
