@@ -119,8 +119,8 @@ This v1 cannot place, modify, or close trades and cannot change strategies or ri
       strategyPerformance: tool({
         description: 'Analyze signal and closed-trade performance for one strategy or all strategies over a requested number of days.',
         inputSchema: z.object({
-          strategyName: z.string().max(120).optional().describe('Exact or partial strategy name, if specified by the user'),
-          days: z.number().int().min(1).max(3650).default(30),
+          strategyName: z.string().max(120).nullable().describe('Exact or partial strategy name, or null to analyze all strategies'),
+          days: z.number().int().min(1).max(3650).describe('Number of trailing calendar days to analyze'),
         }),
         strict: true,
         execute: async ({ strategyName, days }) => {
@@ -198,7 +198,7 @@ This v1 cannot place, modify, or close trades and cannot change strategies or ri
       }),
       recentTrades: tool({
         description: 'Read recent closed trades from this terminal for pattern analysis.',
-        inputSchema: z.object({ limit: z.number().int().min(1).max(200).default(50) }),
+        inputSchema: z.object({ limit: z.number().int().min(1).max(200).describe('Number of recent closed trades to return') }),
         strict: true,
         execute: async ({ limit }) => {
           const rows = await scoped('trade_history', {
@@ -251,7 +251,12 @@ export default async function handler(req, res) {
     });
     return json(res, 200, { reply: result.text || 'I could not produce an answer from the available data.', mode: 'read_only' });
   } catch (error) {
-    console.error('ai-assistant failure', error);
+    console.error('ai-assistant failure', {
+      name: error?.name || 'Error',
+      message: error?.message || String(error),
+      statusCode: error?.statusCode || null,
+      code: error?.data?.error?.code || null,
+    });
     const message = error instanceof SyntaxError ? 'Invalid JSON request.' : 'Lucre AI could not complete that analysis. Please try again.';
     return json(res, error instanceof SyntaxError ? 400 : 500, { error: 'assistant_failed', message });
   }
