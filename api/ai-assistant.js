@@ -6,7 +6,11 @@ import { z } from 'zod';
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://qxlfnscmrhwfcpattqxa.supabase.co';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
   || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF4bGZuc2Ntcmh3ZmNwYXR0cXhhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY5MTI5NjYsImV4cCI6MjEwMjQ4ODk2Nn0.7nmSfQlFKyuYtej2i9TcQQVIjkeauqPA4iTGessQHWA';
-const MODEL = process.env.OPENAI_MODEL || 'gpt-5.6-terra';
+const DIRECT_MODEL = process.env.OPENAI_MODEL || 'gpt-5.4';
+const GATEWAY_MODEL = process.env.AI_GATEWAY_MODEL || `openai/${DIRECT_MODEL}`;
+const HAS_DIRECT_OPENAI = Boolean(process.env.OPENAI_API_KEY);
+const HAS_GATEWAY_AUTH = Boolean(process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN);
+const MODEL = HAS_DIRECT_OPENAI ? DIRECT_MODEL : GATEWAY_MODEL;
 const requestWindows = new Map();
 
 function json(res, status, body) {
@@ -64,7 +68,7 @@ function buildAgent({ token, terminalId, userId }) {
   const scoped = (table, params) => query(table, { ...params, terminal_id: `eq.${terminalId}` }, token);
 
   return new ToolLoopAgent({
-    model: openai(MODEL),
+    model: HAS_DIRECT_OPENAI ? openai(DIRECT_MODEL) : GATEWAY_MODEL,
     instructions: `You are Lucre AI, a read-only trading performance analyst inside Lucre Hub.
 Use tools before making claims about this user's account. Every tool is already restricted to the authenticated user's selected MT5 terminal.
 Never claim guaranteed returns or certainty. Separate observed facts from interpretations and recommendations. Use net P/L after commission, swap, and fees. Mention the sample size and date range when relevant. Call out missing, stale, or unverified data instead of inventing an answer.
@@ -77,6 +81,12 @@ This v1 cannot place, modify, or close trades and cannot change strategies or ri
         store: false,
         safetyIdentifier: crypto.createHash('sha256').update(userId).digest('hex'),
       },
+      ...(!HAS_DIRECT_OPENAI ? {
+        gateway: {
+          user: crypto.createHash('sha256').update(userId).digest('hex'),
+          tags: ['feature:lucre-ai', 'version:v1'],
+        },
+      } : {}),
     },
     tools: {
       accountSnapshot: tool({
@@ -205,10 +215,16 @@ This v1 cannot place, modify, or close trades and cannot change strategies or ri
 
 export default async function handler(req, res) {
   if (req.method === 'GET') {
-    return json(res, 200, { ok: true, configured: Boolean(process.env.OPENAI_API_KEY), model: MODEL, mode: 'read_only' });
+    return json(res, 200, {
+      ok: true,
+      configured: HAS_DIRECT_OPENAI || HAS_GATEWAY_AUTH,
+      provider: HAS_DIRECT_OPENAI ? 'openai_direct' : HAS_GATEWAY_AUTH ? 'vercel_ai_gateway' : 'not_configured',
+      model: MODEL,
+      mode: 'read_only',
+    });
   }
   if (req.method !== 'POST') return json(res, 405, { error: 'method_not_allowed' });
-  if (!process.env.OPENAI_API_KEY) return json(res, 503, { error: 'ai_not_configured', message: 'The OpenAI API key is not configured for this deployment.' });
+  if (!HAS_DIRECT_OPENAI && !HAS_GATEWAY_AUTH) return json(res, 503, { error: 'ai_not_configured', message: 'OpenAI or Vercel AI Gateway is not configured for this deployment.' });
   if (!SUPABASE_ANON_KEY) return json(res, 503, { error: 'auth_not_configured' });
 
   try {

@@ -4,6 +4,7 @@
 
 - Replaced the bottom theme button with an authenticated Lucre AI assistant for terminal-scoped, read-only account analysis.
 - Added strategy performance, recent-trade, account snapshot, pair-trend, and price-feed health tools with tenant ownership checks.
+- Added automatic Vercel AI Gateway/OIDC fallback when a direct `OPENAI_API_KEY` is not exposed to Production.
 - Added quick prompts, browser voice dictation, and optional spoken responses while keeping all trade and settings mutations out of v1.
 - Moved light/dark mode into Settings → Appearance beside the existing palette controls.
 
