@@ -1,5 +1,12 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.89 — Full-screen Aurelio assistant (2026-09-08)
+
+- Renamed the in-product trading analyst to Aurelio and rebuilt its popup as a full-screen, minimalist assistant experience.
+- Added a theme-aware frosted backdrop with subtle animated ambient waves and an “Ask Aurelio” idle state.
+- Anchored a responsive voice-and-text composer near the bottom while preserving readable conversation history above it.
+- Added body scroll locking, keyboard focus containment, Escape-to-close behavior, and reduced-motion support.
+
 ## v1.0.88 — Lucre AI v1 + Appearance controls (2026-09-08)
 
 - Fixed OpenAI strict-tool schema validation by making every tool property required and using an explicit nullable strategy selector.

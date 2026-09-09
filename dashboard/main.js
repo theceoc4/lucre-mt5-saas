@@ -542,7 +542,7 @@ document.getElementById('button-settings')?.addEventListener('click', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Lucre AI v1 — authenticated, terminal-scoped, read-only analysis.
+// Aurelio v1 — authenticated, terminal-scoped, read-only analysis.
 // ---------------------------------------------------------------------------
 let assistantConversation = [];
 let assistantRequestInFlight = false;
@@ -554,6 +554,7 @@ function assistantTerminalLabel() {
 
 function addAssistantMessage(role, content, { loading = false } = {}) {
   if (!aiAssistantMessages) return null;
+  aiAssistantPanel?.classList.add('has-conversation');
   const row = document.createElement('div');
   row.className = `ai-message ai-message-${role}${loading ? ' ai-message-loading' : ''}`;
   const bubble = document.createElement('div');
@@ -582,7 +583,7 @@ function addAssistantMessage(role, content, { loading = false } = {}) {
 function resetAssistantConversation() {
   assistantConversation = [];
   if (aiAssistantMessages) aiAssistantMessages.replaceChildren();
-  addAssistantMessage('assistant', 'I’m ready. Ask me about this account’s strategies, trades, pair trends, or price-feed health.');
+  aiAssistantPanel?.classList.remove('has-conversation');
 }
 
 function setAssistantOpen(open) {
@@ -590,13 +591,16 @@ function setAssistantOpen(open) {
   aiAssistantPanel.classList.toggle('is-open', open);
   aiAssistantPanel.setAttribute('aria-hidden', String(!open));
   aiAssistantButton.setAttribute('aria-expanded', String(open));
-  aiAssistantButton.setAttribute('aria-label', open ? 'Close Lucre AI' : 'Open Lucre AI');
+  aiAssistantButton.setAttribute('aria-label', open ? 'Close Aurelio' : 'Open Aurelio');
+  document.body.classList.toggle('has-ai-assistant', open);
   if (aiAssistantScope) aiAssistantScope.textContent = state.activeTerminalId
     ? `${assistantTerminalLabel()} · read-only`
     : 'Connect an MT5 account to begin';
   if (open) {
     if (!aiAssistantMessages?.children.length) resetAssistantConversation();
     window.requestAnimationFrame(() => aiAssistantInput?.focus({ preventScroll: true }));
+  } else {
+    aiAssistantButton.focus({ preventScroll: true });
   }
 }
 
@@ -632,7 +636,7 @@ async function askLucreAssistant(rawQuestion) {
       body: JSON.stringify({ terminal_id: state.activeTerminalId, messages: assistantConversation.slice(-12) }),
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.message || 'Lucre AI could not complete that request.');
+    if (!response.ok) throw new Error(payload.message || 'Aurelio could not complete that request.');
     const reply = String(payload.reply || 'I could not produce an answer from the available data.');
     assistantConversation.push({ role: 'assistant', content: reply });
     assistantConversation = assistantConversation.slice(-12);
@@ -664,6 +668,21 @@ aiAssistantPrompts?.addEventListener('click', (event) => {
 });
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && aiAssistantPanel?.classList.contains('is-open')) setAssistantOpen(false);
+});
+aiAssistantPanel?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Tab' || !aiAssistantPanel.classList.contains('is-open')) return;
+  const focusable = [...aiAssistantPanel.querySelectorAll('button:not([disabled]), textarea:not([disabled])')]
+    .filter((element) => element.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 });
 
 const BrowserSpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;

@@ -69,7 +69,7 @@ function buildAgent({ token, terminalId, userId }) {
 
   return new ToolLoopAgent({
     model: HAS_DIRECT_OPENAI ? openai(DIRECT_MODEL) : GATEWAY_MODEL,
-    instructions: `You are Lucre AI, a read-only trading performance analyst inside Lucre Hub.
+    instructions: `You are Aurelio, Lucre Hub's read-only trading performance analyst.
 Use tools before making claims about this user's account. Every tool is already restricted to the authenticated user's selected MT5 terminal.
 Never claim guaranteed returns or certainty. Separate observed facts from interpretations and recommendations. Use net P/L after commission, swap, and fees. Mention the sample size and date range when relevant. Call out missing, stale, or unverified data instead of inventing an answer.
 Keep responses practical and concise. Explain trading and statistics in plain language. Never reveal IDs, tokens, private implementation details, or raw tool payloads.
@@ -235,7 +235,7 @@ export default async function handler(req, res) {
     if (!token) return json(res, 401, { error: 'authentication_required' });
     const user = await supabaseFetch('/auth/v1/user', token);
     if (!user?.id) return json(res, 401, { error: 'invalid_session' });
-    if (rateLimited(user.id)) return json(res, 429, { error: 'rate_limited', message: 'Lucre AI is catching its breath. Try again in a moment.' });
+    if (rateLimited(user.id)) return json(res, 429, { error: 'rate_limited', message: 'Aurelio is catching its breath. Try again in a moment.' });
 
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
     const terminalId = String(body.terminal_id || '');
@@ -248,7 +248,7 @@ export default async function handler(req, res) {
     const owned = await query('mt5_terminals', { select: 'id,label', id: `eq.${terminalId}`, user_id: `eq.${user.id}`, limit: '1' }, token);
     if (!owned.length) return json(res, 403, { error: 'terminal_not_available' });
 
-    const transcript = parsed.data.map((message) => `${message.role === 'user' ? 'User' : 'Lucre AI'}: ${message.content}`).join('\n\n');
+    const transcript = parsed.data.map((message) => `${message.role === 'user' ? 'User' : 'Aurelio'}: ${message.content}`).join('\n\n');
     const result = await buildAgent({ token, terminalId, userId: user.id }).generate({
       prompt: `Selected terminal: ${owned[0].label || 'MT5 account'}\n\nConversation:\n${transcript}\n\nRespond to the latest user message.`,
     });
@@ -274,7 +274,7 @@ export default async function handler(req, res) {
     if (/rate limit|too many requests/i.test(nestedMessages)) {
       return json(res, 429, { error: 'ai_rate_limited', message: 'OpenAI is rate limiting requests. Please try again shortly.' });
     }
-    const message = error instanceof SyntaxError ? 'Invalid JSON request.' : 'Lucre AI could not complete that analysis. Please try again.';
+    const message = error instanceof SyntaxError ? 'Invalid JSON request.' : 'Aurelio could not complete that analysis. Please try again.';
     return json(res, error instanceof SyntaxError ? 400 : 500, { error: 'assistant_failed', message });
   }
 }
