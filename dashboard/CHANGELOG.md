@@ -1,5 +1,11 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.90 — Concise Aurelio responses (2026-09-08)
+
+- Makes Aurelio lead with the answer, use natural conversational language, and default to focused responses under 120 words.
+- Limits routine answers to the evidence and one useful next action while retaining longer structured analysis when explicitly requested.
+- Reduces the response token ceiling from 900 to 400 to lower latency and discourage unnecessary filler without clipping normal answers.
+
 ## v1.0.89 — Full-screen Aurelio assistant (2026-09-08)
 
 - Renamed the in-product trading analyst to Aurelio and rebuilt its popup as a full-screen, minimalist assistant experience.
