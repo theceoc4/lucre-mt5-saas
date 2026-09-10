@@ -196,7 +196,6 @@ const notificationDot = document.getElementById('notification-dot');
 const notificationCount = document.getElementById('notification-count');
 const strategyPageSelect = document.getElementById('strategy-page-select');
 const strategyPageEdit = document.getElementById('strategy-page-edit');
-const strategyPageAurelia = document.getElementById('strategy-page-aurelia');
 const strategyPageEnabled = document.getElementById('strategy-page-enabled');
 const strategySummaryStrip = document.getElementById('strategy-summary-strip');
 const strategyChartRange = document.getElementById('strategy-chart-range');
@@ -7231,6 +7230,7 @@ function renderStrategySummaryStrip() {
         <span class="strategy-summary-pl"><span>Weekly P/L</span>${signedPlMarkup(profit.weekly)}</span>
         <span class="strategy-summary-pl"><span>Monthly P/L</span>${signedPlMarkup(profit.monthly)}</span>
       </div>
+      <button class="btn-accent strategy-summary-aurelia" type="button" data-strategy-summary-aurelia="${strategy.id}" ${strategyLabBusy ? 'disabled' : ''} aria-label="Ask Aurelia to analyze ${escapeHtml(strategy.name)}">Aurelia says</button>
     </article>`;
   }).join('');
 
@@ -7250,13 +7250,21 @@ function renderStrategySummaryStrip() {
 
   strategySummaryStrip.querySelectorAll('[data-strategy-summary-select]').forEach((card) => {
     card.addEventListener('click', (event) => {
-      if (event.target.closest('.strategy-summary-toggle')) return;
+      if (event.target.closest('.strategy-summary-toggle, .strategy-summary-aurelia')) return;
       selectStrategyCard(card);
     });
     card.addEventListener('keydown', (event) => {
       if (event.target !== card || !['Enter', ' '].includes(event.key)) return;
       event.preventDefault();
       selectStrategyCard(card);
+    });
+  });
+  strategySummaryStrip.querySelectorAll('[data-strategy-summary-aurelia]').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      state.selectedStrategyId = button.dataset.strategySummaryAurelia;
+      renderStrategyPage();
+      runStrategyLab();
     });
   });
 }
@@ -7500,7 +7508,6 @@ function renderStrategyPage() {
     strategyPageSelect.innerHTML = '<option>No strategies</option>';
     strategyPageSelect.disabled = true;
     strategyPageEdit.disabled = true;
-    if (strategyPageAurelia) strategyPageAurelia.disabled = true;
     if (strategyPageEnabled) {
       strategyPageEnabled.checked = false;
       strategyPageEnabled.disabled = true;
@@ -7526,7 +7533,6 @@ function renderStrategyPage() {
   const signalSummary = summarizeSignalsForRange(scoped.signals, scoped.deliveries, state.strategyChartRange);
   strategyPageSelect.disabled = false;
   strategyPageEdit.disabled = false;
-  if (strategyPageAurelia) strategyPageAurelia.disabled = strategyLabBusy;
   if (strategyPageEnabled) {
     strategyPageEnabled.disabled = false;
     strategyPageEnabled.checked = Boolean(strategy.enabled);
@@ -7681,7 +7687,7 @@ function strategyLabEvidence(payload) {
   const pct = (value) => value == null ? '—' : `${Math.round(Number(value) * 100)}%`;
   const expectancy = (value) => value == null ? '—' : `${Number(value).toFixed(2)}R`;
   return [
-    ['Trades tested', `${current.tradeCount} / ${candidate.tradeCount}`],
+    ['Candidates tested', String(payload.candidatesTested || 0)],
     ['Current win rate', pct(current.winRate)],
     ['Tested win rate', pct(candidate.winRate)],
     ['Validation edge', expectancy(candidate.validationExpectancyR)],
@@ -7730,11 +7736,11 @@ async function runStrategyLab() {
   document.getElementById('strategy-lab-progress-detail').textContent = 'Checking trades, signals, and guardrails.';
   window.LucreUI.openModal('modal-strategy-lab');
   strategyLabBusy = true;
-  strategyPageAurelia.disabled = true;
+  document.querySelectorAll('[data-strategy-summary-aurelia]').forEach((button) => { button.disabled = true; });
   const progress = [
     ['Finding the main pressure point…', 'Comparing stops, entries, and blocked-signal reasons.'],
     ['Running the control test…', 'Replaying the current strategy on retained broker candles.'],
-    ['Testing one adjustment…', 'Keeping the symbols and market sample identical.'],
+    ['Testing the strongest adjustments…', 'Running up to ten isolated changes on the same market sample.'],
     ['Letting Aurelia review the result…', 'Checking validation strength and drawdown before recommending anything.'],
   ];
   let step = 0;
@@ -7759,7 +7765,7 @@ async function runStrategyLab() {
   } finally {
     window.clearInterval(timer);
     strategyLabBusy = false;
-    strategyPageAurelia.disabled = false;
+    document.querySelectorAll('[data-strategy-summary-aurelia]').forEach((button) => { button.disabled = false; });
   }
 }
 
@@ -7770,9 +7776,16 @@ function reviewStrategyLabChange() {
   window.LucreUI.closeModal(document.getElementById('modal-strategy-lab'));
   openEditStrategyModal(strategy.id);
   const path = recommendation.path;
-  if (path === 'exit_config.stop_atr') document.getElementById('strategy-stop-atr').value = recommendation.proposed;
-  else if (path === 'cooldown_minutes') document.getElementById('strategy-cooldown').value = recommendation.proposed;
-  else if (path === 'max_spread_points') document.getElementById('strategy-max-spread').value = recommendation.proposed;
+  const fieldByPath = {
+    'exit_config.stop_atr': 'strategy-stop-atr',
+    'exit_config.target_r': 'strategy-target-r',
+    'exit_config.breakeven_r': 'strategy-breakeven-r',
+    'exit_config.trailing_start_r': 'strategy-trailing-r',
+    'exit_config.trail_atr': 'strategy-trail-atr',
+    cooldown_minutes: 'strategy-cooldown',
+    max_spread_points: 'strategy-max-spread',
+  };
+  if (fieldByPath[path]) document.getElementById(fieldByPath[path]).value = recommendation.proposed;
   else {
     const match = path.match(/^rule_definition\.indicators\.(\d+)\.params\.([a-z_]+)$/);
     if (match && strategyIndicatorRows[Number(match[1])]) {
@@ -7786,7 +7799,6 @@ function reviewStrategyLabChange() {
   message.textContent = `Aurelia previewed ${recommendation.label} at ${recommendation.proposed}. Review it, then save only if you want this change to go live.`;
 }
 
-strategyPageAurelia?.addEventListener('click', runStrategyLab);
 document.getElementById('strategy-lab-review')?.addEventListener('click', reviewStrategyLabChange);
 document.getElementById('modal-strategy-lab')?.addEventListener('click', (event) => {
   const metric = event.target.closest('[data-strategy-lab-metric]')?.dataset.strategyLabMetric;

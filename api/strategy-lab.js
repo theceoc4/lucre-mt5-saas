@@ -103,7 +103,12 @@ export function strategySnapshot(strategy) {
   };
 }
 
-function indicatorCandidate(snapshot) {
+function indicatorCandidates(snapshot, evidence) {
+  const candidates = [];
+  const add = (path, label, current, proposed, effect, tradeoff) => {
+    if (!Number.isFinite(Number(current)) || !Number.isFinite(Number(proposed)) || Number(current) === Number(proposed)) return;
+    candidates.push({ path, label, current, proposed, effect, tradeoff, evidence });
+  };
   const indicators = snapshot.rule_definition?.version === 2 ? snapshot.rule_definition.indicators || [] : [];
   for (let index = 0; index < indicators.length; index += 1) {
     const indicator = indicators[index];
@@ -111,51 +116,92 @@ function indicatorCandidate(snapshot) {
     if (indicator.indicator === 'ema_crossover') {
       const current = number(params.fast_period, 20);
       const slow = number(params.slow_period, 50);
-      const next = Math.max(2, Math.min(slow - 1, Math.round(current * 0.85)));
-      if (next !== current) return { path: `rule_definition.indicators.${index}.params.fast_period`, label: 'Fast EMA', current, proposed: next, effect: 'react sooner and create more opportunities', tradeoff: 'it can also react to more market noise' };
+      add(`rule_definition.indicators.${index}.params.fast_period`, 'Fast EMA', current, Math.max(2, Math.min(slow - 1, Math.round(current * 0.85))), 'react sooner and create more opportunities', 'it can also react to more market noise');
+      add(`rule_definition.indicators.${index}.params.fast_period`, 'Fast EMA', current, Math.max(2, Math.min(slow - 1, Math.round(current * 1.15))), 'filter more short-lived moves', 'entries can arrive later');
     }
     if (indicator.indicator === 'adx') {
-      const current = number(params.minimum, 25); const next = Math.max(10, Math.round(current * 0.88));
-      if (next !== current) return { path: `rule_definition.indicators.${index}.params.minimum`, label: 'Minimum ADX', current, proposed: next, effect: 'admit more developing trends', tradeoff: 'weaker trends can add false starts' };
+      const current = number(params.minimum, 25);
+      add(`rule_definition.indicators.${index}.params.minimum`, 'Minimum ADX', current, Math.max(10, Math.round(current * 0.88)), 'admit more developing trends', 'weaker trends can add false starts');
+      add(`rule_definition.indicators.${index}.params.minimum`, 'Minimum ADX', current, Math.min(60, Math.round(current * 1.12)), 'demand stronger trend confirmation', 'fewer setups may qualify');
     }
     if (indicator.indicator === 'breakout') {
-      const current = number(params.lookback, 20); const next = Math.max(3, Math.round(current * 0.8));
-      if (next !== current) return { path: `rule_definition.indicators.${index}.params.lookback`, label: 'Breakout lookback', current, proposed: next, effect: 'recognize breakouts earlier', tradeoff: 'shorter ranges can be easier to fake out' };
+      const current = number(params.lookback, 20);
+      add(`rule_definition.indicators.${index}.params.lookback`, 'Breakout lookback', current, Math.max(3, Math.round(current * 0.8)), 'recognize breakouts earlier', 'shorter ranges can be easier to fake out');
+      add(`rule_definition.indicators.${index}.params.lookback`, 'Breakout lookback', current, Math.min(200, Math.round(current * 1.2)), 'require a more meaningful range break', 'signals may arrive later');
     }
     if (indicator.indicator === 'volume_confirmation') {
-      const current = number(params.minimum_ratio, 1); const next = Math.max(0.5, rounded(current - 0.1, 0.05));
-      if (next !== current) return { path: `rule_definition.indicators.${index}.params.minimum_ratio`, label: 'Minimum volume ratio', current, proposed: next, effect: 'allow setups with slightly less volume confirmation', tradeoff: 'lower participation can make moves less dependable' };
+      const current = number(params.minimum_ratio, 1);
+      add(`rule_definition.indicators.${index}.params.minimum_ratio`, 'Minimum volume ratio', current, Math.max(0.5, rounded(current - 0.1, 0.05)), 'allow setups with slightly less volume confirmation', 'lower participation can make moves less dependable');
+      add(`rule_definition.indicators.${index}.params.minimum_ratio`, 'Minimum volume ratio', current, Math.min(3, rounded(current + 0.1, 0.05)), 'require stronger market participation', 'fewer setups may qualify');
     }
     if (indicator.indicator === 'linearity') {
-      const current = number(params.minimum, 0.6); const next = Math.max(0.3, rounded(current - 0.05, 0.05));
-      if (next !== current) return { path: `rule_definition.indicators.${index}.params.minimum`, label: 'Minimum linearity', current, proposed: next, effect: 'accept somewhat less-perfect trends', tradeoff: 'choppier price paths may enter the strategy' };
+      const current = number(params.minimum, 0.6);
+      add(`rule_definition.indicators.${index}.params.minimum`, 'Minimum linearity', current, Math.max(0.3, rounded(current - 0.05, 0.05)), 'accept somewhat less-perfect trends', 'choppier price paths may enter the strategy');
+      add(`rule_definition.indicators.${index}.params.minimum`, 'Minimum linearity', current, Math.min(0.95, rounded(current + 0.05, 0.05)), 'favor cleaner directional movement', 'fewer trends may qualify');
     }
   }
-  return null;
+  return candidates;
 }
 
-export function chooseCandidate(strategy, snapshot, trades, blocks) {
+export function chooseCandidates(strategy, snapshot, trades, blocks, limit = 10) {
   const verified = trades.filter((trade) => trade.profit_verified !== false);
   const stopLosses = verified.filter((trade) => String(trade.close_reason || '').toLowerCase() === 'sl').length;
   const stopLossRate = verified.length ? stopLosses / verified.length : 0;
+  const evidence = verified.length ? `${verified.length} verified trades and ${blocks.totalSignals} recent signals were reviewed` : `${blocks.totalSignals} recent signals were reviewed`;
+  const candidates = [];
+  const seen = new Set();
+  const add = (candidate) => {
+    if (!candidate || !Number.isFinite(Number(candidate.current)) || !Number.isFinite(Number(candidate.proposed))) return;
+    const key = `${candidate.path}:${candidate.proposed}`;
+    if (Number(candidate.current) === Number(candidate.proposed) || seen.has(key)) return;
+    seen.add(key);
+    candidates.push(candidate);
+  };
   const stopAtr = number(snapshot.exit_config?.stop_atr ?? snapshot.config?.stop_atr, 1.8);
-  if (verified.length >= 5 && stopLossRate >= 0.35 && stopAtr < 4) {
-    return { path: 'exit_config.stop_atr', label: 'ATR stop', current: stopAtr, proposed: Math.min(4, rounded(stopAtr * 1.2)), effect: 'give trades more room to absorb normal price noise', tradeoff: 'Lucre will need a smaller position size to keep account risk unchanged', evidence: `${stopLosses} of ${verified.length} verified trades closed at the stop` };
+  const targetR = number(snapshot.exit_config?.target_r ?? snapshot.config?.target_r, 2.2);
+  const breakevenR = number(snapshot.exit_config?.breakeven_r, 1);
+  const trailingStartR = number(snapshot.exit_config?.trailing_start_r, 1.5);
+  const trailAtr = number(snapshot.exit_config?.trail_atr, 1.5);
+  const stopEvidence = `${stopLosses} of ${verified.length} verified trades closed at the stop`;
+  if (verified.length >= 5 && stopLossRate >= 0.35) {
+    add({ path: 'exit_config.stop_atr', label: 'ATR stop', current: stopAtr, proposed: Math.min(4, rounded(stopAtr * 1.15)), effect: 'give trades more room for normal price noise', tradeoff: 'position size must shrink to keep account risk unchanged', evidence: stopEvidence });
+    add({ path: 'exit_config.stop_atr', label: 'ATR stop', current: stopAtr, proposed: Math.min(4, rounded(stopAtr * 1.3)), effect: 'give volatile entries substantially more room', tradeoff: 'position size must shrink further', evidence: stopEvidence });
+    add({ path: 'exit_config.breakeven_r', label: 'Breakeven trigger', current: breakevenR, proposed: Math.min(5, rounded(breakevenR * 1.2)), effect: 'delay moving the stop to entry', tradeoff: 'some early unrealized gains can reverse', evidence: stopEvidence });
+    add({ path: 'exit_config.trailing_start_r', label: 'Trailing start', current: trailingStartR, proposed: Math.min(8, rounded(trailingStartR * 1.2)), effect: 'let the trade develop before trailing begins', tradeoff: 'less profit is protected early', evidence: stopEvidence });
+    add({ path: 'exit_config.trail_atr', label: 'Trailing distance', current: trailAtr, proposed: Math.min(8, rounded(trailAtr * 1.2)), effect: 'make the trailing stop less sensitive to noise', tradeoff: 'more open profit can be given back', evidence: stopEvidence });
+    add({ path: 'exit_config.target_r', label: 'Profit target', current: targetR, proposed: Math.max(0.5, rounded(targetR * 0.85)), effect: 'bank winners sooner', tradeoff: 'each winning trade earns fewer R', evidence: stopEvidence });
   }
 
   const topBlock = blocks.reasons[0];
   if (topBlock && blocks.blockedRate >= 0.35) {
     if (/cooldown/i.test(topBlock.reason) && snapshot.cooldown_minutes > 0) {
-      return { path: 'cooldown_minutes', label: 'Cooldown', current: snapshot.cooldown_minutes, proposed: Math.max(0, Math.round(snapshot.cooldown_minutes * 0.75)), effect: 'allow the strategy to reconsider the market sooner', tradeoff: 'entries may cluster more tightly', evidence: `${topBlock.count} recent signals were blocked by cooldown` };
+      add({ path: 'cooldown_minutes', label: 'Cooldown', current: snapshot.cooldown_minutes, proposed: Math.max(0, Math.round(snapshot.cooldown_minutes * 0.75)), effect: 'allow the strategy to reconsider the market sooner', tradeoff: 'entries may cluster more tightly', evidence: `${topBlock.count} recent signals were blocked by cooldown` });
+      add({ path: 'cooldown_minutes', label: 'Cooldown', current: snapshot.cooldown_minutes, proposed: Math.max(0, Math.round(snapshot.cooldown_minutes * 0.5)), effect: 'recover more opportunities blocked by timing', tradeoff: 'entries can cluster much more tightly', evidence: `${topBlock.count} recent signals were blocked by cooldown` });
     }
     if (/spread/i.test(topBlock.reason) && snapshot.max_spread_points) {
-      return { path: 'max_spread_points', label: 'Maximum spread', current: snapshot.max_spread_points, proposed: Math.ceil(snapshot.max_spread_points * 1.15), effect: 'allow more setups during wider spreads', tradeoff: 'execution costs can rise', evidence: `${topBlock.count} recent signals were blocked by the spread limit` };
+      add({ path: 'max_spread_points', label: 'Maximum spread', current: snapshot.max_spread_points, proposed: Math.ceil(snapshot.max_spread_points * 1.15), effect: 'allow more setups during wider spreads', tradeoff: 'execution costs can rise', evidence: `${topBlock.count} recent signals were blocked by the spread limit` });
+      add({ path: 'max_spread_points', label: 'Maximum spread', current: snapshot.max_spread_points, proposed: Math.ceil(snapshot.max_spread_points * 1.3), effect: 'recover more spread-blocked setups', tradeoff: 'execution costs can rise further', evidence: `${topBlock.count} recent signals were blocked by the spread limit` });
     }
   }
 
-  const indicator = indicatorCandidate(snapshot);
-  if (indicator) return { ...indicator, evidence: verified.length ? `${verified.length} verified trades and ${blocks.totalSignals} recent signals were reviewed` : `${blocks.totalSignals} recent signals were reviewed` };
-  return null;
+  indicatorCandidates(snapshot, evidence).forEach(add);
+  add({ path: 'exit_config.target_r', label: 'Profit target', current: targetR, proposed: Math.min(10, rounded(targetR * 1.15)), effect: 'let strong winners run farther', tradeoff: 'fewer trades may reach the full target', evidence });
+  add({ path: 'exit_config.stop_atr', label: 'ATR stop', current: stopAtr, proposed: Math.max(0.5, rounded(stopAtr * 0.85)), effect: 'cut invalid setups sooner', tradeoff: 'normal market noise can stop more trades', evidence });
+  add({ path: 'exit_config.breakeven_r', label: 'Breakeven trigger', current: breakevenR, proposed: Math.max(0.25, rounded(breakevenR * 0.8)), effect: 'protect the entry sooner', tradeoff: 'small pullbacks may close otherwise healthy trades', evidence });
+  add({ path: 'exit_config.trailing_start_r', label: 'Trailing start', current: trailingStartR, proposed: Math.max(0.5, rounded(trailingStartR * 0.8)), effect: 'begin protecting open profit sooner', tradeoff: 'the trade gets less room to develop', evidence });
+  add({ path: 'exit_config.trail_atr', label: 'Trailing distance', current: trailAtr, proposed: Math.max(0.5, rounded(trailAtr * 0.8)), effect: 'lock in favorable movement more tightly', tradeoff: 'normal volatility can trigger earlier exits', evidence });
+  return {
+    issue: verified.length >= 5 && stopLossRate >= 0.35
+      ? `frequent stop-outs (${Math.round(stopLossRate * 100)}%)`
+      : topBlock && blocks.blockedRate >= 0.35
+        ? `a high blocked-signal rate (${Math.round(blocks.blockedRate * 100)}%)`
+        : 'weak strategy efficiency',
+    candidates: candidates.slice(0, Math.max(1, Math.min(10, limit))),
+  };
+}
+
+export function chooseCandidate(strategy, snapshot, trades, blocks) {
+  return chooseCandidates(strategy, snapshot, trades, blocks, 1).candidates[0] || null;
 }
 
 export function setPath(source, path, value) {
@@ -169,27 +215,52 @@ export function setPath(source, path, value) {
 async function runBacktest(token, strategyId, symbols, definitionSnapshot) {
   return supabaseRequest('/functions/v1/strategy-backtest', token, {
     method: 'POST',
-    body: JSON.stringify({ strategy_id: strategyId, symbols, definition_snapshot: definitionSnapshot }),
+    body: JSON.stringify({ strategy_id: strategyId, symbols, definition_snapshot: definitionSnapshot, persist_run: false }),
   });
 }
 
 export function comparisonDecision(current, candidate) {
   const baseValidation = number(current.validation_expectancy_r, -Infinity);
   const nextValidation = number(candidate.validation_expectancy_r, -Infinity);
-  const enoughTrades = number(candidate.trade_count, 0) >= 5;
-  const controlledDrawdown = number(candidate.max_drawdown_r, Infinity) <= Math.max(1, number(current.max_drawdown_r, 0) * 1.2);
-  return enoughTrades && controlledDrawdown && nextValidation > baseValidation + 0.02;
+  const validationGain = nextValidation - baseValidation;
+  const winRateGain = number(candidate.win_rate, 0) - number(current.win_rate, 0);
+  const expectancyGain = number(candidate.expectancy_r, -Infinity) - number(current.expectancy_r, -Infinity);
+  const enoughTrades = number(candidate.trade_count, 0) >= Math.max(5, Math.floor(number(current.trade_count, 0) * 0.5));
+  const controlledDrawdown = number(candidate.max_drawdown_r, Infinity) <= Math.max(1, number(current.max_drawdown_r, 0) * 1.15);
+  const meaningfulGain = validationGain >= 0.05 || (validationGain >= 0.03 && winRateGain >= 0.03 && expectancyGain >= 0.03);
+  return enoughTrades && controlledDrawdown && nextValidation > 0 && meaningfulGain;
 }
 
-function fallbackSummary(strategy, recommendation, current, candidate, accepted, blocks) {
+function candidateScore(current, candidate) {
+  const validationGain = number(candidate.validation_expectancy_r, -10) - number(current.validation_expectancy_r, -10);
+  const expectancyGain = number(candidate.expectancy_r, -10) - number(current.expectancy_r, -10);
+  const winRateGain = number(candidate.win_rate, 0) - number(current.win_rate, 0);
+  const drawdownChange = number(candidate.max_drawdown_r, 0) - number(current.max_drawdown_r, 0);
+  return validationGain * 100 + expectancyGain * 18 + winRateGain * 12 - Math.max(0, drawdownChange) * 2;
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  const results = Array(items.length); let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor; cursor += 1;
+      try { results[index] = await worker(items[index], index); }
+      catch (error) { results[index] = { error: error?.message || String(error) }; }
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+function fallbackSummary(strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue) {
   const delta = Math.round((number(candidate.win_rate, 0) - number(current.win_rate, 0)) * 100);
   const blockNote = blocks.blockedSignals ? ` I also reviewed ${blocks.blockedSignals} blocked signals; ${blocks.reasons[0]?.reason || 'policy checks'} was the most common reason.` : '';
-  if (!accepted) return `I tested changing ${recommendation.label} from ${recommendation.current} to ${recommendation.proposed}, but it did not improve validation results enough to justify a change. Keep ${strategy.name} at its current setting for now.${blockNote}`;
-  return `${recommendation.evidence}. Testing ${recommendation.label} at ${recommendation.proposed} instead of ${recommendation.current} changed modeled win rate by ${delta >= 0 ? '+' : ''}${delta} points and improved validation expectancy. This may ${recommendation.effect}, but ${recommendation.tradeoff}.${blockNote}`;
+  if (!accepted) return `I tested ${candidatesTested} targeted changes for ${issue}. None improved validation results enough without adding too much risk, so keep ${strategy.name} at its current settings for now.${blockNote}`;
+  return `I tested ${candidatesTested} targeted changes for ${issue}. The strongest result changed ${recommendation.label} from ${recommendation.current} to ${recommendation.proposed}, moving modeled win rate by ${delta >= 0 ? '+' : ''}${delta} points while improving validation expectancy. This may ${recommendation.effect}, but ${recommendation.tradeoff}.${blockNote}`;
 }
 
-async function coachSummary({ userId, strategy, recommendation, current, candidate, accepted, blocks }) {
-  const fallback = fallbackSummary(strategy, recommendation, current, candidate, accepted, blocks);
+async function coachSummary({ userId, strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue }) {
+  const fallback = fallbackSummary(strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue);
   if (!HAS_DIRECT_OPENAI && !HAS_GATEWAY_AUTH) return fallback;
   try {
     const result = await generateText({
@@ -198,7 +269,7 @@ async function coachSummary({ userId, strategy, recommendation, current, candida
       providerOptions: {
         openai: { store: false, reasoningEffort: 'low', textVerbosity: 'low', safetyIdentifier: crypto.createHash('sha256').update(userId).digest('hex') },
       },
-      system: 'You are Aurelia, a concise trading coach for beginners. Use plain text only. No markdown, headings, bullets, symbols, promises, or jargon. Explain one finding and one next step in no more than three short paragraphs. Never claim a backtest guarantees future results.',
+      system: 'You are Aurelia, a concise trading coach for beginners. Use plain text only. No markdown, headings, bullets, symbols, promises, or jargon. Explain the winning test or no-change result and one next step in no more than three short paragraphs. Never claim a backtest guarantees future results.',
       prompt: `Rewrite this verified Strategy Lab result naturally without changing any numbers or conclusions:\n${fallback}\nCurrent backtest: ${JSON.stringify({ trades: current.trade_count, winRate: current.win_rate, expectancyR: current.expectancy_r, validationExpectancyR: current.validation_expectancy_r, maxDrawdownR: current.max_drawdown_r })}\nTested backtest: ${JSON.stringify({ trades: candidate.trade_count, winRate: candidate.win_rate, expectancyR: candidate.expectancy_r, validationExpectancyR: candidate.validation_expectancy_r, maxDrawdownR: candidate.max_drawdown_r })}`,
     });
     return plain(result.text) || fallback;
@@ -233,24 +304,36 @@ export default async function handler(req, res) {
     const strategyTrades = trades.filter((trade) => trade.strategy_id === strategyId || String(trade.strategy_name_at_entry || '').trim().toLowerCase() === String(strategy.name || '').trim().toLowerCase());
     const blocks = blockSummary(signals);
     const snapshot = strategySnapshot(strategy);
-    const recommendation = chooseCandidate(strategy, snapshot, strategyTrades, blocks);
-    if (!recommendation) return json(res, 200, { status: 'insufficient_evidence', strategy: { name: strategy.name }, summary: `I reviewed ${strategy.name}, but there is not enough usable evidence to recommend changing a setting yet. Keep collecting verified trades and signals, then run this check again.`, blocks });
-    if (strategy.signal_source && strategy.signal_source !== 'internal') return json(res, 200, { status: 'external_diagnostic_only', strategy: { name: strategy.name }, recommendation, summary: `I found a setting worth investigating, but ${strategy.name} receives external entries and Lucre cannot honestly recreate those historical triggers yet. I reviewed the blocked-signal pattern, but I will not draw a fake comparison line.`, blocks });
+    const diagnostic = chooseCandidates(strategy, snapshot, strategyTrades, blocks, 10);
+    if (!diagnostic.candidates.length) return json(res, 200, { status: 'insufficient_evidence', strategy: { name: strategy.name }, summary: `I reviewed ${strategy.name}, but there is not enough usable evidence to build a responsible test set yet. Keep collecting verified trades and signals, then run this check again.`, blocks });
+    if (strategy.signal_source && strategy.signal_source !== 'internal') return json(res, 200, { status: 'external_diagnostic_only', strategy: { name: strategy.name }, candidatesTested: 0, summary: `I found settings worth investigating for ${diagnostic.issue}, but ${strategy.name} receives external entries and Lucre cannot honestly recreate those historical triggers yet. I reviewed the blocked-signal pattern, but I will not draw a fake comparison line.`, blocks });
 
-    const proposedSnapshot = setPath(snapshot, recommendation.path, recommendation.proposed);
-    const [current, candidate] = await Promise.all([
-      runBacktest(token, strategyId, snapshot.symbols, snapshot),
-      runBacktest(token, strategyId, proposedSnapshot.symbols, proposedSnapshot),
-    ]);
-    const accepted = comparisonDecision(current, candidate);
-    const summary = await coachSummary({ userId: user.id, strategy, recommendation, current, candidate, accepted, blocks });
+    const current = await runBacktest(token, strategyId, snapshot.symbols, snapshot);
+    const attempts = await mapWithConcurrency(diagnostic.candidates, 3, async (recommendation) => {
+      const proposedSnapshot = setPath(snapshot, recommendation.path, recommendation.proposed);
+      const result = await runBacktest(token, strategyId, proposedSnapshot.symbols, proposedSnapshot);
+      return { recommendation, result };
+    });
+    const completed = attempts.filter((attempt) => attempt?.result);
+    if (!completed.length) throw new Error('No candidate backtest completed successfully.');
+    completed.forEach((attempt) => { attempt.score = candidateScore(current, attempt.result); attempt.accepted = comparisonDecision(current, attempt.result); });
+    completed.sort((left, right) => right.score - left.score);
+    const winner = completed.find((attempt) => attempt.accepted) || completed[0];
+    const recommendation = winner.recommendation;
+    const candidate = winner.result;
+    const accepted = winner.accepted;
+    const candidatesTested = completed.length;
+    const summary = await coachSummary({ userId: user.id, strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue: diagnostic.issue });
     const riskAmount = number(terminals[0].balance, 0) * number(strategy.risk_percent, 0.25) / 100;
-    console.info('strategy-lab completed', { strategyId, accepted, currentTrades: current.trade_count, candidateTrades: candidate.trade_count, blockedSignals: blocks.blockedSignals });
+    console.info('strategy-lab completed', { strategyId, accepted, candidatesTested, failedCandidates: attempts.length - completed.length, currentTrades: current.trade_count, candidateTrades: candidate.trade_count, blockedSignals: blocks.blockedSignals });
     return json(res, 200, {
       status: accepted ? 'recommendation' : 'keep_current',
       strategy: { name: strategy.name, timeframe: strategy.timeframe },
       summary,
       recommendation: { ...recommendation, accepted },
+      issue: diagnostic.issue,
+      candidatesTested,
+      failedCandidates: attempts.length - completed.length,
       blocks,
       comparison: {
         current: { tradeCount: current.trade_count, winRate: current.win_rate, expectancyR: current.expectancy_r, validationExpectancyR: current.validation_expectancy_r, maxDrawdownR: current.max_drawdown_r, series: current.result?.series || [] },

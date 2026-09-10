@@ -16,6 +16,7 @@ const responseJson = (body, status = 200) => new Response(JSON.stringify(body), 
   status,
   headers: { 'content-type': 'application/json' },
 });
+let backtestRequestCount = 0;
 
 globalThis.fetch = async (url, options = {}) => {
   const address = String(url);
@@ -34,6 +35,8 @@ globalThis.fetch = async (url, options = {}) => {
   ]);
   if (address.endsWith('/functions/v1/strategy-backtest')) {
     const request = JSON.parse(options.body);
+    backtestRequestCount += 1;
+    assert.equal(request.persist_run, false);
     const proposed = request.definition_snapshot.exit_config.stop_atr > 1.8;
     return responseJson({
       trade_count: 12,
@@ -66,11 +69,13 @@ assert.equal(output.statusCode, 200);
 assert.equal(payload.status, 'recommendation');
 assert.equal(payload.recommendation.path, 'exit_config.stop_atr');
 assert.equal(payload.recommendation.current, 1.8);
-assert.equal(payload.recommendation.proposed, 2.2);
+assert.equal(payload.recommendation.proposed, 2.1);
 assert.equal(payload.recommendation.accepted, true);
+assert.equal(payload.candidatesTested, 10);
 assert.equal(payload.comparison.riskAmount, 100);
 assert.equal(payload.comparison.current.series.length, 1);
 assert.equal(payload.comparison.candidate.series.length, 1);
+assert.equal(backtestRequestCount, 11, 'One baseline and ten isolated candidates should be tested');
 assert.match(payload.summary, /tested|stop|validation/i);
 
 console.log('Aurelia Strategy Lab API flow verified.');

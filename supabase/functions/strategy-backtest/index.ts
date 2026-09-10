@@ -163,13 +163,14 @@ Deno.serve(async(req)=>{
   const{data:saved,error:strategyError}=await admin.from('strategies').select('*').eq('id',body.strategy_id).single();if(strategyError||!saved)return json({error:'strategy_not_found'},404);
   const{data:terminal}=await admin.from('mt5_terminals').select('user_id').eq('id',saved.terminal_id).single();if(!terminal||terminal.user_id!==user.id)return json({error:'forbidden'},403);
   const strategy=draftStrategy(saved,body.definition_snapshot),requested=Array.isArray(body.symbols)?body.symbols:Array.isArray(body.definition_snapshot?.symbols)?body.definition_snapshot.symbols:body.symbol?[body.symbol]:saved.symbols;
+  const persistRun=body.persist_run!==false;
   const symbols=[...new Set((requested||[]).filter((v:any)=>typeof v==='string'&&v.trim().length>0&&v.length<=64).map((v:string)=>v.trim().toUpperCase()))].slice(0,32);if(!symbols.length)return json({error:'at_least_one_symbol_required'},400);
   const snapshot={kind:strategy.kind,timeframe:strategy.timeframe,config:strategy.config,exit_config:strategy.exit_config,rule_definition:strategy.rule_definition,direction_mode:strategy.direction_mode,allowed_sessions:strategy.allowed_sessions,cooldown_minutes:strategy.cooldown_minutes,max_spread_points:strategy.max_spread_points,symbols};
   if(strategy.kind==='news_continuation')return json({error:'News-continuation backtests require a historical event-replay dataset; use shadow mode for this strategy.'},400);
   if(strategy.kind==='custom_rules'&&strategy.rule_definition?.version===1&&[...(strategy.rule_definition?.long||[]),...(strategy.rule_definition?.short||[])].some((r:any)=>r.timeframe!==strategy.timeframe))return json({error:'Multi-timeframe custom backtests are not yet supported; shadow mode evaluates them correctly.'},400);
   const perSymbol:any[]=[],allResults:number[]=[],allValidation:number[]=[];let totalBars=0,totalTrainBars=0,totalValidationBars=0;
   for(const symbol of symbols){
-    const{data:run}=await admin.from('strategy_backtest_runs').insert({terminal_id:strategy.terminal_id,strategy_id:strategy.id,symbol,timeframe:strategy.timeframe,definition_snapshot:snapshot,status:'running'}).select('id').single();
+    const run=persistRun?(await admin.from('strategy_backtest_runs').insert({terminal_id:strategy.terminal_id,strategy_id:strategy.id,symbol,timeframe:strategy.timeframe,definition_snapshot:snapshot,status:'running'}).select('id').single()).data:null;
     const fail=async(message:string)=>{if(run)await admin.from('strategy_backtest_runs').update({status:'failed',completed_at:new Date().toISOString(),error_message:message}).eq('id',run.id);perSymbol.push({symbol,status:'failed',error:message});};
     const{data:raw,error:barsError}=await admin.from('price_bars').select('bar_time,open,high,low,close,volume,real_volume,spread').eq('terminal_id',strategy.terminal_id).eq('symbol',symbol).eq('timeframe',strategy.timeframe).order('bar_time',{ascending:false}).limit(1000);
     if(barsError||!raw||raw.length<250){await fail('At least 250 closed candles are required for this timeframe. Let the EA finish backfilling first.');continue;}

@@ -1,5 +1,14 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.95 — Aurelia Strategy Tournament (2026-09-10)
+
+- Moves “Aurelia says” from the strategy selector into the bottom of every strategy snapshot card and uses the same filled accent treatment as “New strategy.”
+- Replaces the single repeated setting test with up to ten issue-focused, one-setting-at-a-time candidates covering exits, entry confirmation, cooldown, and spread behavior when relevant.
+- Runs the current strategy once, evaluates candidate backtests with bounded concurrency, and ranks only candidates that improve validation expectancy while preserving trade sample size and drawdown discipline.
+- Keeps the no-change outcome when none of the tested settings produces a meaningful positive validation result.
+- Prevents Strategy Lab diagnostics from filling the user's saved backtest-run history while preserving normal manually requested backtest records.
+- Updates the result evidence to show how many candidates completed and supports previewing every newly eligible exit recommendation in the strategy editor.
+
 ## v1.0.94 — Aurelia Strategy Lab (2026-09-10)
 
 - Adds a one-click “Aurelia says” diagnostic for the selected strategy with a consistent review of verified trades, stop behavior, and blocked-signal reasons.

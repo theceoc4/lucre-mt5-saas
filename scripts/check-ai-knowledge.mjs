@@ -11,6 +11,7 @@ import { localDateKey, plainTextReply, shiftDateKey } from '../api/ai-assistant.
 import {
   blockSummary,
   chooseCandidate,
+  chooseCandidates,
   comparisonDecision,
   setPath,
   strategySnapshot,
@@ -69,6 +70,7 @@ assert.match(strategyLabSource, /definition_snapshot: definitionSnapshot/);
 assert.match(strategyLabSource, /Never claim a backtest guarantees future results/);
 assert.match(backtestSource, /bounded-v5-aurelia-lab/);
 assert.match(backtestSource, /series:comparisonSeries\(allResults\)/);
+assert.match(backtestSource, /const persistRun=body\.persist_run!==false/);
 
 const testStrategy = {
   name: 'Test Strategy', kind: 'custom_rules', timeframe: 'M30', symbols: ['EURUSD'],
@@ -83,14 +85,22 @@ const stopCandidate = chooseCandidate(testStrategy, testSnapshot, [
   { profit_verified: true, close_reason: 'tp' },
 ], blockSummary([]));
 assert.equal(stopCandidate.path, 'exit_config.stop_atr');
-assert.equal(stopCandidate.proposed, 2.2);
+assert.equal(stopCandidate.proposed, 2.1);
 const staged = setPath(testSnapshot, stopCandidate.path, stopCandidate.proposed);
 assert.equal(testSnapshot.exit_config.stop_atr, 1.8, 'Strategy Lab must not mutate the saved snapshot');
-assert.equal(staged.exit_config.stop_atr, 2.2);
-assert.equal(staged.config.stop_atr, 2.2);
+assert.equal(staged.exit_config.stop_atr, 2.1);
+assert.equal(staged.config.stop_atr, 2.1);
+const tournament = chooseCandidates(testStrategy, testSnapshot, [
+  { profit_verified: true, close_reason: 'sl' }, { profit_verified: true, close_reason: 'sl' },
+  { profit_verified: true, close_reason: 'sl' }, { profit_verified: true, close_reason: 'tp' },
+  { profit_verified: true, close_reason: 'tp' },
+], blockSummary([]), 10);
+assert.equal(tournament.candidates.length, 10);
+assert.match(tournament.issue, /stop-outs/);
+assert.equal(new Set(tournament.candidates.map((candidate) => `${candidate.path}:${candidate.proposed}`)).size, 10);
 assert.equal(comparisonDecision(
   { validation_expectancy_r: 0.1, max_drawdown_r: 2 },
-  { validation_expectancy_r: 0.14, max_drawdown_r: 2.2, trade_count: 10 },
+  { validation_expectancy_r: 0.2, expectancy_r: 0.2, win_rate: 0.55, max_drawdown_r: 2.2, trade_count: 10 },
 ), true);
 assert.equal(comparisonDecision(
   { validation_expectancy_r: 0.1, max_drawdown_r: 2 },
