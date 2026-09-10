@@ -1,5 +1,13 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.92 — Complete, natural Aurelia coaching (2026-09-10)
+
+- Removes the 400-token generation choke point that could let reasoning consume the budget and cut a visible answer off mid-sentence.
+- Uses low reasoning effort and low text verbosity for faster, concise coaching while allowing enough room to finish naturally.
+- Requires plain-language, plain-text answers and strips leftover Markdown characters before they reach the dashboard.
+- Adds completion telemetry for finish reason, reasoning/text usage, step count, and response length without logging private prompts or account data.
+- Expands strategy diagnostics with stop-loss rate, duration, MFE/MAE, close reasons, costs, and symbol/session breakdowns for better grounded recommendations.
+
 ## v1.0.91 — Aurelia system intelligence foundation (2026-09-10)
 
 - Renames the in-product assistant to Aurelia.

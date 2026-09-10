@@ -60,6 +60,41 @@ function netTrade(trade) {
     + Number(trade.swap || 0) + Number(trade.fee || 0);
 }
 
+export function plainTextReply(value) {
+  return String(value || '')
+    .replace(/```[^\n]*\n?/g, '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/[\*_~]/g, '')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*•]\s+/gm, '')
+    .replace(/^\s*\d+[.)]\s+/gm, '')
+    .replace(/\[([^\]]+)]\(([^)]+)\)/g, '$1 ($2)')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function averageFinite(rows, selector) {
+  const values = rows.map(selector)
+    .filter((value) => value !== null && value !== undefined && value !== '')
+    .map(Number).filter(Number.isFinite);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+function performanceBreakdown(rows, selector) {
+  const groups = new Map();
+  rows.forEach((row) => {
+    const key = String(selector(row) || 'unknown');
+    const current = groups.get(key) || { trades: 0, wins: 0, netPl: 0 };
+    current.trades += 1;
+    current.netPl += netTrade(row);
+    if (netTrade(row) > 0) current.wins += 1;
+    groups.set(key, current);
+  });
+  return [...groups.entries()].map(([name, value]) => ({
+    name, ...value, winRate: value.trades ? value.wins / value.trades : null,
+  })).sort((a, b) => b.netPl - a.netPl);
+}
+
 function pick(source, keys) {
   return Object.fromEntries(keys.filter((key) => source?.[key] !== undefined).map((key) => [key, source[key]]));
 }
@@ -106,11 +141,13 @@ Knowledge and recommendation rules:
 
 Write like an experienced trading coach speaking naturally to the user:
 - Lead with the direct answer or most important finding.
-- Use plain, conversational language and short sentences.
-- Default to 2–4 short paragraphs and no more than 120 words.
+- Assume the user has little trading knowledge. Translate technical findings into plain, conversational language and short sentences.
+- Default to one direct conclusion and one practical change in 1–3 short paragraphs. Stay concise because the user can ask for more detail.
 - Give the single most useful action the user can take next.
 - Avoid long introductions, repeated statistics, generic warnings, and technical implementation details.
-- Do not use headings or bullet lists unless the user asks for detailed analysis.
+- Write plain text only. Do not use Markdown, headings, bullet lists, numbered lists, asterisks, underscores, backticks, tables, or decorative symbols.
+- Use friendly labels such as "risk per trade" or "ATR stop" instead of database field names.
+- Explain cause and effect simply. Example style: "The stop is getting hit before the move has room to develop. Testing a wider ATR stop may reduce those early exits, but each trade will need a smaller lot to keep risk unchanged."
 - Mention only the evidence needed to support the conclusion.
 - If the evidence is insufficient, say exactly what is missing in one sentence.
 - If the user explicitly asks for a breakdown, deep analysis, or detailed explanation, you may provide a longer structured response.
@@ -121,10 +158,12 @@ This v1 cannot place, modify, or close trades and cannot change strategies or ri
     // Billing, schema, and authorization failures are not transient. Avoid
     // making a user wait through repeated provider calls that cannot succeed.
     maxRetries: 0,
-    maxOutputTokens: 400,
     providerOptions: {
       openai: {
         store: false,
+        reasoningEffort: 'low',
+        reasoningSummary: null,
+        textVerbosity: 'low',
         safetyIdentifier: crypto.createHash('sha256').update(userId).digest('hex'),
       },
       ...(!HAS_DIRECT_OPENAI ? {
@@ -248,7 +287,7 @@ This v1 cannot place, modify, or close trades and cannot change strategies or ri
           const idFilter = ids.length ? `in.(${ids.join(',')})` : undefined;
           const [trades, signals] = await Promise.all([
             scoped('trade_history', {
-              select: 'strategy_id,strategy_name_at_entry,symbol,side,profit,net_profit,r_multiple,open_time,close_time,session,entry_session,close_session,outcome,profit_verified',
+              select: 'strategy_id,strategy_name_at_entry,symbol,side,profit,commission,swap,fee,net_profit,r_multiple,open_time,close_time,session,entry_session,close_session,outcome,close_reason,initial_sl,initial_tp,initial_risk_distance,entry_atr,entry_spread_points,mfe_r,mae_r,profit_verified',
               close_time: `gte.${since}`,
               ...(idFilter ? { strategy_id: idFilter } : {}),
               order: 'close_time.desc',
@@ -265,6 +304,7 @@ This v1 cannot place, modify, or close trades and cannot change strategies or ri
           const verifiedTrades = trades.filter((trade) => trade.profit_verified !== false);
           const wins = verifiedTrades.filter((trade) => netTrade(trade) > 0).length;
           const losses = verifiedTrades.filter((trade) => netTrade(trade) < 0).length;
+          const stopLosses = verifiedTrades.filter((trade) => trade.close_reason === 'sl');
           return {
             dateRangeDays: days,
             strategies: matched,
@@ -275,6 +315,15 @@ This v1 cannot place, modify, or close trades and cannot change strategies or ri
             winRate: verifiedTrades.length ? wins / verifiedTrades.length : null,
             netPl: verifiedTrades.reduce((sum, trade) => sum + netTrade(trade), 0),
             averageR: verifiedTrades.length ? verifiedTrades.reduce((sum, trade) => sum + Number(trade.r_multiple || 0), 0) / verifiedTrades.length : null,
+            stopLossCount: stopLosses.length,
+            stopLossRate: verifiedTrades.length ? stopLosses.length / verifiedTrades.length : null,
+            averageDurationMinutes: averageFinite(verifiedTrades, (trade) => (
+              new Date(trade.close_time).getTime() - new Date(trade.open_time).getTime()
+            ) / 60_000),
+            averageMfeR: averageFinite(verifiedTrades, (trade) => trade.mfe_r),
+            averageMaeR: averageFinite(verifiedTrades, (trade) => trade.mae_r),
+            bySymbol: performanceBreakdown(verifiedTrades, (trade) => trade.symbol),
+            byEntrySession: performanceBreakdown(verifiedTrades, (trade) => trade.entry_session || trade.session),
             signalCount: signals.length,
             blockedSignals: signals.filter((signal) => signal.policy_decision === 'block').length,
             recentTrades: verifiedTrades.slice(0, 100).map((trade) => ({ ...trade, net_pl: netTrade(trade) })),
@@ -312,7 +361,7 @@ This v1 cannot place, modify, or close trades and cannot change strategies or ri
         strict: true,
         execute: async ({ limit }) => {
           const rows = await scoped('trade_history', {
-            select: 'strategy_id,strategy_name_at_entry,symbol,side,volume,profit,net_profit,r_multiple,open_time,close_time,session,entry_session,close_session,htf_regime,near_news_event,outcome,source,profit_verified',
+            select: 'strategy_id,strategy_name_at_entry,symbol,side,volume,profit,commission,swap,fee,net_profit,r_multiple,open_time,close_time,session,entry_session,close_session,htf_regime,near_news_event,outcome,source,close_reason,initial_sl,initial_tp,initial_risk_distance,entry_atr,entry_spread_points,mfe_r,mae_r,profit_verified',
             order: 'close_time.desc',
             limit: String(limit),
           });
@@ -361,7 +410,21 @@ export default async function handler(req, res) {
     const result = await buildAgent({ token, terminalId, userId: user.id }).generate({
       prompt: `Selected terminal: ${owned[0].label || 'MT5 account'}\n\nConversation:\n${transcript}\n\nRespond to the latest user message.`,
     });
-    return json(res, 200, { reply: result.text || 'I could not produce an answer from the available data.', mode: 'read_only' });
+    const reply = plainTextReply(result.text) || 'I could not produce an answer from the available data.';
+    console.info('ai-assistant completion', {
+      finishReason: result.finishReason,
+      rawFinishReason: result.rawFinishReason || null,
+      stepCount: result.steps?.length || 0,
+      inputTokens: result.usage?.inputTokens || null,
+      outputTokens: result.usage?.outputTokens || null,
+      reasoningTokens: result.usage?.outputTokenDetails?.reasoningTokens || null,
+      textTokens: result.usage?.outputTokenDetails?.textTokens || null,
+      replyCharacters: reply.length,
+    });
+    if (result.finishReason === 'length') {
+      console.warn('ai-assistant response reached the provider output limit', { replyCharacters: reply.length });
+    }
+    return json(res, 200, { reply, mode: 'read_only', complete: result.finishReason !== 'length' });
   } catch (error) {
     const nestedMessages = [
       error?.message,
