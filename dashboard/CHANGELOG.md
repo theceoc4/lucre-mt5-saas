@@ -1,5 +1,12 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.93 — Restore Aurelia closed-trade analysis (2026-09-10)
+
+- Fixes both closed-trade tools requesting commission, swap, and fee columns that do not exist on the normalized `trade_history` table; Lucre's cost-inclusive `net_profit` remains authoritative.
+- Adds exact Today and Yesterday analysis using the user's saved timezone instead of approximating yesterday with a trailing 24-hour window.
+- Preserves historical strategy attribution by matching immutable strategy names when an older trade no longer carries the current strategy ID.
+- Adds privacy-safe tool failure logs so a rejected data query is visible without recording prompts or trading records.
+
 ## v1.0.92 — Complete, natural Aurelia coaching (2026-09-10)
 
 - Removes the 400-token generation choke point that could let reasoning consume the budget and cut a visible answer off mid-sentence.

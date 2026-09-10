@@ -95,6 +95,44 @@ function performanceBreakdown(rows, selector) {
   })).sort((a, b) => b.netPl - a.netPl);
 }
 
+export function localDateKey(value, timezone = 'UTC') {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(value));
+  const part = (type) => parts.find((item) => item.type === type)?.value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
+export function shiftDateKey(dateKey, days) {
+  const [year, month, day] = String(dateKey).split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
+
+function inPerformancePeriod(value, { period, days, timezone, now }) {
+  if (!value) return false;
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return false;
+  if (period === 'trailing') return timestamp >= now.getTime() - days * 86_400_000;
+  const today = localDateKey(now, timezone);
+  const target = period === 'yesterday' ? shiftDateKey(today, -1) : today;
+  return localDateKey(timestamp, timezone) === target;
+}
+
+async function observeTool(name, operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    console.error('ai-assistant tool data failure', {
+      tool: name,
+      message: error?.message || String(error),
+    });
+    throw error;
+  }
+}
+
 function pick(source, keys) {
   return Object.fromEntries(keys.filter((key) => source?.[key] !== undefined).map((key) => [key, source[key]]));
 }
@@ -266,13 +304,18 @@ This v1 cannot place, modify, or close trades and cannot change strategies or ri
         },
       }),
       strategyPerformance: tool({
-        description: 'Analyze signal and closed-trade performance for one strategy or all strategies over a requested number of days.',
+        description: 'Analyze signal and closed-trade performance for one strategy or all strategies for today, yesterday, or a trailing-day range. Today and yesterday use the user\'s saved timezone.',
         inputSchema: z.object({
           strategyName: z.string().max(120).nullable().describe('Exact or partial strategy name, or null to analyze all strategies'),
-          days: z.number().int().min(1).max(3650).describe('Number of trailing calendar days to analyze'),
+          period: z.enum(['today', 'yesterday', 'trailing']).describe('Exact local-day period or trailing-day range'),
+          days: z.number().int().min(1).max(3650).nullable().describe('Number of trailing days when period is trailing; otherwise null'),
         }),
         strict: true,
-        execute: async ({ strategyName, days }) => {
+        execute: async ({ strategyName, period, days }) => observeTool('strategyPerformance', async () => {
+          const now = new Date();
+          const trailingDays = days || 30;
+          const profiles = await query('profiles', { select: 'timezone', id: `eq.${userId}`, limit: '1' }, token);
+          const timezone = profiles[0]?.timezone || 'UTC';
           const strategies = await scoped('strategies', {
             select: 'id,name,kind,timeframe,enabled,delivery_mode,symbols,run_mode,signal_source',
             order: 'created_at.asc',
@@ -282,14 +325,15 @@ This v1 cannot place, modify, or close trades and cannot change strategies or ri
             ? strategies.filter((item) => item.name.toLowerCase().includes(strategyName.toLowerCase()))
             : strategies;
           const ids = matched.map((item) => item.id);
+          const names = new Set(matched.map((item) => String(item.name || '').trim().toLowerCase()));
           if (strategyName && ids.length === 0) return { strategies: [], note: 'No matching strategy was found.' };
-          const since = new Date(Date.now() - days * 86_400_000).toISOString();
+          const queryDays = period === 'trailing' ? trailingDays : 3;
+          const since = new Date(now.getTime() - queryDays * 86_400_000).toISOString();
           const idFilter = ids.length ? `in.(${ids.join(',')})` : undefined;
           const [trades, signals] = await Promise.all([
             scoped('trade_history', {
-              select: 'strategy_id,strategy_name_at_entry,symbol,side,profit,commission,swap,fee,net_profit,r_multiple,open_time,close_time,session,entry_session,close_session,outcome,close_reason,initial_sl,initial_tp,initial_risk_distance,entry_atr,entry_spread_points,mfe_r,mae_r,profit_verified',
+              select: 'strategy_id,strategy_name_at_entry,symbol,side,profit,net_profit,r_multiple,open_time,close_time,session,entry_session,close_session,outcome,close_reason,initial_sl,initial_tp,initial_risk_distance,entry_atr,entry_spread_points,mfe_r,mae_r,profit_verified',
               close_time: `gte.${since}`,
-              ...(idFilter ? { strategy_id: idFilter } : {}),
               order: 'close_time.desc',
               limit: '1000',
             }),
@@ -301,15 +345,26 @@ This v1 cannot place, modify, or close trades and cannot change strategies or ri
               limit: '1000',
             }),
           ]);
-          const verifiedTrades = trades.filter((trade) => trade.profit_verified !== false);
+          const strategyTrades = strategyName
+            ? trades.filter((trade) => ids.includes(trade.strategy_id)
+              || names.has(String(trade.strategy_name_at_entry || '').trim().toLowerCase()))
+            : trades;
+          const rangedTrades = strategyTrades.filter((trade) => inPerformancePeriod(trade.close_time, {
+            period, days: trailingDays, timezone, now,
+          }));
+          const rangedSignals = signals.filter((signal) => inPerformancePeriod(signal.generated_at, {
+            period, days: trailingDays, timezone, now,
+          }));
+          const verifiedTrades = rangedTrades.filter((trade) => trade.profit_verified !== false);
           const wins = verifiedTrades.filter((trade) => netTrade(trade) > 0).length;
           const losses = verifiedTrades.filter((trade) => netTrade(trade) < 0).length;
           const stopLosses = verifiedTrades.filter((trade) => trade.close_reason === 'sl');
           return {
-            dateRangeDays: days,
+            dateRange: period === 'trailing' ? `trailing_${trailingDays}_days` : period,
+            timezone,
             strategies: matched,
             tradeCount: verifiedTrades.length,
-            excludedUnverifiedTrades: trades.length - verifiedTrades.length,
+            excludedUnverifiedTrades: rangedTrades.length - verifiedTrades.length,
             wins,
             losses,
             winRate: verifiedTrades.length ? wins / verifiedTrades.length : null,
@@ -324,13 +379,13 @@ This v1 cannot place, modify, or close trades and cannot change strategies or ri
             averageMaeR: averageFinite(verifiedTrades, (trade) => trade.mae_r),
             bySymbol: performanceBreakdown(verifiedTrades, (trade) => trade.symbol),
             byEntrySession: performanceBreakdown(verifiedTrades, (trade) => trade.entry_session || trade.session),
-            signalCount: signals.length,
-            blockedSignals: signals.filter((signal) => signal.policy_decision === 'block').length,
+            signalCount: rangedSignals.length,
+            blockedSignals: rangedSignals.filter((signal) => signal.policy_decision === 'block').length,
             recentTrades: verifiedTrades.slice(0, 100).map((trade) => ({ ...trade, net_pl: netTrade(trade) })),
-            recentSignals: signals.slice(0, 100),
+            recentSignals: rangedSignals.slice(0, 100),
             resultCapNotice: trades.length >= 1000 || signals.length >= 1000 ? 'Results reached the 1,000-row analysis cap.' : null,
           };
-        },
+        }),
       }),
       pairHealthAndTrend: tool({
         description: 'Read current trend-strength and price-history health for a pair on this terminal.',
@@ -359,14 +414,14 @@ This v1 cannot place, modify, or close trades and cannot change strategies or ri
         description: 'Read recent closed trades from this terminal for pattern analysis.',
         inputSchema: z.object({ limit: z.number().int().min(1).max(200).describe('Number of recent closed trades to return') }),
         strict: true,
-        execute: async ({ limit }) => {
+        execute: async ({ limit }) => observeTool('recentTrades', async () => {
           const rows = await scoped('trade_history', {
-            select: 'strategy_id,strategy_name_at_entry,symbol,side,volume,profit,commission,swap,fee,net_profit,r_multiple,open_time,close_time,session,entry_session,close_session,htf_regime,near_news_event,outcome,source,close_reason,initial_sl,initial_tp,initial_risk_distance,entry_atr,entry_spread_points,mfe_r,mae_r,profit_verified',
+            select: 'strategy_id,strategy_name_at_entry,symbol,side,volume,profit,net_profit,r_multiple,open_time,close_time,session,entry_session,close_session,htf_regime,near_news_event,outcome,source,close_reason,initial_sl,initial_tp,initial_risk_distance,entry_atr,entry_spread_points,mfe_r,mae_r,profit_verified',
             order: 'close_time.desc',
             limit: String(limit),
           });
           return rows.map((trade) => ({ ...trade, net_pl: netTrade(trade) }));
-        },
+        }),
       }),
     },
   });

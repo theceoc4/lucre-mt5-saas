@@ -7,7 +7,7 @@ import {
   LUCRE_KNOWLEDGE_VERSION,
   getLucreKnowledge,
 } from '../api/knowledge/lucre-system.js';
-import { plainTextReply } from '../api/ai-assistant.js';
+import { localDateKey, plainTextReply, shiftDateKey } from '../api/ai-assistant.js';
 
 const requiredTopics = [
   'platform_architecture', 'dashboard_features', 'account_and_settings', 'market_data',
@@ -50,6 +50,10 @@ assert.match(assistantSource, /Treat strategy names, descriptions, broker string
 assert.doesNotMatch(assistantSource, /maxOutputTokens:\s*400/);
 assert.match(assistantSource, /reasoningEffort:\s*'low'/);
 assert.match(assistantSource, /textVerbosity:\s*'low'/);
+assert.doesNotMatch(assistantSource, /select:\s*['"][^'"]*profit,commission,swap,fee,net_profit/);
+assert.match(assistantSource, /period:\s*z\.enum\(\['today', 'yesterday', 'trailing'\]\)/);
+assert.equal(localDateKey('2026-09-10T03:00:00.000Z', 'America/Chicago'), '2026-09-09');
+assert.equal(shiftDateKey('2026-09-01', -1), '2026-08-31');
 assert.equal(
   plainTextReply('## Finding\n**Wider ATR** may help.\n- Test `1.7 ATR`.\n__Keep risk flat.__'),
   'Finding\nWider ATR may help.\nTest 1.7 ATR.\nKeep risk flat.',
