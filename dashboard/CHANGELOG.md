@@ -1,5 +1,12 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.91 — Aurelia system intelligence foundation (2026-09-10)
+
+- Renames the in-product assistant to Aurelia.
+- Adds a versioned, on-demand knowledge library covering Lucre features, settings, indicators, Trend Strength v3 equations, risk hierarchy, exits, sessions, external signals, execution, privacy, and performance analysis.
+- Gives Aurelia read-only, terminal-scoped tools for current strategy, account-risk, symbol, timezone, appearance, and notification settings so recommendations use saved values instead of assuming defaults.
+- Adds an explicit recommendation contract: current value, evidence, proposed bounded change, expected effect, and tradeoff.
+
 ## v1.0.90 — Concise Aurelio responses (2026-09-08)
 
 - Makes Aurelio lead with the answer, use natural conversational language, and default to focused responses under 120 words.

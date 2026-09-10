@@ -542,7 +542,7 @@ document.getElementById('button-settings')?.addEventListener('click', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Aurelio v1 — authenticated, terminal-scoped, read-only analysis.
+// Aurelia v1 — authenticated, terminal-scoped, read-only analysis.
 // ---------------------------------------------------------------------------
 let assistantConversation = [];
 let assistantRequestInFlight = false;
@@ -591,7 +591,7 @@ function setAssistantOpen(open) {
   aiAssistantPanel.classList.toggle('is-open', open);
   aiAssistantPanel.setAttribute('aria-hidden', String(!open));
   aiAssistantButton.setAttribute('aria-expanded', String(open));
-  aiAssistantButton.setAttribute('aria-label', open ? 'Close Aurelio' : 'Open Aurelio');
+  aiAssistantButton.setAttribute('aria-label', open ? 'Close Aurelia' : 'Open Aurelia');
   document.body.classList.toggle('has-ai-assistant', open);
   if (aiAssistantScope) aiAssistantScope.textContent = state.activeTerminalId
     ? `${assistantTerminalLabel()} · read-only`
@@ -636,7 +636,7 @@ async function askLucreAssistant(rawQuestion) {
       body: JSON.stringify({ terminal_id: state.activeTerminalId, messages: assistantConversation.slice(-12) }),
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.message || 'Aurelio could not complete that request.');
+    if (!response.ok) throw new Error(payload.message || 'Aurelia could not complete that request.');
     const reply = String(payload.reply || 'I could not produce an answer from the available data.');
     assistantConversation.push({ role: 'assistant', content: reply });
     assistantConversation = assistantConversation.slice(-12);
