@@ -7,7 +7,7 @@
     "node": "24.x"
   },
   "scripts": {
-    "check": "node --check api/ai-assistant.js && node --check api/knowledge/lucre-system.js && node scripts/check-ai-knowledge.mjs && node --check dashboard/app.js && node --check dashboard/main.js"
+    "check": "node --check api/ai-assistant.js && node --check api/strategy-lab.js && node --check api/knowledge/lucre-system.js && node scripts/check-ai-knowledge.mjs && node scripts/check-strategy-lab-api.mjs && node --check dashboard/app.js && node --check dashboard/main.js"
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.60",

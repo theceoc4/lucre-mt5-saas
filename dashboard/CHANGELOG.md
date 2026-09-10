@@ -1,5 +1,15 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.94 — Aurelia Strategy Lab (2026-09-10)
+
+- Adds a one-click “Aurelia says” diagnostic for the selected strategy with a consistent review of verified trades, stop behavior, and blocked-signal reasons.
+- Runs the saved strategy and one bounded candidate adjustment over the same terminal-owned retained candles without mutating the live strategy.
+- Adds an “Aurelia says…” result modal with concise coaching, current-versus-tested setting, Win % and modeled P/L comparison lines, sample evidence, and an explicit no-change result when validation does not improve.
+- Opens accepted recommendations as unsaved strategy-editor previews through “Review change”; the user remains responsible for saving any live update.
+- Extends the backtester with compact cumulative-R and rolling-win series while preserving the existing 70/30 validation split and diagnostic-only warning.
+- Reviews blocked-signal frequency and top reasons, but does not weaken non-negotiable feed, broker, authentication, mapping, margin, or execution safety gates.
+- Returns an honest diagnostic-only result for external strategies until Lucre can replay their recorded historical trigger stream.
+
 ## v1.0.93 — Restore Aurelia closed-trade analysis (2026-09-10)
 
 - Fixes both closed-trade tools requesting commission, swap, and fee columns that do not exist on the normalized `trade_history` table; Lucre's cost-inclusive `net_profit` remains authoritative.

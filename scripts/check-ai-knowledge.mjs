@@ -8,6 +8,13 @@ import {
   getLucreKnowledge,
 } from '../api/knowledge/lucre-system.js';
 import { localDateKey, plainTextReply, shiftDateKey } from '../api/ai-assistant.js';
+import {
+  blockSummary,
+  chooseCandidate,
+  comparisonDecision,
+  setPath,
+  strategySnapshot,
+} from '../api/strategy-lab.js';
 
 const requiredTopics = [
   'platform_architecture', 'dashboard_features', 'account_and_settings', 'market_data',
@@ -41,6 +48,8 @@ for (const requiredFact of [
 ]) assert.ok(fullText.includes(requiredFact.toLowerCase()), `Missing required knowledge: ${requiredFact}`);
 
 const assistantSource = await readFile(new URL('../api/ai-assistant.js', import.meta.url), 'utf8');
+const strategyLabSource = await readFile(new URL('../api/strategy-lab.js', import.meta.url), 'utf8');
+const backtestSource = await readFile(new URL('../supabase/functions/strategy-backtest/index.ts', import.meta.url), 'utf8');
 for (const toolName of ['lucreSystemKnowledge', 'accountConfiguration', 'strategyConfiguration']) {
   assert.ok(assistantSource.includes(`${toolName}: tool({`), `Missing assistant tool: ${toolName}`);
 }
@@ -54,6 +63,39 @@ assert.doesNotMatch(assistantSource, /select:\s*['"][^'"]*profit,commission,swap
 assert.match(assistantSource, /period:\s*z\.enum\(\['today', 'yesterday', 'trailing'\]\)/);
 assert.equal(localDateKey('2026-09-10T03:00:00.000Z', 'America/Chicago'), '2026-09-09');
 assert.equal(shiftDateKey('2026-09-01', -1), '2026-08-31');
+assert.match(strategyLabSource, /strategy\.signal_source\s*!==\s*'internal'/);
+assert.match(strategyLabSource, /comparisonDecision\(current, candidate\)/);
+assert.match(strategyLabSource, /definition_snapshot: definitionSnapshot/);
+assert.match(strategyLabSource, /Never claim a backtest guarantees future results/);
+assert.match(backtestSource, /bounded-v5-aurelia-lab/);
+assert.match(backtestSource, /series:comparisonSeries\(allResults\)/);
+
+const testStrategy = {
+  name: 'Test Strategy', kind: 'custom_rules', timeframe: 'M30', symbols: ['EURUSD'],
+  config: { stop_atr: 1.8 }, exit_config: { stop_atr: 1.8 },
+  rule_definition: { version: 2, indicators: [{ indicator: 'ema_crossover', params: { fast_period: 20, slow_period: 50 } }] },
+  direction_mode: 'both', allowed_sessions: [], cooldown_minutes: 10, max_spread_points: 20,
+};
+const testSnapshot = strategySnapshot(testStrategy);
+const stopCandidate = chooseCandidate(testStrategy, testSnapshot, [
+  { profit_verified: true, close_reason: 'sl' }, { profit_verified: true, close_reason: 'sl' },
+  { profit_verified: true, close_reason: 'sl' }, { profit_verified: true, close_reason: 'tp' },
+  { profit_verified: true, close_reason: 'tp' },
+], blockSummary([]));
+assert.equal(stopCandidate.path, 'exit_config.stop_atr');
+assert.equal(stopCandidate.proposed, 2.2);
+const staged = setPath(testSnapshot, stopCandidate.path, stopCandidate.proposed);
+assert.equal(testSnapshot.exit_config.stop_atr, 1.8, 'Strategy Lab must not mutate the saved snapshot');
+assert.equal(staged.exit_config.stop_atr, 2.2);
+assert.equal(staged.config.stop_atr, 2.2);
+assert.equal(comparisonDecision(
+  { validation_expectancy_r: 0.1, max_drawdown_r: 2 },
+  { validation_expectancy_r: 0.14, max_drawdown_r: 2.2, trade_count: 10 },
+), true);
+assert.equal(comparisonDecision(
+  { validation_expectancy_r: 0.1, max_drawdown_r: 2 },
+  { validation_expectancy_r: 0.11, max_drawdown_r: 2.2, trade_count: 10 },
+), false);
 assert.equal(
   plainTextReply('## Finding\n**Wider ATR** may help.\n- Test `1.7 ATR`.\n__Keep risk flat.__'),
   'Finding\nWider ATR may help.\nTest 1.7 ATR.\nKeep risk flat.',

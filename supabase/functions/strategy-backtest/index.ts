@@ -114,6 +114,17 @@ function stats(results: number[]) {
   return { trade_count: results.length, win_rate: results.length ? wins.length/results.length : null, profit_factor: grossLoss ? grossWin/grossLoss : null, expectancy_r: results.length ? equity/results.length : null, max_drawdown_r: drawdown };
 }
 
+function comparisonSeries(results:number[]){
+  let cumulativeR=0,wins=0;
+  const points=results.map((result,index)=>{
+    cumulativeR+=result;if(result>0)wins++;
+    return{trade:index+1,cumulative_r:Number(cumulativeR.toFixed(4)),win_rate:Number((wins/(index+1)).toFixed(4))};
+  });
+  if(points.length<=240)return points;
+  const stride=Math.ceil(points.length/240);
+  return points.filter((_,index)=>index%stride===0||index===points.length-1);
+}
+
 function sessionAt(barTime:string):MarketSession { return marketSessionFor(new Date(barTime)); }
 
 function simulate(strategy:any,bars:Bar[],contextBars:Bar[]=[]){
@@ -166,9 +177,9 @@ Deno.serve(async(req)=>{
     let contextBars:Bar[]=[];
     if(usesTrendStrength){const{data:context,error:contextError}=await admin.from('price_bars').select('bar_time,open,high,low,close,volume,real_volume,spread').eq('terminal_id',strategy.terminal_id).eq('symbol',symbol).eq('timeframe','H1').order('bar_time',{ascending:false}).limit(1000);if(contextError||!context||context.length<TREND_MIN_BARS){await fail('At least 120 closed H1 candles are required for M30 Trend Strength context. Let the EA finish backfilling first.');continue;}contextBars=context.reverse().map((b:any)=>({...b,open:Number(b.open),high:Number(b.high),low:Number(b.low),close:Number(b.close),volume:Number(b.volume),real_volume:b.real_volume==null?null:Number(b.real_volume),spread:b.spread==null?null:Number(b.spread)}));}
     const bars:Bar[]=raw.reverse().map((b:any)=>({...b,open:Number(b.open),high:Number(b.high),low:Number(b.low),close:Number(b.close),volume:Number(b.volume),real_volume:b.real_volume==null?null:Number(b.real_volume),spread:b.spread==null?null:Number(b.spread)})),outcome=simulate(strategy,bars,contextBars);
-    const payload={...outcome.all,bars_tested:bars.length,train_bars:outcome.split,validation_bars:bars.length-outcome.split,validation_expectancy_r:outcome.validationStats.expectancy_r,result:{engine_version:'bounded-v4-trend-v3',trend_model:'trend-strength-v3',conservative_same_bar_ordering:true,non_overlapping:true,train:outcome.details.train,validation:outcome.details.validation,modeled_controls:['indicator parameters','direction','sessions','spread cap','cooldown','ATR stop','R target','breakeven','ATR trailing stop'],warning:'Operational-cache backtests are diagnostic and do not model slippage.'},status:'completed',completed_at:new Date().toISOString()};
+    const payload={...outcome.all,bars_tested:bars.length,train_bars:outcome.split,validation_bars:bars.length-outcome.split,validation_expectancy_r:outcome.validationStats.expectancy_r,result:{engine_version:'bounded-v5-aurelia-lab',trend_model:'trend-strength-v3',conservative_same_bar_ordering:true,non_overlapping:true,train:outcome.details.train,validation:outcome.details.validation,series:comparisonSeries(outcome.results),modeled_controls:['indicator parameters','direction','sessions','spread cap','cooldown','ATR stop','R target','breakeven','ATR trailing stop'],warning:'Operational-cache backtests are diagnostic and do not model slippage.'},status:'completed',completed_at:new Date().toISOString()};
     if(run)await admin.from('strategy_backtest_runs').update(payload).eq('id',run.id);perSymbol.push({symbol,run_id:run?.id,status:'completed',...payload});allResults.push(...outcome.results);allValidation.push(...outcome.validationResults);totalBars+=bars.length;totalTrainBars+=outcome.split;totalValidationBars+=bars.length-outcome.split;
   }
   const completed=perSymbol.filter(row=>row.status==='completed');if(!completed.length)return json({error:'No selected pair had enough retained candles to run the backtest.',symbols_requested:symbols,per_symbol:perSymbol},400);
-  const aggregate=stats(allResults),validation=stats(allValidation);return json({...aggregate,bars_tested:totalBars,train_bars:totalTrainBars,validation_bars:totalValidationBars,validation_expectancy_r:validation.expectancy_r,max_drawdown_r:Math.max(...completed.map(row=>Number(row.max_drawdown_r)||0)),symbols_requested:symbols,symbols_tested:completed.map(row=>row.symbol),per_symbol:perSymbol,result:{engine_version:'bounded-v4-trend-v3',trend_model:'trend-strength-v3',aggregation:'trade-weighted across selected pairs',warning:'Diagnostic only; slippage is not modeled.'},status:'completed',completed_at:new Date().toISOString()});
+  const aggregate=stats(allResults),validation=stats(allValidation);return json({...aggregate,bars_tested:totalBars,train_bars:totalTrainBars,validation_bars:totalValidationBars,validation_expectancy_r:validation.expectancy_r,max_drawdown_r:Math.max(...completed.map(row=>Number(row.max_drawdown_r)||0)),symbols_requested:symbols,symbols_tested:completed.map(row=>row.symbol),per_symbol:perSymbol,result:{engine_version:'bounded-v5-aurelia-lab',trend_model:'trend-strength-v3',aggregation:'trade-weighted across selected pairs',series:comparisonSeries(allResults),warning:'Diagnostic only; slippage and exact broker costs are not modeled.'},status:'completed',completed_at:new Date().toISOString()});
 });

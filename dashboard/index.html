@@ -42,7 +42,7 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.89" />
+<link rel="stylesheet" href="./style.css?v=1.0.94" />
 </head>
 <body>
 
@@ -365,6 +365,34 @@
         <button class="btn-danger btn-xs" type="button" id="button-delete-strategy" hidden>Delete strategy</button>
       </div>
     </form>
+  </div>
+</div>
+
+<!-- ============ Aurelia Strategy Lab modal ============ -->
+<div class="modal-overlay strategy-lab-overlay" id="modal-strategy-lab" aria-hidden="true">
+  <div class="modal-card strategy-lab-card" role="dialog" aria-modal="true" aria-labelledby="strategy-lab-title">
+    <div class="modal-head strategy-lab-head">
+      <div><p class="strategy-lab-eyebrow">Strategy Lab</p><h3 id="strategy-lab-title">Aurelia says…</h3></div>
+      <button class="icon-btn" type="button" data-modal-close aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="strategy-lab-progress" id="strategy-lab-progress" role="status">
+      <span class="strategy-lab-spinner" aria-hidden="true"></span>
+      <div><strong id="strategy-lab-progress-title">Reviewing strategy behavior…</strong><small id="strategy-lab-progress-detail">Checking trades, signals, and guardrails.</small></div>
+    </div>
+    <div class="strategy-lab-results" id="strategy-lab-results" hidden>
+      <p class="strategy-lab-response" id="strategy-lab-response"></p>
+      <div class="strategy-lab-change" id="strategy-lab-change" hidden><span id="strategy-lab-setting">Setting</span><strong><span id="strategy-lab-current-value">—</span><span aria-hidden="true">→</span><span id="strategy-lab-proposed-value">—</span></strong></div>
+      <div class="strategy-lab-chart-card" id="strategy-lab-chart-card" hidden>
+        <div class="strategy-lab-chart-head">
+          <div><h4>Same-market comparison</h4><p id="strategy-lab-chart-note">Modeled on identical retained candles.</p></div>
+          <div class="strategy-lab-metric" role="group" aria-label="Comparison graph metric"><button type="button" data-strategy-lab-metric="win" class="is-active" aria-pressed="true">Win %</button><button type="button" data-strategy-lab-metric="pl" aria-pressed="false">P/L</button></div>
+        </div>
+        <div class="strategy-lab-chart-wrap"><canvas id="strategyLabChart" role="img" aria-label="Current strategy and tested recommendation comparison"></canvas></div>
+        <div class="strategy-lab-legend"><span><i class="current"></i>Current strategy</span><span><i class="candidate"></i><b id="strategy-lab-candidate-label">Recommendation</b></span></div>
+      </div>
+      <div class="strategy-lab-evidence" id="strategy-lab-evidence"></div>
+      <div class="strategy-lab-actions"><button class="btn-accent" type="button" id="strategy-lab-review" hidden>Review change</button><button class="btn-secondary" type="button" data-modal-close>Done</button></div>
+    </div>
   </div>
 </div>
 
@@ -1103,6 +1131,7 @@
         <div class="strategy-page-controls">
           <label for="strategy-page-select">Strategy</label>
           <select id="strategy-page-select" aria-label="Select a strategy"></select>
+          <button class="btn-secondary strategy-page-aurelia" type="button" id="strategy-page-aurelia" aria-label="Ask Aurelia to analyze the selected strategy">Aurelia says</button>
           <button class="strategy-page-edit" type="button" id="strategy-page-edit" aria-label="Edit selected strategy">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.64 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.64a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.36 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15z"/></svg>
           </button>
@@ -1288,7 +1317,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.93"></script>
-<script type="module" src="./main.js?v=1.0.93"></script>
+<script src="./app.js?v=1.0.94"></script>
+<script type="module" src="./main.js?v=1.0.94"></script>
 </body>
 </html>
