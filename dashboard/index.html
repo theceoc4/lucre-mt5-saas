@@ -42,7 +42,7 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.96" />
+<link rel="stylesheet" href="./style.css?v=1.0.97" />
 </head>
 <body>
 
@@ -539,19 +539,19 @@
             <input type="radio" name="dashboard_palette" value="lucre" />
             <span class="palette-preview palette-preview-lucre" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
             <span class="palette-option-copy"><strong>Lucre Sage</strong><small>Original mint, sage, and neon-lime palette.</small></span>
-            <span class="palette-selected-label">Selected</span>
+            <span class="palette-selected-label" aria-hidden="true">Selected</span>
           </label>
           <label class="palette-option">
             <input type="radio" name="dashboard_palette" value="soleau-gold" />
             <span class="palette-preview palette-preview-soleau" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
             <span class="palette-option-copy"><strong>Soleau Gold</strong><small>Charcoal, bronze, and polished-gold accents.</small></span>
-            <span class="palette-selected-label">Selected</span>
+            <span class="palette-selected-label" aria-hidden="true">Selected</span>
           </label>
           <label class="palette-option">
             <input type="radio" name="dashboard_palette" value="seaside" />
             <span class="palette-preview palette-preview-seaside" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
             <span class="palette-option-copy"><strong>Seaside</strong><small>Ocean teal, airy cyan, warm sand, and sunset amber.</small></span>
-            <span class="palette-selected-label">Selected</span>
+            <span class="palette-selected-label" aria-hidden="true">Selected</span>
           </label>
         </form>
         <p class="auth-message palette-settings-message" id="palette-settings-message" role="status"></p>
@@ -763,8 +763,9 @@
       <div class="profile-card">
         <div class="avatar-badge" aria-hidden="true" id="profile-avatar">—</div>
         <div class="profile-meta">
-          <span class="label" id="terminal-status-label">No account connected</span>
+          <span class="label terminal-status-line"><i class="terminal-status-dot" id="terminal-status-dot" aria-hidden="true"></i><span id="terminal-status-label">No account connected</span></span>
           <span class="name" data-testid="text-account-name" id="text-account-name">Connect your MT5 terminal</span>
+          <span class="terminal-status-detail" id="terminal-status-detail">Connect the EA to begin live updates.</span>
         </div>
         <select class="terminal-select" id="terminal-select" aria-label="Select terminal" hidden></select>
         <button class="icon-btn" id="button-terminal-key" aria-label="Terminal API key" data-testid="button-terminal-key" hidden>
@@ -853,7 +854,7 @@
             </form>
             <p class="auth-message" id="social-post-status" role="status"></p>
           </section>
-          <div class="social-feed-head"><div><strong id="social-feed-title">Following</strong><span id="social-feed-subtitle">Posts from traders you follow</span></div><button class="btn-secondary btn-xs" type="button" id="social-feed-refresh">Refresh</button></div>
+          <div class="social-feed-head"><div><strong id="social-feed-title">Following</strong><span id="social-feed-subtitle">Posts from traders you follow</span></div><div class="social-feed-freshness"><span id="social-feed-updated" aria-live="polite">Updates automatically</span><button class="icon-utility-button" type="button" id="social-feed-refresh" aria-label="Refresh social feed" title="Refresh social feed"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i></button></div></div>
           <section class="social-feed" id="social-feed" aria-live="polite"><div class="social-feed-empty"><p>Loading the timeline…</p></div></section>
         </main>
 
@@ -899,6 +900,7 @@
           </div>
           <canvas id="volumeChart" role="img" aria-label="Executed and blocked signals over the selected range"></canvas>
         </div>
+        <div class="chart-series-legend" aria-label="Chart legend"><span><i class="is-executed" aria-hidden="true"></i>Executed</span><span><i class="is-blocked" aria-hidden="true"></i>Blocked</span></div>
       </section>
     </div>
 
@@ -909,6 +911,7 @@
       </div>
       <div class="activity-heatmap-scroll"><div class="activity-heatmap" id="dashboard-heatmap"></div></div>
       <div class="activity-heatmap-legend" id="dashboard-heatmap-legend"></div>
+      <p class="activity-heatmap-summary sr-only" id="dashboard-heatmap-summary"></p>
     </section>
 
     <!-- Tabs -->
@@ -1144,6 +1147,14 @@
         </div>
       </section>
 
+      <nav class="strategy-section-nav" id="strategy-section-nav" aria-label="Strategy performance sections">
+        <a href="#strategy-overview">Overview</a>
+        <a href="#strategy-signals">Signals</a>
+        <a href="#strategy-risk">Risk</a>
+        <a href="#strategy-policy">Policy</a>
+        <a href="#strategy-trades">Trades</a>
+      </nav>
+
       <div class="strategy-page-empty card card-pad" id="strategy-page-empty" hidden>
         <h3>No strategies yet</h3>
         <p class="desc">Create a strategy from the Dashboard to begin tracking its signals and performance.</p>
@@ -1151,11 +1162,11 @@
       </div>
 
       <div id="strategy-page-content">
-        <section class="card strategy-selected-name-card" aria-label="Selected strategy">
+        <section class="card strategy-selected-name-card" id="strategy-overview" aria-label="Selected strategy">
           <h1 id="strategy-page-selected-name">Strategy</h1>
           <p class="desc" id="strategy-page-selected-description">Strategy · M5 · 0 pairs</p>
         </section>
-        <div class="main-row strategy-page-main-row">
+        <div class="main-row strategy-page-main-row" id="strategy-signals">
           <section class="card card-pad stat-card" aria-label="Selected strategy signals summary">
             <div class="card-title-row"><span class="icon-badge" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg></span></div>
             <h3 class="strategy-page-card-title">All Signals</h3>
@@ -1176,6 +1187,7 @@
               </div>
             </div>
             <div class="chart-wrap"><div class="chart-empty-overlay" id="strategy-page-chart-empty"><p>No signals from this strategy in this range yet.</p></div><canvas id="strategyVolumeChart" role="img" aria-label="Selected strategy signals over the selected range"></canvas></div>
+            <div class="chart-series-legend" aria-label="Chart legend"><span><i class="is-executed" aria-hidden="true"></i>Executed</span><span><i class="is-blocked" aria-hidden="true"></i>Blocked</span></div>
           </section>
         </div>
 
@@ -1186,9 +1198,10 @@
           </div>
           <div class="activity-heatmap-scroll"><div class="activity-heatmap" id="strategy-heatmap"></div></div>
           <div class="activity-heatmap-legend" id="strategy-heatmap-legend"></div>
+          <p class="activity-heatmap-summary sr-only" id="strategy-heatmap-summary"></p>
         </section>
 
-        <div class="strategy-primary-metrics">
+        <div class="strategy-primary-metrics" id="strategy-risk">
           <section class="card card-pad strategy-pl-card" aria-label="Selected strategy profit and loss">
             <div class="card-title-row"><h3>P/L</h3><span class="strategy-kpi-period" id="strategy-page-period-label">Past 30 days</span></div>
             <div class="strategy-pl-total" id="strategy-page-pl-total">—</div>
@@ -1205,12 +1218,12 @@
           <section class="card card-pad strategy-kpi-card"><span>Average Duration</span><strong id="strategy-page-average-duration">—</strong><small id="strategy-page-average-duration-detail">No closed trades</small></section>
         </div>
 
-        <section class="strategy-page-policy-section" aria-label="Selected strategy directional news policy">
+        <section class="strategy-page-policy-section" id="strategy-policy" aria-label="Selected strategy directional news policy">
           <div class="strategy-page-section-head"><div><h3>Directional News Policy</h3><p class="desc">These controls update the selected strategy directly.</p></div></div>
           <div id="strategy-page-news-policy"></div>
         </section>
 
-        <section class="card card-pad strategy-open-positions-card" aria-label="Open positions for selected strategy">
+        <section class="card card-pad strategy-open-positions-card" id="strategy-trades" aria-label="Open positions for selected strategy">
           <div class="card-title-row">
             <div><h3>Open Positions</h3><p class="desc">Live positions · selected strategy only</p></div>
             <span class="strategy-blocked-count" id="strategy-page-open-position-count">0 open</span>
@@ -1246,13 +1259,18 @@
           <h2 id="news-page-title">News</h2>
           <p class="desc">Upcoming terminal-specific economic events watched by the strategy risk engine.</p>
         </div>
-        <button class="btn-secondary btn-xs" type="button" id="button-refresh-news">Refresh</button>
+        <div class="news-head-actions"><span id="news-last-updated">Waiting for calendar…</span><button class="btn-secondary btn-xs" type="button" id="button-refresh-news">Refresh</button></div>
       </section>
       <section class="card card-pad news-page-card" aria-label="Upcoming economic calendar">
         <div class="card-title-row">
           <div>
             <h3>Upcoming Events</h3>
             <p class="desc" id="news-page-status">Loading this terminal’s calendar…</p>
+          </div>
+          <div class="news-filter-row" aria-label="Filter upcoming events">
+            <label><span>Impact</span><select class="chart-range-select" id="news-impact-filter"><option value="all">All impacts</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+            <label><span>Currency</span><select class="chart-range-select" id="news-currency-filter"><option value="all">All currencies</option></select></label>
+            <label><span>Pair</span><select class="chart-range-select" id="news-pair-filter"><option value="all">All pairs</option></select></label>
           </div>
         </div>
         <div class="mini-table news-page-list" id="news-page-list">
@@ -1319,7 +1337,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.96"></script>
-<script type="module" src="./main.js?v=1.0.96"></script>
+<script src="./app.js?v=1.0.97"></script>
+<script type="module" src="./main.js?v=1.0.97"></script>
 </body>
 </html>

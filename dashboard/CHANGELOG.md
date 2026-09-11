@@ -1,5 +1,15 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.97 — Product Design Refinement Pass (2026-09-10)
+
+- Clarifies terminal state as Live, Backup, Delayed, or Disconnected with heartbeat freshness while preserving the existing Realtime and polling behavior.
+- Tightens hierarchy across account metrics, charts, Pairs, Strategies, News, and Social without changing trade, risk, strategy, or data contracts.
+- Adds compact chart legends, accessible heatmap summaries, clearer trend scores, quieter secondary-card glare, and consistent touch targets.
+- Adds a sticky Strategies section navigator and improves horizontal card and mobile dock behavior without removing any existing destination or control.
+- Consolidates duplicate News rows for display, adds non-destructive impact/currency/pair filters, and groups the calendar by local date.
+- Makes order and close-command progress visible from queue through MT5 execution, with clearer inline success and error states.
+- Keeps the user's locked mobile viewport and all existing PWA, social, Aurelia, notification, and trading functionality intact.
+
 ## v1.0.96 — Guided Aurelia Strategy Lab (2026-09-10)
 
 - Rebuilds “Aurelia says” as a full-screen, frosted-glass consultation with theme-aware moving waves and slow ambient glow.

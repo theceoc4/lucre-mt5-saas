@@ -59,6 +59,8 @@ const state = {
   strategySessionBands: false,
   dashboardHeatmapMode: 'signals',
   strategyHeatmapMode: 'signals',
+  newsFilter: { impact: 'all', currency: 'all', pair: 'all' },
+  calendarUpdatedAt: null,
   pairSort: 'alphabetical',
   signalFilter: { pair: 'all', period: '30d' },
   historyFilter: { strategy: 'all', period: '30d' },
@@ -131,6 +133,8 @@ const authSubmit = document.getElementById('auth-submit');
 const accountMenuEmail = document.getElementById('account-menu-email');
 const profileAvatar = document.getElementById('profile-avatar');
 const terminalStatusLabel = document.getElementById('terminal-status-label');
+const terminalStatusDot = document.getElementById('terminal-status-dot');
+const terminalStatusDetail = document.getElementById('terminal-status-detail');
 const textAccountName = document.getElementById('text-account-name');
 const terminalSelect = document.getElementById('terminal-select');
 const textGreeting = document.getElementById('text-greeting');
@@ -594,7 +598,8 @@ function setAssistantOpen(open) {
   aiAssistantPanel.classList.toggle('is-open', open);
   aiAssistantPanel.setAttribute('aria-hidden', String(!open));
   aiAssistantButton.setAttribute('aria-expanded', String(open));
-  aiAssistantButton.setAttribute('aria-label', open ? 'Close Aurelia' : 'Open Aurelia');
+  aiAssistantButton.setAttribute('aria-label', 'Open Aurelia');
+  aiAssistantButton.hidden = open;
   document.body.classList.toggle('has-ai-assistant', open);
   if (aiAssistantScope) aiAssistantScope.textContent = state.activeTerminalId
     ? `${assistantTerminalLabel()} · read-only`
@@ -603,7 +608,7 @@ function setAssistantOpen(open) {
     if (!aiAssistantMessages?.children.length) resetAssistantConversation();
     window.requestAnimationFrame(() => aiAssistantInput?.focus({ preventScroll: true }));
   } else {
-    aiAssistantButton.focus({ preventScroll: true });
+    window.requestAnimationFrame(() => aiAssistantButton.focus({ preventScroll: true }));
   }
 }
 
@@ -864,6 +869,7 @@ function renderPaletteSettings() {
   const selected = state.profile?.dashboard_palette || 'lucre';
   paletteSettingsForm.querySelectorAll('input[name="dashboard_palette"]').forEach((input) => {
     input.checked = input.value === selected;
+    input.setAttribute('aria-label', DASHBOARD_PALETTES[input.value] || input.value);
   });
 }
 
@@ -1265,6 +1271,8 @@ async function loadSocialPosts(options = {}) {
   state.socialPosts = nextPosts;
   socialFeedFingerprint = nextFingerprint;
   if (forceRender || feedChanged) renderSocialFeed();
+  const updated = document.getElementById('social-feed-updated');
+  if (updated) updated.textContent = 'Updated just now';
 }
 
 async function loadTrendingHashtags() {
@@ -1435,6 +1443,8 @@ function syncSocialPostFeedback(postId) {
     reactionButton.title = ownReaction ? ownReactionMeta.label : 'Choose a reaction';
     reactionButton.querySelector('i').className = `bi ${ownReactionMeta.icon} ${ownReactionMeta.className}`;
     reactionButton.querySelector('[data-reaction-count]').textContent = postReactions.length || '';
+    reactionButton.setAttribute('aria-label', postReactions.length
+      ? `Choose a reaction, ${postReactions.length} reaction${postReactions.length === 1 ? '' : 's'}` : 'Choose a reaction');
     reactionButton.setAttribute('aria-expanded', 'false');
   }
   const picker = article.querySelector('[data-reaction-picker]');
@@ -1499,9 +1509,9 @@ function renderSocialFeed(force = false, anchorSelector = '') {
       }).join('')}${comments.length > 2 ? `<small class="social-more-comments">Showing latest 2 of ${comments.length} comments</small>` : ''}</div>` : ''}
       <form class="social-comment-form" data-comment-form="${post.id}">${avatarMarkup(socialProfile(ownId), 'social-avatar social-avatar-sm')}<div class="social-comment-input-wrap"><input type="text" name="social-comment-${post.id}" maxlength="600" placeholder="Write a comment…" aria-label="Comment on ${escapeHtml(author.display_name)}'s post" autocomplete="off" autocapitalize="sentences" spellcheck="true" data-1p-ignore="true" data-lpignore="true" data-form-type="other" /><button class="social-comment-submit" type="submit" aria-label="Post comment"><i class="bi bi-send-fill" aria-hidden="true"></i></button><div class="social-mention-results" hidden></div></div></form>
       <div class="social-post-actions${ownPost ? ' has-more' : ''}">
-        <div class="social-reaction-control"><button class="${ownReaction ? 'active' : ''}" type="button" data-toggle-reactions="${post.id}" aria-label="Choose a reaction" aria-expanded="false" title="${ownReaction ? ownReactionMeta.label : 'Choose a reaction'}"><i class="bi ${ownReactionMeta.icon} ${ownReactionMeta.className}" aria-hidden="true"></i><span class="social-action-count" data-reaction-count>${postReactions.length || ''}</span></button><div class="social-reaction-picker" data-reaction-picker="${post.id}" hidden>${pickerButtons}${ownReaction ? `<button class="reaction-remove" type="button" data-remove-reaction="${post.id}" aria-label="Remove reaction" title="Remove reaction"><i class="bi bi-x-lg" aria-hidden="true"></i></button>` : ''}</div></div>
-        <button type="button" data-focus-comment="${post.id}"><i class="bi bi-chat" aria-hidden="true"></i><span>Comment</span><strong class="social-action-count" data-comment-count>${comments.length || ''}</strong></button>
-        <button class="${shared ? 'active' : ''}" type="button" data-share-post="${post.id}"><i class="bi bi-share" aria-hidden="true"></i><span>Share</span><strong class="social-action-count" data-share-count>${postShares.length || ''}</strong></button>
+        <div class="social-reaction-control"><button class="${ownReaction ? 'active' : ''}" type="button" data-toggle-reactions="${post.id}" aria-label="${postReactions.length ? `Choose a reaction, ${postReactions.length} reaction${postReactions.length === 1 ? '' : 's'}` : 'Choose a reaction'}" aria-expanded="false" title="${ownReaction ? ownReactionMeta.label : 'Choose a reaction'}"><i class="bi ${ownReactionMeta.icon} ${ownReactionMeta.className}" aria-hidden="true"></i><span class="social-action-count" data-reaction-count>${postReactions.length || ''}</span></button><div class="social-reaction-picker" data-reaction-picker="${post.id}" hidden>${pickerButtons}${ownReaction ? `<button class="reaction-remove" type="button" data-remove-reaction="${post.id}" aria-label="Remove reaction" title="Remove reaction"><i class="bi bi-x-lg" aria-hidden="true"></i></button>` : ''}</div></div>
+        <button type="button" data-focus-comment="${post.id}" aria-label="Comment, ${comments.length} comment${comments.length === 1 ? '' : 's'}"><i class="bi bi-chat" aria-hidden="true"></i><span>Comment</span><strong class="social-action-count" data-comment-count>${comments.length || ''}</strong></button>
+        <button class="${shared ? 'active' : ''}" type="button" data-share-post="${post.id}" aria-label="Share post, ${postShares.length} share${postShares.length === 1 ? '' : 's'}"><i class="bi bi-share" aria-hidden="true"></i><span>Share</span><strong class="social-action-count" data-share-count>${postShares.length || ''}</strong></button>
         ${ownPost ? `<div class="social-post-more"><button class="${openSocialPostMenuId === post.id ? 'active' : ''}" type="button" data-toggle-post-menu="${post.id}" aria-label="More post options" aria-expanded="${openSocialPostMenuId === post.id}"><i class="bi bi-three-dots" aria-hidden="true"></i></button><div class="social-post-menu" data-post-menu="${post.id}" ${openSocialPostMenuId === post.id ? '' : 'hidden'}><button type="button" data-edit-post="${post.id}"><i class="bi bi-pencil" aria-hidden="true"></i><span>Edit post</span></button><button class="danger" type="button" data-delete-post="${post.id}"><i class="bi bi-trash3" aria-hidden="true"></i><span>Delete post</span></button></div></div>` : ''}
       </div>
     </article>`;
@@ -1919,6 +1929,7 @@ inboxComposeForm?.addEventListener('submit', async (event) => {
 function setActiveView(view) {
   const nextView = ['social', 'dashboard', 'strategies', 'pairs', 'news'].includes(view) ? view : 'dashboard';
   state.activeView = nextView;
+  if (dashboardRoot) dashboardRoot.dataset.activeView = nextView;
   const isPairs = nextView === 'pairs';
   const views = { social: viewSocial, dashboard: viewDashboard, strategies: viewStrategies, pairs: viewPairs, news: viewNews };
   const targetView = views[nextView];
@@ -3201,6 +3212,7 @@ document.getElementById('form-new-order')?.addEventListener('submit', async (e) 
   try {
     const command = await placeManualOrder(payload);
     state.pendingCommandId = command.ea_command_id;
+    showCommandProgress(`${side.toUpperCase()} order received · waiting for ${payload.symbol} execution.`, 'received');
     form.reset();
     window.LucreUI.closeModal(document.getElementById('modal-new-order'));
     await loadPositions();
@@ -3295,6 +3307,14 @@ document.getElementById('form-modify-position')?.addEventListener('submit', asyn
 function showPositionCommandError(message) {
   if (!bannerCommandStatus) return;
   bannerCommandStatus.textContent = message;
+  bannerCommandStatus.dataset.tone = 'error';
+  bannerCommandStatus.hidden = false;
+}
+
+function showCommandProgress(message, tone = 'pending') {
+  if (!bannerCommandStatus) return;
+  bannerCommandStatus.textContent = message;
+  bannerCommandStatus.dataset.tone = tone;
   bannerCommandStatus.hidden = false;
 }
 
@@ -3306,11 +3326,12 @@ async function handleClosePosition(positionId, button) {
     button.disabled = true;
     button.textContent = 'Closing…';
   }
-  if (bannerCommandStatus) bannerCommandStatus.hidden = true;
+  showCommandProgress(`Sending close command for ${position.symbol}…`);
 
   try {
     const result = await closePosition(positionId, { client_request_id: crypto.randomUUID() });
     state.pendingCommandId = result.ea_command_id;
+    showCommandProgress(`Close command received · waiting for ${position.symbol} execution.`, 'received');
     await loadPositions();
   } catch (err) {
     showPositionCommandError(`Position was not queued to close: ${err.message}`);
@@ -3326,12 +3347,13 @@ async function handleCloseAllPositions() {
     || !state.positions.some((position) => position.status === 'open')) return;
 
   closeAllSubmitting = true;
-  if (bannerCommandStatus) bannerCommandStatus.hidden = true;
+  showCommandProgress('Sending Close all command to MT5…');
   renderFloatingPl();
   renderCloseAllControls();
   try {
     const result = await closeAllPositions(state.activeTerminalId, { client_request_id: crypto.randomUUID() });
     state.pendingCommandId = result.ea_command_id;
+    showCommandProgress('Close all received · waiting for MT5 execution.', 'received');
     await loadPositions();
   } catch (error) {
     showPositionCommandError(`Positions were not queued to close: ${error.message}`);
@@ -3645,7 +3667,7 @@ async function refreshActiveTerminalBalance() {
   if (!state.activeTerminalId) return;
   const { data, error } = await supabase
     .from('mt5_terminals')
-    .select('id, equity, balance, margin_level, floating_pl, account_credit, positions_profit, positions_swap, positions_commission, positions_fee, floating_pl_reported_at, status, terminal_trade_allowed, mql_trade_allowed, account_trade_allowed, account_expert_trade_allowed, trade_capability_reported_at')
+    .select('id, equity, balance, margin_level, floating_pl, account_credit, positions_profit, positions_swap, positions_commission, positions_fee, floating_pl_reported_at, last_heartbeat_at, status, terminal_trade_allowed, mql_trade_allowed, account_trade_allowed, account_expert_trade_allowed, trade_capability_reported_at')
     .eq('id', state.activeTerminalId)
     .maybeSingle();
   if (error || !data) return;
@@ -3898,10 +3920,7 @@ function handleCommandStatus(command) {
   if (!command || command.id !== state.pendingCommandId) return;
   if (command.status === 'failed' || command.status === 'expired') {
     const message = `Order was not executed: ${humanizeCommandFailure(command.error_message)}`;
-    if (bannerCommandStatus) {
-      bannerCommandStatus.textContent = message;
-      bannerCommandStatus.hidden = false;
-    }
+    showPositionCommandError(message);
     const modalMessage = document.getElementById('new-order-message');
     if (modalMessage) {
       modalMessage.style.color = 'var(--color-negative)';
@@ -3909,8 +3928,15 @@ function handleCommandStatus(command) {
     }
     state.pendingCommandId = null;
   } else if (command.status === 'executed') {
-    if (bannerCommandStatus) bannerCommandStatus.hidden = true;
+    showCommandProgress('Executed by MT5.', 'success');
+    window.setTimeout(() => {
+      if (bannerCommandStatus?.dataset.tone === 'success') bannerCommandStatus.hidden = true;
+    }, 2400);
     state.pendingCommandId = null;
+  } else if (['claimed', 'processing'].includes(command.status)) {
+    showCommandProgress('Received by terminal · executing now.', 'received');
+  } else if (['pending', 'queued'].includes(command.status)) {
+    showCommandProgress('Command queued · waking the terminal.', 'pending');
   }
 }
 
@@ -4283,7 +4309,7 @@ async function loadTerminals() {
   const { data, error } = await supabase
     .from('mt5_terminals')
     .select(
-      'id, label, broker, account_login, server, is_live, status, equity, balance, margin_level, floating_pl, account_credit, positions_profit, positions_swap, positions_commission, positions_fee, floating_pl_reported_at, ea_version, api_key_last_four, api_key_last_rotated_at, max_manual_lot_size, max_daily_loss_usd, max_open_positions, force_symbol_rescan, last_symbol_scan_at, realtime_topic_id'
+      'id, label, broker, account_login, server, is_live, status, equity, balance, margin_level, floating_pl, account_credit, positions_profit, positions_swap, positions_commission, positions_fee, floating_pl_reported_at, last_heartbeat_at, ea_version, api_key_last_four, api_key_last_rotated_at, max_manual_lot_size, max_daily_loss_usd, max_open_positions, force_symbol_rescan, last_symbol_scan_at, realtime_topic_id'
       + ', terminal_trade_allowed, mql_trade_allowed, account_trade_allowed, account_expert_trade_allowed, trade_capability_reported_at'
     )
     .order('created_at', { ascending: true });
@@ -4320,25 +4346,62 @@ async function loadTerminals() {
   await loadRecentCommands();
 }
 
+function terminalExperienceStatus(terminal) {
+  if (!terminal || terminal.status !== 'connected') {
+    return terminal?.status === 'error'
+      ? { label: 'Connection error', detail: 'MT5 needs attention.', tone: 'error' }
+      : { label: 'Disconnected', detail: 'Awaiting the EA heartbeat.', tone: 'offline' };
+  }
+  const heartbeatAt = terminal.last_heartbeat_at || terminal.floating_pl_reported_at;
+  const ageMs = heartbeatAt ? Date.now() - new Date(heartbeatAt).getTime() : Infinity;
+  if (Number.isFinite(ageMs) && ageMs <= 25_000) {
+    return { label: 'Live', detail: `Updated ${Math.max(0, Math.floor(ageMs / 1000))}s ago.`, tone: 'live' };
+  }
+  if (Number.isFinite(ageMs) && ageMs <= 90_000) {
+    return { label: 'Backup', detail: `Last MT5 update ${Math.max(1, Math.floor(ageMs / 1000))}s ago.`, tone: 'backup' };
+  }
+  return { label: 'Delayed', detail: heartbeatAt ? `Last MT5 update ${notificationRelativeTime(heartbeatAt)}.` : 'Waiting for the first MT5 update.', tone: 'delayed' };
+}
+
+function renderTerminalExperienceStatus(active) {
+  const experience = terminalExperienceStatus(active);
+  if (terminalStatusLabel) terminalStatusLabel.textContent = experience.label;
+  if (terminalStatusDetail) terminalStatusDetail.textContent = experience.detail;
+  if (terminalStatusDot) terminalStatusDot.dataset.tone = experience.tone;
+  document.querySelector('.profile-card')?.setAttribute('data-terminal-tone', experience.tone);
+}
+
 function renderTerminalPicker() {
   const buttonTerminalKey = document.getElementById('button-terminal-key');
+  const connectAccountButton = document.getElementById('button-connect-account');
 
   if (state.terminals.length === 0) {
     terminalStatusLabel.textContent = 'No account connected';
+    if (terminalStatusDetail) terminalStatusDetail.textContent = 'Connect the EA to begin live updates.';
+    if (terminalStatusDot) terminalStatusDot.dataset.tone = 'offline';
     textAccountName.textContent = 'Connect your MT5 terminal';
     profileAvatar.textContent = '—';
     terminalSelect.hidden = true;
     if (buttonTerminalKey) buttonTerminalKey.hidden = true;
+    if (connectAccountButton) {
+      connectAccountButton.textContent = 'Connect account';
+      connectAccountButton.classList.add('btn-accent');
+      connectAccountButton.classList.remove('btn-secondary');
+    }
     textGreetingSub.textContent = 'Connect an MT5 account to start seeing live data.';
     renderBalanceWidget();
     return;
   }
 
   const active = state.terminals.find((t) => t.id === state.activeTerminalId) || state.terminals[0];
+  if (connectAccountButton) {
+    connectAccountButton.textContent = 'Add account';
+    connectAccountButton.classList.remove('btn-accent');
+    connectAccountButton.classList.add('btn-secondary');
+  }
   profileAvatar.textContent = initials(active.label);
   textAccountName.textContent = active.label;
-  terminalStatusLabel.textContent =
-    active.status === 'connected' ? 'Connected' : active.status === 'error' ? 'Connection error' : 'Disconnected · awaiting EA';
+  renderTerminalExperienceStatus(active);
   textGreetingSub.textContent =
     active.status === 'connected'
       ? "Here's how your signals performed."
@@ -5349,10 +5412,13 @@ async function handleQuickOrder(symbol, side, btn) {
   sellBtn.disabled = true;
 
   try {
-    await placeManualOrder(payload);
+    showCommandProgress(`Sending ${side.toUpperCase()} order for ${symbol}…`);
+    const command = await placeManualOrder(payload);
+    state.pendingCommandId = command.ea_command_id;
+    showCommandProgress(`${side.toUpperCase()} order received · waiting for ${symbol} execution.`, 'received');
     await loadPositions();
   } catch (err) {
-    alert(err.message);
+    showPositionCommandError(`Order was not queued: ${err.message}`);
   } finally {
     buyBtn.disabled = false;
     sellBtn.disabled = false;
@@ -5443,6 +5509,7 @@ function renderPairsView() {
               <span class="pair-card-name">${s.symbol}</span>
               <div class="pair-card-head-actions">
                 <span class="pair-feed-health-dot ${allTimeframesCurrent ? 'is-current' : 'needs-attention'}" role="img" aria-label="${feedHealthLabel}" title="${feedHealthLabel}"></span>
+                <span class="pair-feed-health-label ${allTimeframesCurrent ? 'is-current' : 'needs-attention'}">${allTimeframesCurrent ? 'Current' : 'Attention'}</span>
                 <label class="strategy-toggle">
                   <input type="checkbox" class="strategy-toggle-input" data-pair-enable="${s.symbol}" checked />
                   <span>On</span>
@@ -5453,7 +5520,7 @@ function renderPairsView() {
             <div class="pair-strength${trend.stale ? ' is-stale' : ''}" aria-label="Trend strength: ${trend.status}" title="${trend.detail}">
               <div class="pair-strength-heading">
                 <span class="pair-card-section-label">Trend Strength</span>
-                <span class="pair-strength-pending">${trend.status}</span>
+                <span class="pair-strength-pending"><strong>${trend.score > 0 ? '+' : ''}${Math.round(trend.score)}</strong> · ${trend.status}</span>
               </div>
               <div class="pair-strength-bar" role="meter" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="${Math.round(trend.score)}"><span style="left:${trend.position}%"></span></div>
               <div class="pair-strength-labels"><span>SELL</span><span>BUY</span></div>
@@ -6565,6 +6632,7 @@ async function loadCalendarEvents() {
     return;
   }
   state.calendarEvents = data || [];
+  state.calendarUpdatedAt = new Date().toISOString();
   renderNewsPage();
 }
 
@@ -6584,23 +6652,89 @@ function calendarEventBias(ev) {
   return bullish ? 'bullish' : 'bearish';
 }
 
+function consolidatedCalendarEvents(events) {
+  const consolidated = new Map();
+  events.forEach((event) => {
+    const eventTime = new Date(event.event_time);
+    const minute = Number.isFinite(eventTime.getTime()) ? eventTime.toISOString().slice(0, 16) : String(event.event_time || 'unscheduled');
+    const key = [minute, event.currency || '', event.impact || '', String(event.title || '').trim().toLowerCase()].join('|');
+    const existing = consolidated.get(key);
+    if (!existing) {
+      consolidated.set(key, { ...event, affected_symbols: [...new Set(event.affected_symbols || [])] });
+      return;
+    }
+    existing.affected_symbols = [...new Set([...(existing.affected_symbols || []), ...(event.affected_symbols || [])])];
+    existing.is_global = existing.is_global || event.is_global;
+    for (const field of ['forecast', 'previous', 'actual', 'higher_is_bullish']) {
+      if (existing[field] == null && event[field] != null) existing[field] = event[field];
+    }
+  });
+  return [...consolidated.values()].sort((left, right) => new Date(left.event_time) - new Date(right.event_time));
+}
+
+function populateNewsFilters(events) {
+  const currencySelect = document.getElementById('news-currency-filter');
+  const pairSelect = document.getElementById('news-pair-filter');
+  if (currencySelect) {
+    const currencies = [...new Set(events.map((event) => event.currency).filter(Boolean))].sort();
+    currencySelect.innerHTML = '<option value="all">All currencies</option>' + currencies.map((currency) => `<option value="${escapeHtml(currency)}">${escapeHtml(currency)}</option>`).join('');
+    currencySelect.value = currencies.includes(state.newsFilter.currency) ? state.newsFilter.currency : 'all';
+  }
+  if (pairSelect) {
+    const pairs = [...new Set(events.flatMap((event) => event.affected_symbols || []))].sort();
+    pairSelect.innerHTML = '<option value="all">All pairs</option>' + pairs.map((pair) => `<option value="${escapeHtml(pair)}">${escapeHtml(pair)}</option>`).join('');
+    pairSelect.value = pairs.includes(state.newsFilter.pair) ? state.newsFilter.pair : 'all';
+  }
+  const impactSelect = document.getElementById('news-impact-filter');
+  if (impactSelect) impactSelect.value = state.newsFilter.impact;
+}
+
+function calendarDateHeading(timestamp) {
+  return new Intl.DateTimeFormat(undefined, {
+    timeZone: displayTimezone(), weekday: 'long', month: 'long', day: 'numeric',
+  }).format(new Date(timestamp));
+}
+
 function renderNewsPage(errorMessage = '') {
   const list = document.getElementById('news-page-list');
   const status = document.getElementById('news-page-status');
+  const lastUpdated = document.getElementById('news-last-updated');
   if (!list) return;
+  const consolidated = consolidatedCalendarEvents(state.calendarEvents);
+  populateNewsFilters(consolidated);
+  const filtered = consolidated.filter((event) => (
+    (state.newsFilter.impact === 'all' || event.impact === state.newsFilter.impact)
+    && (state.newsFilter.currency === 'all' || event.currency === state.newsFilter.currency)
+    && (state.newsFilter.pair === 'all' || (event.affected_symbols || []).includes(state.newsFilter.pair))
+  ));
   if (status) {
     status.textContent = errorMessage
       ? `Calendar unavailable: ${errorMessage}`
-      : `${state.calendarEvents.length} upcoming event${state.calendarEvents.length === 1 ? '' : 's'} · times shown in ${displayTimezone()}`;
+      : `${filtered.length} of ${consolidated.length} upcoming event${consolidated.length === 1 ? '' : 's'} · ${displayTimezone()}`;
   }
-  if (state.calendarEvents.length === 0) {
+  if (lastUpdated) lastUpdated.textContent = state.calendarUpdatedAt
+    ? `Updated ${notificationRelativeTime(state.calendarUpdatedAt)}` : 'Waiting for calendar…';
+  if (consolidated.length === 0) {
     list.innerHTML = `<p class="empty-state-text">${errorMessage ? 'The calendar could not be loaded. Try refresh in a moment.' : 'No upcoming calendar events are currently scheduled for this terminal.'}</p>`;
     return;
   }
-  list.innerHTML = state.calendarEvents
+  if (filtered.length === 0) {
+    list.innerHTML = '<p class="empty-state-text">No upcoming events match these filters.</p>';
+    return;
+  }
+  let previousDate = '';
+  list.innerHTML = filtered
     .map((ev) => {
+      const dateKey = zonedDateKey(ev.event_time);
+      const dateHeading = dateKey !== previousDate
+        ? `<h4 class="news-date-heading">${escapeHtml(calendarDateHeading(ev.event_time))}</h4>` : '';
+      previousDate = dateKey;
       const impactClass = ev.impact === 'high' ? 'tag-danger' : ev.impact === 'medium' ? 'tag-warn' : 'tag-neutral';
-      const symbols = ev.is_global ? 'All symbols' : (ev.affected_symbols || []).join(' · ') || '—';
+      const affectedSymbols = ev.affected_symbols || [];
+      const symbols = ev.is_global ? 'All symbols'
+        : affectedSymbols.length > 3 ? `${affectedSymbols.length} affected pairs`
+          : affectedSymbols.join(' · ') || '—';
+      const symbolsTitle = ev.is_global ? 'All symbols' : affectedSymbols.join(' · ');
       const currencyTag = ev.currency ? `<span class="tag-badge tag-neutral">${escapeHtml(ev.currency)}</span>` : '';
 
       const bias = calendarEventBias(ev);
@@ -6621,12 +6755,13 @@ function renderNewsPage(errorMessage = '') {
         : '';
 
       return `
+        ${dateHeading}
         <div class="mini-table-row">
           <div class="mini-table-meta">
             <div class="strategy-name">${escapeHtml(ev.title)}<span class="tag-badge ${impactClass}">${
         escapeHtml(IMPACT_LABELS[ev.impact] || ev.impact || '—')
       }</span>${currencyTag}${biasTag}</div>
-            <div class="strategy-sub">${escapeHtml(ev.country || '—')} · ${escapeHtml(symbols)} · ${
+            <div class="strategy-sub" title="${escapeHtml(symbolsTitle)}">${escapeHtml(ev.country || '—')} · ${escapeHtml(symbols)} · ${
         formatDateTime(ev.event_time)
       }</div>
             ${figuresLine}
@@ -6659,10 +6794,14 @@ function renderBalanceWidget() {
   }
   balanceWidget.hidden = state.activeView === 'social';
   if (socialPlDock) socialPlDock.hidden = state.activeView !== 'social';
+  renderTerminalExperienceStatus(active);
   balanceWidgetBalance.textContent = fmtUsd(active.balance);
   balanceWidgetEquity.textContent = fmtUsd(active.equity);
-  balanceWidgetMargin.textContent =
-    active.margin_level === null || active.margin_level === undefined ? '—' : `${fmtNum(active.margin_level)}%`;
+  const hasOpenPositions = state.positions.some((position) => position.status === 'open');
+  balanceWidgetMargin.textContent = !hasOpenPositions
+    ? 'No margin in use'
+    : active.margin_level === null || active.margin_level === undefined ? '—' : `${fmtNum(active.margin_level)}%`;
+  balanceWidgetMargin.classList.toggle('is-empty-state', !hasOpenPositions);
   renderFloatingPl();
 }
 
@@ -7031,6 +7170,7 @@ function buildActivityHeatmap(signals, trades, mode) {
 function renderActivityHeatmap(containerId, legendId, signals, trades, mode) {
   const container = document.getElementById(containerId);
   const legend = document.getElementById(legendId);
+  const summary = document.getElementById(`${containerId}-summary`);
   if (!container || !legend) return;
   const { values, maxMagnitude } = buildActivityHeatmap(signals, trades, mode);
   const positive = cssVar('--color-positive-surface') || cssVar('--color-positive') || '#4c8a5e';
@@ -7053,10 +7193,23 @@ function renderActivityHeatmap(containerId, legendId, signals, trades, mode) {
         ? `${value >= 0 ? '+' : '−'}$${Math.abs(value).toFixed(2)} average net P/L`
         : `${value.toFixed(2)} average signal${Math.abs(value - 1) < 0.001 ? '' : 's'}`;
       const title = `${HEATMAP_WEEKDAYS[rowIndex]} ${heatmapHourLabel(hour)} · ${valueLabel}`;
-      cells.push(`<span class="heatmap-cell" style="background-color:${empty ? 'transparent' : hexToRgba(color, alpha)}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"></span>`);
+      cells.push(`<span class="heatmap-cell" style="background-color:${empty ? 'transparent' : hexToRgba(color, alpha)}" title="${escapeHtml(title)}" aria-hidden="true"></span>`);
     });
   });
   container.innerHTML = cells.join('');
+  let peak = { value: 0, row: 0, hour: 0 };
+  values.forEach((hours, row) => hours.forEach((value, hour) => {
+    if (Math.abs(value) > Math.abs(peak.value)) peak = { value, row, hour };
+  }));
+  const peakValue = mode === 'pl'
+    ? `${peak.value >= 0 ? 'a profit of ' : 'a loss of '}${fmtUsd(Math.abs(peak.value))}`
+    : `${peak.value.toFixed(2)} signals`;
+  const summaryText = maxMagnitude === 0
+    ? `No ${mode === 'pl' ? 'closed-trade profit or loss' : 'signal activity'} was recorded in this 30-day local-time heatmap.`
+    : `Peak activity is ${HEATMAP_WEEKDAYS[peak.row]} at ${heatmapHourLabel(peak.hour)}, averaging ${peakValue}.`;
+  if (summary) summary.textContent = summaryText;
+  container.setAttribute('role', 'img');
+  container.setAttribute('aria-label', summaryText);
   legend.textContent = mode === 'pl'
     ? `${semanticNames.negative} = average net loss · ${semanticNames.positive} = average net profit · 30 local calendar days · ${displayTimezone()}`
     : `More ${semanticNames.volume} = more signals · 30 local calendar days · ${displayTimezone()}`;
@@ -7805,7 +7958,22 @@ document.getElementById('strategy-page-add')?.addEventListener('click', () => {
   openAddStrategyModal();
 });
 document.getElementById('strategy-page-add-active')?.addEventListener('click', openAddStrategyModal);
+document.getElementById('strategy-section-nav')?.addEventListener('click', (event) => {
+  const link = event.target.closest('a[href^="#strategy-"]');
+  if (!link) return;
+  event.preventDefault();
+  const target = document.querySelector(link.getAttribute('href'));
+  if (target) smoothScrollToElement(target, 520);
+});
 document.getElementById('button-refresh-news')?.addEventListener('click', loadCalendarEvents);
+document.querySelectorAll('#news-impact-filter, #news-currency-filter, #news-pair-filter').forEach((select) => {
+  select.addEventListener('change', (event) => {
+    const field = event.target.id === 'news-impact-filter' ? 'impact'
+      : event.target.id === 'news-currency-filter' ? 'currency' : 'pair';
+    state.newsFilter[field] = event.target.value;
+    renderNewsPage();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Charts (empty-safe — Chart.js renders a flat/blank series until real data exists)
