@@ -1,80 +1,45 @@
-# Social post interaction QA
+# Design QA — Aurelia Strategy Lab v1.0.96
 
-- Source visual truth: `/var/folders/s1/w5hdt7dn595dy2x09p26qf5r0000gn/T/TemporaryItems/NSIRD_screencaptureui_sP4RQb/Screenshot 2026-09-06 at 11.18.11 PM.png`
-- Browser-rendered implementation: `.qa/social-fullpage.png`
-- Focused comparison: `.qa/social-rail-comparison.png`
-- Production URL checked: `https://mt5dashboardui.vercel.app/?view=social`
-- Viewport: 1280 x 720 CSS pixels, browser device pixel ratio 2; the browser
-  capture API normalized the saved frame to 1280 x 720, and the focused rail
-  crop was normalized to the 394-pixel source height for comparison.
-- Source pixels: 562 x 394. Full implementation capture: 1280 x 720. Focused
-  comparison canvas: 1139 x 442.
-- State: Seaside dark palette; active My profile rail item; representative composer, post, comment, reaction summary, and footer actions.
+- Source visual truth: `/Users/rayevelyn/Downloads/aff45d94900e90c0c26def086e3bad71.webp`
+- Desktop implementation screenshot: `.qa/strategy-lab-v1.0.96.png`
+- Mobile implementation screenshot: `.qa/strategy-lab-v1.0.96-mobile.png`
+- Desktop viewport: 1440 × 900 CSS px at device scale 1
+- Mobile viewport: 390 × 844 CSS px at device scale 1
+- Source pixels: 2048 × 1536
+- Implementation pixels: 1440 × 900 desktop; 390 × 844 mobile
+- Density normalization: full-view comparison; the reference supplied atmospheric direction rather than a literal page layout.
+- State: dark Seaside palette, initial guided Strategy Lab goal selection.
 
 ## Full-view comparison evidence
 
-The rendered Social layout preserves the existing palette, radii, type families,
-spacing rhythm, card surfaces, and centered-feed structure. The composer shows
-the requested placeholder and media control. The post footer is the last child
-in the card and presents reaction, comment, and share controls in three equal
-columns. The reaction summary and count sit above comments in the familiar
-timeline pattern.
+The implementation carries over the reference's soft luminous atmosphere, generous negative space, rounded translucent surfaces, and crisp foreground type while remaining native to Lucre's Seaside palette and Aurelia wave motif. It intentionally replaces the reference login form and product copy with the requested strategy-goal flow.
 
-## Focused region comparison evidence
+## Focused region evidence
 
-The source screenshot documents the unwanted cyan inset stripe on the active
-left-rail item. The focused implementation comparison confirms the requested
-intentional difference: the active item retains its dark filled background but
-computed `box-shadow` is `none`, so no left accent stripe remains.
-
-## Required fidelity surfaces
-
-- Fonts and typography: existing Cabinet Grotesk and General Sans hierarchy is
-  preserved; reaction counts and supporting copy use the established compact UI
-  scale.
-- Spacing and layout rhythm: composer and post cards retain the product grid,
-  padding, corner radii, and footer alignment. Media is contained within the
-  feed width and uses responsive `object-fit: contain` sizing.
-- Colors and visual tokens: all new surfaces and reaction treatments use Lucre
-  semantic tokens so Lucre, Soleau Gold, and Seaside palettes inherit correctly.
-- Image quality and assets: Bootstrap Icons supplies the interface icons; media
-  is rendered directly from signed Supabase Storage CDN URLs without placeholder
-  art or stretched crops.
-- Copy and content: composer reads “Share your thoughts...”; comment copy avoids
-  credential-oriented terms; counts are singular/plural aware.
-
-## Interaction and accessibility checks
-
-- Production v1.0.81 assets loaded with no browser console errors on the public
-  auth surface.
-- Comment input is `type=text`, has a unique per-post name in production render,
-  and sets autocomplete off plus password-manager ignore hints.
-- Reaction chooser buttons use accessible labels for Like, Love, Laugh, Wow,
-  Support, and Remove.
-- The post DOM order ends with `social-post-actions` after comments and the
-  comment form.
-- `$handle` matching is driven from authenticated discoverable profiles and
-  inserts the canonical handle used by the database mention notification trigger.
-- Signed-in posting and upload were not used during QA so no real social content
-  or user file was transmitted as part of verification.
+The heading and four goal controls were inspected at desktop and mobile sizes. At 390 px, the shell measured 362 px wide with a right edge of 376 px and document scroll width of 390 px, confirming no horizontal overflow. The settled animation state remained sharp and readable.
 
 ## Findings
 
-No actionable P0, P1, or P2 visual differences remain. The removed active-item
-stripe is an intentional correction requested from the source screenshot.
+- No actionable P0, P1, or P2 issues remain.
+- Typography: hierarchy, wrapping, line height, and optical weight are clear at both breakpoints.
+- Spacing: goal cards retain an even rhythm and collapse cleanly to one column on mobile.
+- Color: theme tokens drive the glass, waves, text, and accent behavior; contrast remains readable.
+- Image/asset fidelity: the supplied image is treated as mood reference only. Lucre's existing wave language is preserved rather than copying unrelated login imagery.
+- Copy: the question and goal descriptions are brief, beginner-friendly, and action-oriented.
+
+## Interaction verification
+
+- All four goal choices are semantic buttons inside the labeled dialog.
+- The close control is keyboard-focusable and labeled.
+- Goal-specific ranking, ten-candidate execution, percentage formatting, and text-only response payload are covered by automated checks.
+- Browser console showed no errors in the rendered QA state.
 
 ## Comparison history
 
-- Initial fixture used block elements for mock avatars, which inherited comment
-  bubble styling and distorted the comment row (P2).
-- Fixed the fixture to use the same inline avatar element emitted by production.
-- Recaptured the implementation; comment alignment, footer placement, and active
-  navigation styling then matched the production component contract.
+- The first mobile capture caught the intended 520 ms blur-in transition before it settled. A second capture after 800 ms confirmed crisp content and no lasting blur or layout shift. No code fix was required.
 
 ## Follow-up polish
 
-- Signed-in end-to-end media upload and tag notification delivery should be
-  forward-tested with two real test accounts; this is a functional test gap, not
-  an outstanding visual mismatch.
+- P3: validate the result and loading states with a live authenticated account after deployment; those states depend on private strategy data and long-running backtests.
 
 final result: passed

@@ -9,6 +9,12 @@ const DIRECT_MODEL = process.env.OPENAI_MODEL || 'gpt-5.4';
 const GATEWAY_MODEL = process.env.AI_GATEWAY_MODEL || `openai/${DIRECT_MODEL}`;
 const HAS_DIRECT_OPENAI = Boolean(process.env.OPENAI_API_KEY);
 const HAS_GATEWAY_AUTH = Boolean(process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN);
+const GOALS = {
+  risk_management: 'Improve risk management',
+  profitability: 'Increase profitability',
+  more_positions: 'Take more positions',
+  win_rate: 'Improve win rate',
+};
 
 export const config = { maxDuration: 300 };
 
@@ -143,7 +149,15 @@ function indicatorCandidates(snapshot, evidence) {
   return candidates;
 }
 
-export function chooseCandidates(strategy, snapshot, trades, blocks, limit = 10) {
+function goalPriority(candidate, goal) {
+  const text = `${candidate.path} ${candidate.effect}`.toLowerCase();
+  if (goal === 'more_positions') return /allow|admit|recover|sooner|cooldown|max_spread|lookback/.test(text) ? 0 : /target_r|stop_atr/.test(text) ? 2 : 1;
+  if (goal === 'risk_management') return /stop_atr|breakeven|trailing|protect|filter|demand|favor|cut/.test(text) ? 0 : 1;
+  if (goal === 'win_rate') return /filter|demand|favor|protect|bank winners|target_r/.test(text) ? 0 : /allow|admit|recover/.test(text) ? 2 : 1;
+  return 0;
+}
+
+export function chooseCandidates(strategy, snapshot, trades, blocks, goal = 'profitability', limit = 10) {
   const verified = trades.filter((trade) => trade.profit_verified !== false);
   const stopLosses = verified.filter((trade) => String(trade.close_reason || '').toLowerCase() === 'sl').length;
   const stopLossRate = verified.length ? stopLosses / verified.length : 0;
@@ -196,12 +210,16 @@ export function chooseCandidates(strategy, snapshot, trades, blocks, limit = 10)
       : topBlock && blocks.blockedRate >= 0.35
         ? `a high blocked-signal rate (${Math.round(blocks.blockedRate * 100)}%)`
         : 'weak strategy efficiency',
-    candidates: candidates.slice(0, Math.max(1, Math.min(10, limit))),
+    candidates: candidates
+      .map((candidate, index) => ({ candidate, index }))
+      .sort((left, right) => goalPriority(left.candidate, goal) - goalPriority(right.candidate, goal) || left.index - right.index)
+      .slice(0, Math.max(1, Math.min(10, limit)))
+      .map(({ candidate }) => candidate),
   };
 }
 
 export function chooseCandidate(strategy, snapshot, trades, blocks) {
-  return chooseCandidates(strategy, snapshot, trades, blocks, 1).candidates[0] || null;
+  return chooseCandidates(strategy, snapshot, trades, blocks, 'profitability', 1).candidates[0] || null;
 }
 
 export function setPath(source, path, value) {
@@ -219,23 +237,32 @@ async function runBacktest(token, strategyId, symbols, definitionSnapshot) {
   });
 }
 
-export function comparisonDecision(current, candidate) {
+export function comparisonDecision(current, candidate, goal = 'profitability') {
   const baseValidation = number(current.validation_expectancy_r, -Infinity);
   const nextValidation = number(candidate.validation_expectancy_r, -Infinity);
   const validationGain = nextValidation - baseValidation;
   const winRateGain = number(candidate.win_rate, 0) - number(current.win_rate, 0);
   const expectancyGain = number(candidate.expectancy_r, -Infinity) - number(current.expectancy_r, -Infinity);
   const enoughTrades = number(candidate.trade_count, 0) >= Math.max(5, Math.floor(number(current.trade_count, 0) * 0.5));
-  const controlledDrawdown = number(candidate.max_drawdown_r, Infinity) <= Math.max(1, number(current.max_drawdown_r, 0) * 1.15);
+  const drawdownRatio = number(candidate.max_drawdown_r, Infinity) / Math.max(0.01, number(current.max_drawdown_r, 0));
+  if (!enoughTrades || nextValidation <= 0) return false;
+  if (goal === 'risk_management') return drawdownRatio <= 0.85 && nextValidation >= baseValidation - 0.02;
+  if (goal === 'more_positions') return number(candidate.trade_count, 0) >= Math.max(number(current.trade_count, 0) + 3, number(current.trade_count, 0) * 1.15) && drawdownRatio <= 1.3 && nextValidation >= baseValidation - 0.02;
+  if (goal === 'win_rate') return winRateGain >= 0.05 && drawdownRatio <= 1.2 && nextValidation >= baseValidation - 0.02;
   const meaningfulGain = validationGain >= 0.05 || (validationGain >= 0.03 && winRateGain >= 0.03 && expectancyGain >= 0.03);
-  return enoughTrades && controlledDrawdown && nextValidation > 0 && meaningfulGain;
+  return drawdownRatio <= 1.15 && meaningfulGain;
 }
 
-function candidateScore(current, candidate) {
+function candidateScore(current, candidate, goal = 'profitability') {
   const validationGain = number(candidate.validation_expectancy_r, -10) - number(current.validation_expectancy_r, -10);
   const expectancyGain = number(candidate.expectancy_r, -10) - number(current.expectancy_r, -10);
   const winRateGain = number(candidate.win_rate, 0) - number(current.win_rate, 0);
   const drawdownChange = number(candidate.max_drawdown_r, 0) - number(current.max_drawdown_r, 0);
+  const tradeGain = number(candidate.trade_count, 0) - number(current.trade_count, 0);
+  const drawdownImprovement = number(current.max_drawdown_r, 0) - number(candidate.max_drawdown_r, 0);
+  if (goal === 'risk_management') return drawdownImprovement * 30 + validationGain * 45 + expectancyGain * 8;
+  if (goal === 'more_positions') return tradeGain * 5 + validationGain * 45 + expectancyGain * 8 - Math.max(0, drawdownChange) * 3;
+  if (goal === 'win_rate') return winRateGain * 120 + validationGain * 35 + expectancyGain * 8 - Math.max(0, drawdownChange) * 2;
   return validationGain * 100 + expectancyGain * 18 + winRateGain * 12 - Math.max(0, drawdownChange) * 2;
 }
 
@@ -252,15 +279,20 @@ async function mapWithConcurrency(items, limit, worker) {
   return results;
 }
 
-function fallbackSummary(strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue) {
-  const delta = Math.round((number(candidate.win_rate, 0) - number(current.win_rate, 0)) * 100);
-  const blockNote = blocks.blockedSignals ? ` I also reviewed ${blocks.blockedSignals} blocked signals; ${blocks.reasons[0]?.reason || 'policy checks'} was the most common reason.` : '';
-  if (!accepted) return `I tested ${candidatesTested} targeted changes for ${issue}. None improved validation results enough without adding too much risk, so keep ${strategy.name} at its current settings for now.${blockNote}`;
-  return `I tested ${candidatesTested} targeted changes for ${issue}. The strongest result changed ${recommendation.label} from ${recommendation.current} to ${recommendation.proposed}, moving modeled win rate by ${delta >= 0 ? '+' : ''}${delta} points while improving validation expectancy. This may ${recommendation.effect}, but ${recommendation.tradeoff}.${blockNote}`;
+export function formatPercent(value, digits = 0) {
+  return `${(number(value, 0) * 100).toFixed(digits).replace(/\.0+$/, '')}%`;
 }
 
-async function coachSummary({ userId, strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue }) {
-  const fallback = fallbackSummary(strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue);
+function fallbackSummary(strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue, goal) {
+  const currentWin = formatPercent(current.win_rate);
+  const candidateWin = formatPercent(candidate.win_rate);
+  const blockNote = blocks.blockedSignals ? ` I also checked ${blocks.blockedSignals} blocked signals. ${blocks.reasons[0]?.reason || 'A policy check'} was the most common reason.` : '';
+  if (!accepted) return `I tested ${candidatesTested} changes to ${GOALS[goal].toLowerCase()}. None made a meaningful improvement without creating a new problem, so I would keep ${strategy.name} where it is for now.${blockNote}`;
+  return `I tested ${candidatesTested} changes to ${GOALS[goal].toLowerCase()}. The best result changed ${recommendation.label} from ${recommendation.current} to ${recommendation.proposed}. Modeled win rate moved from ${currentWin} to ${candidateWin}, and the result passed the safety check. This should ${recommendation.effect}, although ${recommendation.tradeoff}.${blockNote} Review the change, then forward test it before relying on it.`;
+}
+
+async function coachSummary({ userId, strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue, goal }) {
+  const fallback = fallbackSummary(strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue, goal);
   if (!HAS_DIRECT_OPENAI && !HAS_GATEWAY_AUTH) return fallback;
   try {
     const result = await generateText({
@@ -269,8 +301,8 @@ async function coachSummary({ userId, strategy, recommendation, current, candida
       providerOptions: {
         openai: { store: false, reasoningEffort: 'low', textVerbosity: 'low', safetyIdentifier: crypto.createHash('sha256').update(userId).digest('hex') },
       },
-      system: 'You are Aurelia, a concise trading coach for beginners. Use plain text only. No markdown, headings, bullets, symbols, promises, or jargon. Explain the winning test or no-change result and one next step in no more than three short paragraphs. Never claim a backtest guarantees future results.',
-      prompt: `Rewrite this verified Strategy Lab result naturally without changing any numbers or conclusions:\n${fallback}\nCurrent backtest: ${JSON.stringify({ trades: current.trade_count, winRate: current.win_rate, expectancyR: current.expectancy_r, validationExpectancyR: current.validation_expectancy_r, maxDrawdownR: current.max_drawdown_r })}\nTested backtest: ${JSON.stringify({ trades: candidate.trade_count, winRate: candidate.win_rate, expectancyR: candidate.expectancy_r, validationExpectancyR: candidate.validation_expectancy_r, maxDrawdownR: candidate.max_drawdown_r })}`,
+      system: 'You are Aurelia, a warm and concise trading coach for beginners. Write like a helpful person speaking naturally. Use plain text only, no markdown, headings, bullets, symbols, raw ratios, or jargon. Keep it to one or two short paragraphs. Every win rate or rate must be written as a true percentage such as 58%, never 0.58%. State the tested setting change, the useful result, the tradeoff, and one practical next step. Never claim a backtest guarantees future results.',
+      prompt: `Rewrite this verified Strategy Lab result naturally without changing any numbers or conclusions:\n${fallback}\nGoal: ${GOALS[goal]}. Current win rate: ${formatPercent(current.win_rate)}. Tested win rate: ${formatPercent(candidate.win_rate)}. Current trades: ${current.trade_count}. Tested trades: ${candidate.trade_count}.`,
     });
     return plain(result.text) || fallback;
   } catch (error) {
@@ -287,7 +319,8 @@ export default async function handler(req, res) {
     const user = await supabaseRequest('/auth/v1/user', token);
     const strategyId = String(req.body?.strategy_id || '');
     const terminalId = String(req.body?.terminal_id || '');
-    if (!user?.id || !strategyId || !terminalId) return json(res, 400, { error: 'invalid_request' });
+    const goal = String(req.body?.goal || 'profitability');
+    if (!user?.id || !strategyId || !terminalId || !GOALS[goal]) return json(res, 400, { error: 'invalid_request' });
 
     const [strategies, terminals] = await Promise.all([
       query('strategies', { select: '*', id: `eq.${strategyId}`, terminal_id: `eq.${terminalId}`, limit: '1' }, token),
@@ -304,9 +337,9 @@ export default async function handler(req, res) {
     const strategyTrades = trades.filter((trade) => trade.strategy_id === strategyId || String(trade.strategy_name_at_entry || '').trim().toLowerCase() === String(strategy.name || '').trim().toLowerCase());
     const blocks = blockSummary(signals);
     const snapshot = strategySnapshot(strategy);
-    const diagnostic = chooseCandidates(strategy, snapshot, strategyTrades, blocks, 10);
+    const diagnostic = chooseCandidates(strategy, snapshot, strategyTrades, blocks, goal, 10);
     if (!diagnostic.candidates.length) return json(res, 200, { status: 'insufficient_evidence', strategy: { name: strategy.name }, summary: `I reviewed ${strategy.name}, but there is not enough usable evidence to build a responsible test set yet. Keep collecting verified trades and signals, then run this check again.`, blocks });
-    if (strategy.signal_source && strategy.signal_source !== 'internal') return json(res, 200, { status: 'external_diagnostic_only', strategy: { name: strategy.name }, candidatesTested: 0, summary: `I found settings worth investigating for ${diagnostic.issue}, but ${strategy.name} receives external entries and Lucre cannot honestly recreate those historical triggers yet. I reviewed the blocked-signal pattern, but I will not draw a fake comparison line.`, blocks });
+    if (strategy.signal_source && strategy.signal_source !== 'internal') return json(res, 200, { status: 'external_diagnostic_only', strategy: { name: strategy.name }, goal, goalLabel: GOALS[goal], candidatesTested: 0, summary: `I found settings worth investigating, but ${strategy.name} receives external entries and Lucre cannot honestly replay those historical triggers yet. I reviewed the blocked signals, but I will not make up a recommendation.`, blocks });
 
     const current = await runBacktest(token, strategyId, snapshot.symbols, snapshot);
     const attempts = await mapWithConcurrency(diagnostic.candidates, 3, async (recommendation) => {
@@ -316,31 +349,27 @@ export default async function handler(req, res) {
     });
     const completed = attempts.filter((attempt) => attempt?.result);
     if (!completed.length) throw new Error('No candidate backtest completed successfully.');
-    completed.forEach((attempt) => { attempt.score = candidateScore(current, attempt.result); attempt.accepted = comparisonDecision(current, attempt.result); });
+    completed.forEach((attempt) => { attempt.score = candidateScore(current, attempt.result, goal); attempt.accepted = comparisonDecision(current, attempt.result, goal); });
     completed.sort((left, right) => right.score - left.score);
     const winner = completed.find((attempt) => attempt.accepted) || completed[0];
     const recommendation = winner.recommendation;
     const candidate = winner.result;
     const accepted = winner.accepted;
     const candidatesTested = completed.length;
-    const summary = await coachSummary({ userId: user.id, strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue: diagnostic.issue });
-    const riskAmount = number(terminals[0].balance, 0) * number(strategy.risk_percent, 0.25) / 100;
+    const summary = await coachSummary({ userId: user.id, strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue: diagnostic.issue, goal });
     console.info('strategy-lab completed', { strategyId, accepted, candidatesTested, failedCandidates: attempts.length - completed.length, currentTrades: current.trade_count, candidateTrades: candidate.trade_count, blockedSignals: blocks.blockedSignals });
     return json(res, 200, {
       status: accepted ? 'recommendation' : 'keep_current',
       strategy: { name: strategy.name, timeframe: strategy.timeframe },
+      goal,
+      goalLabel: GOALS[goal],
       summary,
       recommendation: { ...recommendation, accepted },
       issue: diagnostic.issue,
       candidatesTested,
       failedCandidates: attempts.length - completed.length,
       blocks,
-      comparison: {
-        current: { tradeCount: current.trade_count, winRate: current.win_rate, expectancyR: current.expectancy_r, validationExpectancyR: current.validation_expectancy_r, maxDrawdownR: current.max_drawdown_r, series: current.result?.series || [] },
-        candidate: { tradeCount: candidate.trade_count, winRate: candidate.win_rate, expectancyR: candidate.expectancy_r, validationExpectancyR: candidate.validation_expectancy_r, maxDrawdownR: candidate.max_drawdown_r, series: candidate.result?.series || [] },
-        riskAmount,
-        modeledCosts: false,
-      },
+      result: { currentWinRate: formatPercent(current.win_rate), testedWinRate: formatPercent(candidate.win_rate), currentTrades: current.trade_count, testedTrades: candidate.trade_count },
     });
   } catch (error) {
     console.error('strategy-lab failure', { message: error?.message || String(error) });

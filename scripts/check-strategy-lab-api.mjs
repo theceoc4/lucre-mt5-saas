@@ -54,7 +54,7 @@ const { default: handler } = await import('../api/strategy-lab.js');
 const req = {
   method: 'POST',
   headers: { authorization: 'Bearer test-token' },
-  body: { terminal_id: 'terminal-1', strategy_id: 'strategy-1' },
+  body: { terminal_id: 'terminal-1', strategy_id: 'strategy-1', goal: 'profitability' },
 };
 const output = { statusCode: 0, headers: {}, body: '' };
 const res = {
@@ -72,9 +72,11 @@ assert.equal(payload.recommendation.current, 1.8);
 assert.equal(payload.recommendation.proposed, 2.1);
 assert.equal(payload.recommendation.accepted, true);
 assert.equal(payload.candidatesTested, 10);
-assert.equal(payload.comparison.riskAmount, 100);
-assert.equal(payload.comparison.current.series.length, 1);
-assert.equal(payload.comparison.candidate.series.length, 1);
+assert.equal(payload.goal, 'profitability');
+assert.equal(payload.goalLabel, 'Increase profitability');
+assert.equal(payload.result.currentWinRate, '50%');
+assert.equal(payload.result.testedWinRate, '58%');
+assert.equal(payload.comparison, undefined, 'Strategy Lab suggestions should be text-only');
 assert.equal(backtestRequestCount, 11, 'One baseline and ten isolated candidates should be tested');
 assert.match(payload.summary, /tested|stop|validation/i);
 

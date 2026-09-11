@@ -42,7 +42,7 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
 
 <link rel="stylesheet" href="./base.css" />
-<link rel="stylesheet" href="./style.css?v=1.0.95" />
+<link rel="stylesheet" href="./style.css?v=1.0.96" />
 </head>
 <body>
 
@@ -368,31 +368,34 @@
   </div>
 </div>
 
-<!-- ============ Aurelia Strategy Lab modal ============ -->
+<!-- ============ Aurelia Strategy Lab ============ -->
 <div class="modal-overlay strategy-lab-overlay" id="modal-strategy-lab" aria-hidden="true">
-  <div class="modal-card strategy-lab-card" role="dialog" aria-modal="true" aria-labelledby="strategy-lab-title">
-    <div class="modal-head strategy-lab-head">
-      <div><p class="strategy-lab-eyebrow">Strategy Lab</p><h3 id="strategy-lab-title">Aurelia says…</h3></div>
-      <button class="icon-btn" type="button" data-modal-close aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
-    </div>
-    <div class="strategy-lab-progress" id="strategy-lab-progress" role="status">
-      <span class="strategy-lab-spinner" aria-hidden="true"></span>
-      <div><strong id="strategy-lab-progress-title">Reviewing strategy behavior…</strong><small id="strategy-lab-progress-detail">Checking trades, signals, and guardrails.</small></div>
-    </div>
-    <div class="strategy-lab-results" id="strategy-lab-results" hidden>
-      <p class="strategy-lab-response" id="strategy-lab-response"></p>
-      <div class="strategy-lab-change" id="strategy-lab-change" hidden><span id="strategy-lab-setting">Setting</span><strong><span id="strategy-lab-current-value">—</span><span aria-hidden="true">→</span><span id="strategy-lab-proposed-value">—</span></strong></div>
-      <div class="strategy-lab-chart-card" id="strategy-lab-chart-card" hidden>
-        <div class="strategy-lab-chart-head">
-          <div><h4>Same-market comparison</h4><p id="strategy-lab-chart-note">Modeled on identical retained candles.</p></div>
-          <div class="strategy-lab-metric" role="group" aria-label="Comparison graph metric"><button type="button" data-strategy-lab-metric="win" class="is-active" aria-pressed="true">Win %</button><button type="button" data-strategy-lab-metric="pl" aria-pressed="false">P/L</button></div>
-        </div>
-        <div class="strategy-lab-chart-wrap"><canvas id="strategyLabChart" role="img" aria-label="Current strategy and tested recommendation comparison"></canvas></div>
-        <div class="strategy-lab-legend"><span><i class="current"></i>Current strategy</span><span><i class="candidate"></i><b id="strategy-lab-candidate-label">Recommendation</b></span></div>
+  <div class="aurelio-ambient strategy-lab-ambient" aria-hidden="true">
+    <svg class="aurelio-waves aurelio-waves-one" viewBox="0 0 1600 500" preserveAspectRatio="none"><path d="M-80 265 C120 105 280 425 490 255 S860 80 1070 270 S1430 430 1680 220"/></svg>
+    <svg class="aurelio-waves aurelio-waves-two" viewBox="0 0 1600 500" preserveAspectRatio="none"><path d="M-100 280 C110 465 330 95 555 285 S930 465 1140 250 S1450 90 1710 300"/></svg>
+    <svg class="aurelio-waves aurelio-waves-three" viewBox="0 0 1600 500" preserveAspectRatio="none"><path d="M-120 230 C130 65 325 430 580 235 S970 80 1190 260 S1490 420 1720 190"/></svg>
+  </div>
+  <button class="aurelio-close" type="button" data-modal-close aria-label="Close Strategy Lab"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  <div class="strategy-lab-shell" role="dialog" aria-modal="true" aria-labelledby="strategy-lab-title">
+    <section class="strategy-lab-goals" id="strategy-lab-goals">
+      <p class="strategy-lab-eyebrow" id="strategy-lab-strategy-name">Strategy Lab</p>
+      <h2 id="strategy-lab-title">What would you like to improve?</h2>
+      <div class="strategy-lab-goal-grid" role="group" aria-label="Choose an improvement goal">
+        <button type="button" data-strategy-lab-goal="risk_management"><strong>Improve risk management</strong><span>Reduce drawdown and soften avoidable losses.</span></button>
+        <button type="button" data-strategy-lab-goal="profitability"><strong>Increase profitability</strong><span>Find a stronger balance between wins and losses.</span></button>
+        <button type="button" data-strategy-lab-goal="more_positions"><strong>Take more positions</strong><span>Open the strategy up without chasing bad trades.</span></button>
+        <button type="button" data-strategy-lab-goal="win_rate"><strong>Improve win rate</strong><span>Favor adjustments that produce more winners.</span></button>
       </div>
-      <div class="strategy-lab-evidence" id="strategy-lab-evidence"></div>
-      <div class="strategy-lab-actions"><button class="btn-accent" type="button" id="strategy-lab-review" hidden>Review change</button><button class="btn-secondary" type="button" data-modal-close>Done</button></div>
-    </div>
+    </section>
+    <section class="strategy-lab-progress" id="strategy-lab-progress" role="status" hidden>
+      <span class="strategy-lab-spinner" aria-hidden="true"></span>
+      <div><strong id="strategy-lab-progress-title">Building the test lineup…</strong><small id="strategy-lab-progress-detail">Comparing the current setup with focused alternatives.</small></div>
+    </section>
+    <section class="strategy-lab-results" id="strategy-lab-results" aria-live="polite" hidden>
+      <div class="strategy-lab-user-bubble" id="strategy-lab-goal-label"></div>
+      <div class="strategy-lab-response" id="strategy-lab-response"></div>
+      <div class="strategy-lab-actions"><button class="btn-accent" type="button" id="strategy-lab-review" hidden>Review change</button><button class="btn-secondary" type="button" id="strategy-lab-another">Try another focus</button><button class="btn-secondary" type="button" data-modal-close>Done</button></div>
+    </section>
   </div>
 </div>
 
@@ -1316,7 +1319,7 @@
 </button>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<script src="./app.js?v=1.0.95"></script>
-<script type="module" src="./main.js?v=1.0.95"></script>
+<script src="./app.js?v=1.0.96"></script>
+<script type="module" src="./main.js?v=1.0.96"></script>
 </body>
 </html>

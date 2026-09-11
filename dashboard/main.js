@@ -70,10 +70,9 @@ let volumeChartInstance = null;
 let plChartInstance = null;
 let strategyVolumeChartInstance = null;
 let strategyPlChartInstance = null;
-let strategyLabChartInstance = null;
 let strategyLabPayload = null;
-let strategyLabMetric = 'win';
 let strategyLabBusy = false;
+let strategyLabStrategyId = null;
 // Realtime keeps positions/signal queue live while a terminal is active;
 // polling remains as a reduced-frequency safety net for missed events.
 // v1.0.23 -- a healthy Realtime channel is the primary update path, with a
@@ -7264,7 +7263,7 @@ function renderStrategySummaryStrip() {
       event.stopPropagation();
       state.selectedStrategyId = button.dataset.strategySummaryAurelia;
       renderStrategyPage();
-      runStrategyLab();
+      openStrategyLab();
     });
   });
 }
@@ -7646,95 +7645,42 @@ strategyPageSelect?.addEventListener('change', (event) => {
   renderStrategyPage();
 });
 
-function renderStrategyLabChart() {
-  const canvas = document.getElementById('strategyLabChart');
-  const comparison = strategyLabPayload?.comparison;
-  if (!canvas || !comparison || typeof Chart === 'undefined') return;
-  if (strategyLabChartInstance) strategyLabChartInstance.destroy();
-  const riskAmount = Number(comparison.riskAmount || 0);
-  const convert = (series) => (series || []).map((point) => ({
-    x: Number(point.trade),
-    y: strategyLabMetric === 'win' ? Number(point.win_rate || 0) * 100 : Number(point.cumulative_r || 0) * riskAmount,
-  }));
-  const current = convert(comparison.current.series);
-  const candidate = convert(comparison.candidate.series);
-  const accent = cssVar('--color-accent') || '#d7e64e';
-  const muted = cssVar('--color-text-muted') || '#8a9488';
-  const text = cssVar('--color-text-faint') || '#798177';
-  const grid = cssVar('--color-border') || 'rgba(120,130,120,.2)';
-  strategyLabChartInstance = new Chart(canvas.getContext('2d'), {
-    type: 'line',
-    data: { datasets: [
-      { label: 'Current strategy', data: current, borderColor: muted, borderWidth: 2, pointRadius: 0, tension: .25 },
-      { label: strategyLabPayload.recommendation?.accepted ? 'Recommendation' : 'Tested change', data: candidate, borderColor: accent, borderWidth: 3, pointRadius: 0, tension: .25 },
-    ] },
-    options: {
-      responsive: true, maintainAspectRatio: false, animation: { duration: 450 }, parsing: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (context) => strategyLabMetric === 'win' ? `${context.dataset.label}: ${context.parsed.y.toFixed(1)}%` : `${context.dataset.label}: ${formatMoney(context.parsed.y)}` } } },
-      scales: {
-        x: { type: 'linear', title: { display: true, text: 'Modeled trade sequence', color: text }, ticks: { color: text, precision: 0 }, grid: { color: grid } },
-        y: { title: { display: true, text: strategyLabMetric === 'win' ? 'Cumulative win rate' : 'Modeled P/L', color: text }, ticks: { color: text, callback: (value) => strategyLabMetric === 'win' ? `${value}%` : formatMoney(value) }, grid: { color: grid } },
-      },
-    },
-  });
-}
-
-function strategyLabEvidence(payload) {
-  const current = payload.comparison?.current;
-  const candidate = payload.comparison?.candidate;
-  if (!current || !candidate) return '';
-  const pct = (value) => value == null ? '—' : `${Math.round(Number(value) * 100)}%`;
-  const expectancy = (value) => value == null ? '—' : `${Number(value).toFixed(2)}R`;
-  return [
-    ['Candidates tested', String(payload.candidatesTested || 0)],
-    ['Current win rate', pct(current.winRate)],
-    ['Tested win rate', pct(candidate.winRate)],
-    ['Validation edge', expectancy(candidate.validationExpectancyR)],
-  ].map(([label, value]) => `<div><span>${label}</span><strong>${value}</strong></div>`).join('');
-}
-
 function showStrategyLabResult(payload) {
   strategyLabPayload = payload;
   document.getElementById('strategy-lab-progress').hidden = true;
   document.getElementById('strategy-lab-results').hidden = false;
   document.getElementById('strategy-lab-response').textContent = payload.summary || 'Aurelia could not produce a recommendation from this sample.';
-  const change = document.getElementById('strategy-lab-change');
-  const chartCard = document.getElementById('strategy-lab-chart-card');
   const review = document.getElementById('strategy-lab-review');
   const recommendation = payload.recommendation;
-  change.hidden = !recommendation;
-  if (recommendation) {
-    document.getElementById('strategy-lab-setting').textContent = recommendation.label;
-    document.getElementById('strategy-lab-current-value').textContent = recommendation.current;
-    document.getElementById('strategy-lab-proposed-value').textContent = recommendation.proposed;
-  }
-  chartCard.hidden = !payload.comparison;
-  document.getElementById('strategy-lab-evidence').innerHTML = strategyLabEvidence(payload);
-  document.getElementById('strategy-lab-candidate-label').textContent = recommendation?.accepted ? 'Recommendation' : 'Tested change';
-  document.getElementById('strategy-lab-chart-note').textContent = payload.comparison?.modeledCosts
-    ? 'Modeled on identical retained candles with costs.'
-    : 'Modeled on identical retained candles. Exact slippage and broker costs are not included.';
   review.hidden = !recommendation?.accepted;
-  strategyLabMetric = 'win';
-  document.querySelectorAll('[data-strategy-lab-metric]').forEach((button) => {
-    const active = button.dataset.strategyLabMetric === 'win';
-    button.classList.toggle('is-active', active);
-    button.setAttribute('aria-pressed', String(active));
-  });
-  if (payload.comparison) window.requestAnimationFrame(renderStrategyLabChart);
 }
 
-async function runStrategyLab() {
+function openStrategyLab() {
   const strategy = selectedStrategy();
+  if (!strategy) return;
+  strategyLabStrategyId = strategy.id;
+  strategyLabPayload = null;
+  document.getElementById('strategy-lab-strategy-name').textContent = `${strategy.name} · Strategy Lab`;
+  document.getElementById('strategy-lab-goals').hidden = false;
+  document.getElementById('strategy-lab-progress').hidden = true;
+  document.getElementById('strategy-lab-results').hidden = true;
+  const modal = document.getElementById('modal-strategy-lab');
+  if (modal.getAttribute('aria-hidden') !== 'false') window.LucreUI.openModal('modal-strategy-lab');
+  window.requestAnimationFrame(() => document.querySelector('[data-strategy-lab-goal]')?.focus({ preventScroll: true }));
+}
+
+async function runStrategyLab(goal) {
+  const strategy = state.strategies.find((item) => item.id === strategyLabStrategyId);
   if (!strategy || !state.session || !state.activeTerminalId || strategyLabBusy) return;
   strategyLabPayload = null;
-  if (strategyLabChartInstance) { strategyLabChartInstance.destroy(); strategyLabChartInstance = null; }
+  const goalButton = document.querySelector(`[data-strategy-lab-goal="${goal}"]`);
+  const goalLabel = goalButton?.querySelector('strong')?.textContent || 'Improve this strategy';
+  document.getElementById('strategy-lab-goal-label').textContent = goalLabel;
+  document.getElementById('strategy-lab-goals').hidden = true;
   document.getElementById('strategy-lab-progress').hidden = false;
   document.getElementById('strategy-lab-results').hidden = true;
-  document.getElementById('strategy-lab-progress-title').textContent = `Reviewing ${strategy.name}…`;
-  document.getElementById('strategy-lab-progress-detail').textContent = 'Checking trades, signals, and guardrails.';
-  window.LucreUI.openModal('modal-strategy-lab');
+  document.getElementById('strategy-lab-progress-title').textContent = `Testing ways to ${goalLabel.toLowerCase()}…`;
+  document.getElementById('strategy-lab-progress-detail').textContent = 'Building a focused lineup of safe adjustments.';
   strategyLabBusy = true;
   document.querySelectorAll('[data-strategy-summary-aurelia]').forEach((button) => { button.disabled = true; });
   const progress = [
@@ -7755,7 +7701,7 @@ async function runStrategyLab() {
     const response = await fetch('/api/strategy-lab', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-      body: JSON.stringify({ terminal_id: state.activeTerminalId, strategy_id: strategy.id }),
+      body: JSON.stringify({ terminal_id: state.activeTerminalId, strategy_id: strategy.id, goal }),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.message || 'Aurelia could not complete this comparison.');
@@ -7771,7 +7717,7 @@ async function runStrategyLab() {
 
 function reviewStrategyLabChange() {
   const recommendation = strategyLabPayload?.recommendation;
-  const strategy = selectedStrategy();
+  const strategy = state.strategies.find((item) => item.id === strategyLabStrategyId);
   if (!recommendation?.accepted || !strategy) return;
   window.LucreUI.closeModal(document.getElementById('modal-strategy-lab'));
   openEditStrategyModal(strategy.id);
@@ -7801,16 +7747,10 @@ function reviewStrategyLabChange() {
 
 document.getElementById('strategy-lab-review')?.addEventListener('click', reviewStrategyLabChange);
 document.getElementById('modal-strategy-lab')?.addEventListener('click', (event) => {
-  const metric = event.target.closest('[data-strategy-lab-metric]')?.dataset.strategyLabMetric;
-  if (!metric) return;
-  strategyLabMetric = metric;
-  document.querySelectorAll('[data-strategy-lab-metric]').forEach((button) => {
-    const active = button.dataset.strategyLabMetric === metric;
-    button.classList.toggle('is-active', active);
-    button.setAttribute('aria-pressed', String(active));
-  });
-  renderStrategyLabChart();
+  const goal = event.target.closest('[data-strategy-lab-goal]')?.dataset.strategyLabGoal;
+  if (goal) runStrategyLab(goal);
 });
+document.getElementById('strategy-lab-another')?.addEventListener('click', openStrategyLab);
 signalChartRange?.addEventListener('change', (event) => {
   state.signalChartRange = event.target.value;
   if (state.signalChartRange !== 'today') {
@@ -8064,7 +8004,6 @@ window.addEventListener('lucre:theme-changed', () => {
   renderPlChart();
   renderDashboardHeatmap();
   if (state.activeView === 'strategies') renderStrategyPage();
-  if (strategyLabPayload?.comparison) renderStrategyLabChart();
 });
 
 // ---------------------------------------------------------------------------
@@ -8101,7 +8040,7 @@ function resetDashboardState() {
   assistantConversation = [];
   strategyLabBusy = false;
   strategyLabPayload = null;
-  if (strategyLabChartInstance) { strategyLabChartInstance.destroy(); strategyLabChartInstance = null; }
+  strategyLabStrategyId = null;
   if (aiAssistantMessages) aiAssistantMessages.replaceChildren();
   setAssistantOpen(false);
   state.strategies = [];

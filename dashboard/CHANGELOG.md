@@ -1,5 +1,13 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.96 — Guided Aurelia Strategy Lab (2026-09-10)
+
+- Rebuilds “Aurelia says” as a full-screen, frosted-glass consultation with theme-aware moving waves and slow ambient glow.
+- Starts with a focused choice: improve risk management, profitability, position frequency, or win rate; no backtests run until the trader chooses a goal.
+- Reorders and scores the ten candidate tests around the selected goal while retaining goal-specific safety and meaningful-improvement thresholds.
+- Removes the comparison graph and metric tiles so Aurelia's recommendation is delivered as a clean, conversational text response.
+- Formats rates as true human-readable percentages and keeps recommendations beginner-friendly, concise, and honest about tradeoffs.
+
 ## v1.0.95 — Aurelia Strategy Tournament (2026-09-10)
 
 - Moves “Aurelia says” from the strategy selector into the bottom of every strategy snapshot card and uses the same filled accent treatment as “New strategy.”

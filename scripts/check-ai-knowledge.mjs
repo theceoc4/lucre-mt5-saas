@@ -13,6 +13,7 @@ import {
   chooseCandidate,
   chooseCandidates,
   comparisonDecision,
+  formatPercent,
   setPath,
   strategySnapshot,
 } from '../api/strategy-lab.js';
@@ -65,7 +66,7 @@ assert.match(assistantSource, /period:\s*z\.enum\(\['today', 'yesterday', 'trail
 assert.equal(localDateKey('2026-09-10T03:00:00.000Z', 'America/Chicago'), '2026-09-09');
 assert.equal(shiftDateKey('2026-09-01', -1), '2026-08-31');
 assert.match(strategyLabSource, /strategy\.signal_source\s*!==\s*'internal'/);
-assert.match(strategyLabSource, /comparisonDecision\(current, candidate\)/);
+assert.match(strategyLabSource, /comparisonDecision\(current, candidate, goal = 'profitability'\)/);
 assert.match(strategyLabSource, /definition_snapshot: definitionSnapshot/);
 assert.match(strategyLabSource, /Never claim a backtest guarantees future results/);
 assert.match(backtestSource, /bounded-v5-aurelia-lab/);
@@ -94,10 +95,12 @@ const tournament = chooseCandidates(testStrategy, testSnapshot, [
   { profit_verified: true, close_reason: 'sl' }, { profit_verified: true, close_reason: 'sl' },
   { profit_verified: true, close_reason: 'sl' }, { profit_verified: true, close_reason: 'tp' },
   { profit_verified: true, close_reason: 'tp' },
-], blockSummary([]), 10);
+], blockSummary([]), 'profitability', 10);
 assert.equal(tournament.candidates.length, 10);
 assert.match(tournament.issue, /stop-outs/);
 assert.equal(new Set(tournament.candidates.map((candidate) => `${candidate.path}:${candidate.proposed}`)).size, 10);
+const opportunityTournament = chooseCandidates(testStrategy, testSnapshot, [], blockSummary([]), 'more_positions', 10);
+assert.match(opportunityTournament.candidates[0].effect, /sooner|allow|admit|recover/i);
 assert.equal(comparisonDecision(
   { validation_expectancy_r: 0.1, max_drawdown_r: 2 },
   { validation_expectancy_r: 0.2, expectancy_r: 0.2, win_rate: 0.55, max_drawdown_r: 2.2, trade_count: 10 },
@@ -106,6 +109,23 @@ assert.equal(comparisonDecision(
   { validation_expectancy_r: 0.1, max_drawdown_r: 2 },
   { validation_expectancy_r: 0.11, max_drawdown_r: 2.2, trade_count: 10 },
 ), false);
+assert.equal(comparisonDecision(
+  { validation_expectancy_r: 0.1, max_drawdown_r: 2, trade_count: 20, win_rate: 0.5 },
+  { validation_expectancy_r: 0.09, max_drawdown_r: 2.4, trade_count: 24, win_rate: 0.49 },
+  'more_positions',
+), true);
+assert.equal(comparisonDecision(
+  { validation_expectancy_r: 0.1, max_drawdown_r: 2, trade_count: 20, win_rate: 0.5 },
+  { validation_expectancy_r: 0.09, max_drawdown_r: 1.6, trade_count: 20, win_rate: 0.56 },
+  'win_rate',
+), true);
+assert.equal(comparisonDecision(
+  { validation_expectancy_r: 0.1, max_drawdown_r: 2, trade_count: 20, win_rate: 0.5 },
+  { validation_expectancy_r: 0.09, max_drawdown_r: 1.6, trade_count: 20, win_rate: 0.51 },
+  'risk_management',
+), true);
+assert.equal(formatPercent(0.583), '58%');
+assert.equal(formatPercent(0.583, 1), '58.3%');
 assert.equal(
   plainTextReply('## Finding\n**Wider ATR** may help.\n- Test `1.7 ATR`.\n__Keep risk flat.__'),
   'Finding\nWider ATR may help.\nTest 1.7 ATR.\nKeep risk flat.',
