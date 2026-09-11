@@ -152,7 +152,7 @@ function indicatorCandidates(snapshot, evidence) {
 function goalPriority(candidate, goal) {
   const text = `${candidate.path} ${candidate.effect}`.toLowerCase();
   if (goal === 'more_positions') return /allow|admit|recover|sooner|cooldown|max_spread|lookback/.test(text) ? 0 : /target_r|stop_atr/.test(text) ? 2 : 1;
-  if (goal === 'risk_management') return /stop_atr|breakeven|trailing|protect|filter|demand|favor|cut/.test(text) ? 0 : 1;
+  if (goal === 'risk_management') return /protect|cut invalid|filter|demand|favor cleaner|require stronger/.test(text) ? 0 : /stop_atr|breakeven|trailing/.test(text) ? 1 : 2;
   if (goal === 'win_rate') return /filter|demand|favor|protect|bank winners|target_r/.test(text) ? 0 : /allow|admit|recover/.test(text) ? 2 : 1;
   return 0;
 }
