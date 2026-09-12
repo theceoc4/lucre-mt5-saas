@@ -59,7 +59,7 @@ function number(value, fallback) {
 }
 
 function rounded(value, step = 0.1) {
-  return Math.round(value / step) * step;
+  return Number((Math.round(value / step) * step).toFixed(6));
 }
 
 function plain(value) {
@@ -157,7 +157,7 @@ function goalPriority(candidate, goal) {
   return 0;
 }
 
-export function chooseCandidates(strategy, snapshot, trades, blocks, goal = 'profitability', limit = 10) {
+export function chooseCandidates(strategy, snapshot, trades, blocks, goal = 'profitability', limit = 20) {
   const verified = trades.filter((trade) => trade.profit_verified !== false);
   const stopLosses = verified.filter((trade) => String(trade.close_reason || '').toLowerCase() === 'sl').length;
   const stopLossRate = verified.length ? stopLosses / verified.length : 0;
@@ -213,9 +213,56 @@ export function chooseCandidates(strategy, snapshot, trades, blocks, goal = 'pro
     candidates: candidates
       .map((candidate, index) => ({ candidate, index }))
       .sort((left, right) => goalPriority(left.candidate, goal) - goalPriority(right.candidate, goal) || left.index - right.index)
-      .slice(0, Math.max(1, Math.min(10, limit)))
+      .slice(0, Math.max(1, Math.min(20, limit)))
       .map(({ candidate }) => candidate),
   };
+}
+
+export function buildConfigurations(candidates, goal = 'profitability', limit = 20) {
+  const cap = Math.max(1, Math.min(20, limit));
+  const ordered = candidates
+    .map((candidate, index) => ({ candidate, index }))
+    .sort((left, right) => goalPriority(left.candidate, goal) - goalPriority(right.candidate, goal) || left.index - right.index)
+    .map(({ candidate }) => candidate);
+  const configurations = [];
+  const seen = new Set();
+  const add = (changes) => {
+    if (!changes.length || new Set(changes.map((change) => change.path)).size !== changes.length) return;
+    const key = changes.map((change) => `${change.path}:${change.proposed}`).sort().join('|');
+    if (seen.has(key)) return;
+    seen.add(key);
+    configurations.push({
+      changes,
+      label: changes.map((change) => change.label).join(' and '),
+      effect: changes.map((change) => change.effect).join('; '),
+      tradeoff: changes.map((change) => change.tradeoff).join('; '),
+      evidence: changes.map((change) => change.evidence).filter(Boolean).join('; '),
+    });
+  };
+  // Keep a broad one-setting control group, then test combined adjustments.
+  // The same setting is never assigned two conflicting values in one run.
+  ordered.slice(0, Math.min(10, cap)).forEach((candidate) => add([candidate]));
+  const pairs = [];
+  for (let left = 0; left < ordered.length; left += 1) {
+    for (let right = left + 1; right < ordered.length; right += 1) pairs.push([left, right]);
+  }
+  pairs.sort((left, right) => left[0] + left[1] - right[0] - right[1] || left[0] - right[0]);
+  for (const [left, right] of pairs) {
+    if (configurations.length >= cap) break;
+    add([ordered[left], ordered[right]]);
+  }
+  // Small candidate pools can still yield a useful twenty-way tournament.
+  for (let left = 0; left < ordered.length && configurations.length < cap; left += 1) {
+    for (let middle = left + 1; middle < ordered.length && configurations.length < cap; middle += 1) {
+      for (let right = middle + 1; right < ordered.length && configurations.length < cap; right += 1) {
+        add([ordered[left], ordered[middle], ordered[right]]);
+      }
+    }
+  }
+  ordered.slice(10).forEach((candidate) => {
+    if (configurations.length < cap) add([candidate]);
+  });
+  return configurations.slice(0, cap);
 }
 
 export function chooseCandidate(strategy, snapshot, trades, blocks) {
@@ -230,6 +277,10 @@ export function setPath(source, path, value) {
   return copy;
 }
 
+export function applyConfiguration(source, configuration) {
+  return configuration.changes.reduce((snapshot, change) => setPath(snapshot, change.path, change.proposed), source);
+}
+
 async function runBacktest(token, strategyId, symbols, definitionSnapshot) {
   return supabaseRequest('/functions/v1/strategy-backtest', token, {
     method: 'POST',
@@ -242,15 +293,19 @@ export function comparisonDecision(current, candidate, goal = 'profitability') {
   const nextValidation = number(candidate.validation_expectancy_r, -Infinity);
   const validationGain = nextValidation - baseValidation;
   const winRateGain = number(candidate.win_rate, 0) - number(current.win_rate, 0);
-  const expectancyGain = number(candidate.expectancy_r, -Infinity) - number(current.expectancy_r, -Infinity);
-  const enoughTrades = number(candidate.trade_count, 0) >= Math.max(5, Math.floor(number(current.trade_count, 0) * 0.5));
+  const currentTrades = number(current.trade_count, 0);
+  const testedTrades = number(candidate.trade_count, 0);
+  const baselineValidationTrades = number(current.result?.validation?.trade_count, 0);
+  const testedValidationTrades = number(candidate.result?.validation?.trade_count, 0);
+  const enoughTrades = testedTrades >= Math.max(5, Math.floor(currentTrades * 0.5));
   const drawdownRatio = number(candidate.max_drawdown_r, Infinity) / Math.max(0.01, number(current.max_drawdown_r, 0));
-  if (!enoughTrades || nextValidation <= 0) return false;
-  if (goal === 'risk_management') return drawdownRatio <= 0.85 && nextValidation >= baseValidation - 0.02;
-  if (goal === 'more_positions') return number(candidate.trade_count, 0) >= Math.max(number(current.trade_count, 0) + 3, number(current.trade_count, 0) * 1.15) && drawdownRatio <= 1.3 && nextValidation >= baseValidation - 0.02;
-  if (goal === 'win_rate') return winRateGain >= 0.05 && drawdownRatio <= 1.2 && nextValidation >= baseValidation - 0.02;
-  const meaningfulGain = validationGain >= 0.05 || (validationGain >= 0.03 && winRateGain >= 0.03 && expectancyGain >= 0.03);
-  return drawdownRatio <= 1.15 && meaningfulGain;
+  if (!enoughTrades || (current.result?.validation && baselineValidationTrades < 2)
+    || (candidate.result?.validation && testedValidationTrades < Math.max(2, Math.floor(baselineValidationTrades * 0.5)))
+    || !Number.isFinite(baseValidation) || !Number.isFinite(nextValidation)) return false;
+  if (goal === 'risk_management') return number(candidate.max_drawdown_r, Infinity) < number(current.max_drawdown_r, Infinity) - 1e-9 && nextValidation >= baseValidation - 0.05;
+  if (goal === 'more_positions') return testedTrades > currentTrades && drawdownRatio <= 1.3 && nextValidation >= baseValidation - 0.05;
+  if (goal === 'win_rate') return winRateGain > 1e-9 && drawdownRatio <= 1.25 && nextValidation >= baseValidation - 0.05;
+  return validationGain > 1e-9 && drawdownRatio <= 1.25;
 }
 
 function candidateScore(current, candidate, goal = 'profitability') {
@@ -284,15 +339,25 @@ export function formatPercent(value, digits = 0) {
 }
 
 function fallbackSummary(strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue, goal) {
-  const currentWin = formatPercent(current.win_rate);
-  const candidateWin = formatPercent(candidate.win_rate);
+  const currentWin = formatPercent(current.win_rate, 1);
+  const candidateWin = formatPercent(candidate.win_rate, 1);
   const blockNote = blocks.blockedSignals ? ` I also checked ${blocks.blockedSignals} blocked signals. ${blocks.reasons[0]?.reason || 'A policy check'} was the most common reason.` : '';
-  if (!accepted) return `I tested ${candidatesTested} changes to ${GOALS[goal].toLowerCase()}. None made a meaningful improvement without creating a new problem, so I would keep ${strategy.name} where it is for now.${blockNote}`;
-  return `I tested ${candidatesTested} changes to ${GOALS[goal].toLowerCase()}. The best result changed ${recommendation.label} from ${recommendation.current} to ${recommendation.proposed}. Modeled win rate moved from ${currentWin} to ${candidateWin}, and the result passed the safety check. This should ${recommendation.effect}, although ${recommendation.tradeoff}.${blockNote} Review the change, then forward test it before relying on it.`;
+  const changes = recommendation.changes.map((change) => `${change.label} from ${change.current} to ${change.proposed}`).join(' and ');
+  const metric = goal === 'risk_management'
+    ? `modeled drawdown moved from ${number(current.max_drawdown_r, 0).toFixed(2)}R to ${number(candidate.max_drawdown_r, 0).toFixed(2)}R`
+    : goal === 'more_positions'
+      ? `modeled positions moved from ${current.trade_count} to ${candidate.trade_count}`
+      : goal === 'win_rate'
+        ? `modeled win rate moved from ${currentWin} to ${candidateWin}`
+        : `validation expectancy moved from ${number(current.validation_expectancy_r, 0).toFixed(3)}R to ${number(candidate.validation_expectancy_r, 0).toFixed(3)}R`;
+  if (!accepted) return `I tested ${candidatesTested} configurations for ${strategy.name}. None improved ${GOALS[goal].toLowerCase()} while keeping enough trades and avoiding a large tradeoff, so I do not have an honest settings recommendation from this sample.${blockNote}`;
+  const small = candidateScore(current, candidate, goal) < (goal === 'win_rate' ? 2 : goal === 'more_positions' ? 7 : 3);
+  return `I tested ${candidatesTested} configurations for ${strategy.name}. My best option is ${changes}; ${metric}. ${small ? 'That is a small modeled improvement, not a proven edge.' : 'That is a modeled improvement, not a guaranteed result.'} ${recommendation.tradeoff}. Review the unsaved change and forward test it before relying on it. This backtest does not model slippage or exact broker costs.${blockNote}`;
 }
 
 async function coachSummary({ userId, strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue, goal }) {
   const fallback = fallbackSummary(strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue, goal);
+  if (!accepted) return fallback;
   if (!HAS_DIRECT_OPENAI && !HAS_GATEWAY_AUTH) return fallback;
   try {
     const result = await generateText({
@@ -301,10 +366,13 @@ async function coachSummary({ userId, strategy, recommendation, current, candida
       providerOptions: {
         openai: { store: false, reasoningEffort: 'low', textVerbosity: 'low', safetyIdentifier: crypto.createHash('sha256').update(userId).digest('hex') },
       },
-      system: 'You are Aurelia, a warm and concise trading coach for beginners. Write like a helpful person speaking naturally. Use plain text only, no markdown, headings, bullets, symbols, raw ratios, or jargon. Keep it to one or two short paragraphs. Every win rate or rate must be written as a true percentage such as 58%, never 0.58%. State the tested setting change, the useful result, the tradeoff, and one practical next step. Never claim a backtest guarantees future results.',
+      system: 'You are Aurelia, a warm and concise trading coach for beginners. Write like a helpful person speaking naturally. Use plain text only, no markdown, headings, bullets, or jargon. Keep it to one or two short paragraphs. Preserve every tested setting, number, and conclusion. A small backtest gain still deserves a tentative recommendation, labeled small. Never claim a backtest guarantees future results or that a live strategy was changed.',
       prompt: `Rewrite this verified Strategy Lab result naturally without changing any numbers or conclusions:\n${fallback}\nGoal: ${GOALS[goal]}. Current win rate: ${formatPercent(current.win_rate)}. Tested win rate: ${formatPercent(candidate.win_rate)}. Current trades: ${current.trade_count}. Tested trades: ${candidate.trade_count}.`,
     });
-    return plain(result.text) || fallback;
+    const rewritten = plain(result.text);
+    if (accepted && (!recommendation.changes.every((change) => rewritten.includes(String(change.proposed)))
+      || (fallback.includes('small modeled improvement') && !/small|modest|slight/i.test(rewritten)))) return fallback;
+    return rewritten || fallback;
   } catch (error) {
     console.error('strategy-lab summary failure', { message: error?.message || String(error) });
     return fallback;
@@ -337,14 +405,20 @@ export default async function handler(req, res) {
     const strategyTrades = trades.filter((trade) => trade.strategy_id === strategyId || String(trade.strategy_name_at_entry || '').trim().toLowerCase() === String(strategy.name || '').trim().toLowerCase());
     const blocks = blockSummary(signals);
     const snapshot = strategySnapshot(strategy);
-    const diagnostic = chooseCandidates(strategy, snapshot, strategyTrades, blocks, goal, 10);
-    if (!diagnostic.candidates.length) return json(res, 200, { status: 'insufficient_evidence', strategy: { name: strategy.name }, summary: `I reviewed ${strategy.name}, but there is not enough usable evidence to build a responsible test set yet. Keep collecting verified trades and signals, then run this check again.`, blocks });
+    const diagnostic = chooseCandidates(strategy, snapshot, strategyTrades, blocks, goal, 20);
+    const configurations = buildConfigurations(diagnostic.candidates, goal, 20);
+    if (!configurations.length) return json(res, 200, { status: 'insufficient_evidence', strategy: { name: strategy.name }, summary: `I reviewed ${strategy.name}, but there is not enough usable evidence to build a responsible test set yet. Keep collecting verified trades and signals, then run this check again.`, blocks });
     if (strategy.signal_source && strategy.signal_source !== 'internal') return json(res, 200, { status: 'external_diagnostic_only', strategy: { name: strategy.name }, goal, goalLabel: GOALS[goal], candidatesTested: 0, summary: `I found settings worth investigating, but ${strategy.name} receives external entries and Lucre cannot honestly replay those historical triggers yet. I reviewed the blocked signals, but I will not make up a recommendation.`, blocks });
 
     const current = await runBacktest(token, strategyId, snapshot.symbols, snapshot);
-    const attempts = await mapWithConcurrency(diagnostic.candidates, 3, async (recommendation) => {
-      const proposedSnapshot = setPath(snapshot, recommendation.path, recommendation.proposed);
+    if (current.status !== 'completed') throw new Error('The current strategy backtest did not complete.');
+    const attempts = await mapWithConcurrency(configurations, 4, async (recommendation) => {
+      const proposedSnapshot = applyConfiguration(snapshot, recommendation);
       const result = await runBacktest(token, strategyId, proposedSnapshot.symbols, proposedSnapshot);
+      if (result.status !== 'completed'
+        || JSON.stringify((result.symbols_tested || []).sort()) !== JSON.stringify((current.symbols_tested || []).sort())) {
+        throw new Error('Candidate did not complete on the same symbol sample as the baseline.');
+      }
       return { recommendation, result };
     });
     const completed = attempts.filter((attempt) => attempt?.result);
@@ -359,7 +433,7 @@ export default async function handler(req, res) {
     const summary = await coachSummary({ userId: user.id, strategy, recommendation, current, candidate, accepted, blocks, candidatesTested, issue: diagnostic.issue, goal });
     console.info('strategy-lab completed', { strategyId, accepted, candidatesTested, failedCandidates: attempts.length - completed.length, currentTrades: current.trade_count, candidateTrades: candidate.trade_count, blockedSignals: blocks.blockedSignals });
     return json(res, 200, {
-      status: accepted ? 'recommendation' : 'keep_current',
+      status: accepted ? 'recommendation' : 'no_improvement',
       strategy: { name: strategy.name, timeframe: strategy.timeframe },
       goal,
       goalLabel: GOALS[goal],

@@ -1,5 +1,12 @@
 # Changelog — Lucre Hub Trading Dashboard
 
+## v1.0.98 — Wider Aurelia Strategy Lab (2026-09-12)
+
+- Tests up to twenty goal-focused configurations against the current internal strategy, including combinations of two or three settings when useful.
+- Recommends the best qualifying improvement even when the modeled gain is small, while retaining sample-size and drawdown checks and describing small gains as tentative.
+- Previews every setting in a multi-change recommendation together; nothing is saved to the live strategy without the trader reviewing and saving it.
+- Keeps external-signal strategies diagnostic-only until their historical triggers can be replayed, and does not claim an improvement when every tested configuration is worse or unproven.
+
 ## v1.0.97 — Product Design Refinement Pass (2026-09-10)
 
 - Clarifies terminal state as Live, Backup, Delayed, or Disconnected with heartbeat freshness while preserving the existing Realtime and polling behavior.

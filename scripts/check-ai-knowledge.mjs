@@ -108,6 +108,10 @@ assert.equal(comparisonDecision(
 assert.equal(comparisonDecision(
   { validation_expectancy_r: 0.1, max_drawdown_r: 2 },
   { validation_expectancy_r: 0.11, max_drawdown_r: 2.2, trade_count: 10 },
+), true);
+assert.equal(comparisonDecision(
+  { validation_expectancy_r: 0.1, max_drawdown_r: 2, trade_count: 10 },
+  { validation_expectancy_r: 0.09, max_drawdown_r: 2.2, trade_count: 10 },
 ), false);
 assert.equal(comparisonDecision(
   { validation_expectancy_r: 0.1, max_drawdown_r: 2, trade_count: 20, win_rate: 0.5 },

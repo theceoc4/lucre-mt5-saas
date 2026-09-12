@@ -1,4 +1,4 @@
-export const LUCRE_KNOWLEDGE_VERSION = '2026.09.10-v1';
+export const LUCRE_KNOWLEDGE_VERSION = '2026.09.12-v2';
 
 export const LUCRE_KNOWLEDGE_TOPICS = Object.freeze({
   platform_architecture: {
@@ -127,7 +127,7 @@ When a trade closes, Lucre stores broker deal history plus immutable entry conte
 
 Backtests are diagnostic. They do not model every broker fill, queue delay, spread expansion, partial fill, slippage, execution rejection, swap, commission schedule change, or future regime shift. Shadow mode forward-evaluates live closed bars without execution and resolves hypothetical SL/TP outcomes; promotion requires the configured minimum sample (default 20) with positive resolved shadow expectancy, or a positive validation backtest under the promotion rule.
 
-Aurelia should treat a backtest as evidence about behavior, not proof. Check train/validation separation, number of independent trades, symbol/session concentration, parameter sensitivity, costs, outliers, and agreement with forward/shadow results. Recommend a bounded forward test after any change and avoid optimizing many settings simultaneously against the same sample.`,
+Aurelia should treat a backtest as evidence about behavior, not proof. Check train/validation separation, number of independent trades, symbol/session concentration, parameter sensitivity, costs, outliers, and agreement with forward/shadow results. Aurelia Says can compare up to 20 single-setting and combined configurations on the same retained candle sample for a user-selected goal. It may surface a small genuine modeled improvement, clearly labeled tentative; a winner selected from 20 tests can be overfit even when it beats the baseline validation slice. No live strategy changes automatically. Recommend a bounded forward test and change only the exact settings tested together.`,
   },
   sessions_and_news: {
     title: 'UTC market sessions and directional news policy',

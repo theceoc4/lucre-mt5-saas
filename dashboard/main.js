@@ -7839,8 +7839,8 @@ async function runStrategyLab(goal) {
   const progress = [
     ['Finding the main pressure point…', 'Comparing stops, entries, and blocked-signal reasons.'],
     ['Running the control test…', 'Replaying the current strategy on retained broker candles.'],
-    ['Testing the strongest adjustments…', 'Running up to ten isolated changes on the same market sample.'],
-    ['Letting Aurelia review the result…', 'Checking validation strength and drawdown before recommending anything.'],
+    ['Testing the strongest adjustments…', 'Comparing up to twenty single and combined configurations on the same market sample.'],
+    ['Letting Aurelia review the result…', 'Ranking even small improvements while checking sample size and tradeoffs.'],
   ];
   let step = 0;
   const timer = window.setInterval(() => {
@@ -7874,7 +7874,7 @@ function reviewStrategyLabChange() {
   if (!recommendation?.accepted || !strategy) return;
   window.LucreUI.closeModal(document.getElementById('modal-strategy-lab'));
   openEditStrategyModal(strategy.id);
-  const path = recommendation.path;
+  const changes = recommendation.changes || [recommendation];
   const fieldByPath = {
     'exit_config.stop_atr': 'strategy-stop-atr',
     'exit_config.target_r': 'strategy-target-r',
@@ -7884,18 +7884,20 @@ function reviewStrategyLabChange() {
     cooldown_minutes: 'strategy-cooldown',
     max_spread_points: 'strategy-max-spread',
   };
-  if (fieldByPath[path]) document.getElementById(fieldByPath[path]).value = recommendation.proposed;
-  else {
-    const match = path.match(/^rule_definition\.indicators\.(\d+)\.params\.([a-z_]+)$/);
-    if (match && strategyIndicatorRows[Number(match[1])]) {
-      strategyIndicatorRows[Number(match[1])].params[match[2]] = recommendation.proposed;
-      renderStrategyIndicators();
+  for (const change of changes) {
+    if (fieldByPath[change.path]) document.getElementById(fieldByPath[change.path]).value = change.proposed;
+    else {
+      const match = change.path.match(/^rule_definition\.indicators\.(\d+)\.params\.([a-z_]+)$/);
+      if (match && strategyIndicatorRows[Number(match[1])]) {
+        strategyIndicatorRows[Number(match[1])].params[match[2]] = change.proposed;
+      }
     }
   }
-  showStrategyEditorPage(path.startsWith('rule_definition') ? 'logic' : 'risk');
+  if (changes.some((change) => change.path.startsWith('rule_definition'))) renderStrategyIndicators();
+  showStrategyEditorPage(changes[0]?.path.startsWith('rule_definition') ? 'logic' : 'risk');
   const message = document.getElementById('add-strategy-message');
   message.style.color = 'var(--color-accent)';
-  message.textContent = `Aurelia previewed ${recommendation.label} at ${recommendation.proposed}. Review it, then save only if you want this change to go live.`;
+  message.textContent = `Aurelia previewed ${changes.map((change) => `${change.label} at ${change.proposed}`).join(' and ')}. Review every setting, then save only if you want these changes to go live.`;
 }
 
 document.getElementById('strategy-lab-review')?.addEventListener('click', reviewStrategyLabChange);

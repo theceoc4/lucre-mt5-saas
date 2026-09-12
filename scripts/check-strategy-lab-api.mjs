@@ -17,6 +17,8 @@ const responseJson = (body, status = 200) => new Response(JSON.stringify(body), 
   headers: { 'content-type': 'application/json' },
 });
 let backtestRequestCount = 0;
+let pairedRequestCount = 0;
+let scenario = 'wide_gain';
 
 globalThis.fetch = async (url, options = {}) => {
   const address = String(url);
@@ -37,20 +39,25 @@ globalThis.fetch = async (url, options = {}) => {
     const request = JSON.parse(options.body);
     backtestRequestCount += 1;
     assert.equal(request.persist_run, false);
+    if (request.definition_snapshot.exit_config.stop_atr !== 1.8
+      && request.definition_snapshot.exit_config.target_r !== 2) pairedRequestCount += 1;
     const proposed = request.definition_snapshot.exit_config.stop_atr > 1.8;
+    const pairedImprovement = proposed && request.definition_snapshot.exit_config.target_r < 2;
+    const improved = scenario === 'no_gain' ? false : scenario === 'small_pair' ? pairedImprovement : proposed;
     return responseJson({
+      status: 'completed',
       trade_count: 12,
-      win_rate: proposed ? 0.58 : 0.5,
-      expectancy_r: proposed ? 0.3 : 0.15,
-      validation_expectancy_r: proposed ? 0.22 : 0.1,
-      max_drawdown_r: proposed ? 2.1 : 2,
-      result: { series: [{ trade: 1, cumulative_r: proposed ? 2 : -1, win_rate: proposed ? 1 : 0 }] },
+      win_rate: scenario === 'small_pair' ? 0.5 : improved ? 0.58 : 0.5,
+      expectancy_r: scenario === 'small_pair' ? improved ? 0.152 : 0.15 : improved ? 0.3 : 0.15,
+      validation_expectancy_r: scenario === 'no_gain' ? 0.1 : scenario === 'small_pair' ? improved ? 0.102 : 0.1 : improved ? 0.22 : 0.1,
+      max_drawdown_r: scenario === 'small_pair' ? 2 : improved ? 2.1 : 2,
+      result: { validation: { trade_count: 4 }, series: [{ trade: 1, cumulative_r: improved ? 2 : -1, win_rate: improved ? 1 : 0 }] },
     });
   }
   throw new Error(`Unexpected request: ${address}`);
 };
 
-const { default: handler } = await import('../api/strategy-lab.js');
+const { default: handler, buildConfigurations, applyConfiguration, comparisonDecision } = await import('../api/strategy-lab.js');
 const req = {
   method: 'POST',
   headers: { authorization: 'Bearer test-token' },
@@ -67,17 +74,65 @@ await handler(req, res);
 const payload = JSON.parse(output.body);
 assert.equal(output.statusCode, 200);
 assert.equal(payload.status, 'recommendation');
-assert.equal(payload.recommendation.path, 'exit_config.stop_atr');
-assert.equal(payload.recommendation.current, 1.8);
-assert.equal(payload.recommendation.proposed, 2.1);
+assert.equal(payload.recommendation.changes[0].path, 'exit_config.stop_atr');
+assert.equal(payload.recommendation.changes[0].current, 1.8);
+assert.equal(payload.recommendation.changes[0].proposed, 2.1);
 assert.equal(payload.recommendation.accepted, true);
-assert.equal(payload.candidatesTested, 10);
+assert.equal(payload.candidatesTested, 20);
 assert.equal(payload.goal, 'profitability');
 assert.equal(payload.goalLabel, 'Increase profitability');
 assert.equal(payload.result.currentWinRate, '50%');
 assert.equal(payload.result.testedWinRate, '58%');
 assert.equal(payload.comparison, undefined, 'Strategy Lab suggestions should be text-only');
-assert.equal(backtestRequestCount, 11, 'One baseline and ten isolated candidates should be tested');
+assert.equal(backtestRequestCount, 21, 'One baseline and twenty configurations should be tested');
+assert.ok(pairedRequestCount > 0, 'The expanded lineup must include multi-setting configurations');
 assert.match(payload.summary, /tested|stop|validation/i);
+
+scenario = 'small_pair';
+backtestRequestCount = 0;
+await handler(req, res);
+const smallPair = JSON.parse(output.body);
+assert.equal(smallPair.status, 'recommendation', 'A small improvement should not be blocked by an arbitrary significance floor');
+assert.equal(smallPair.recommendation.changes.length, 2, 'The best paired result should return both settings');
+assert.match(smallPair.summary, /small modeled improvement/i);
+assert.equal(backtestRequestCount, 21);
+
+scenario = 'no_gain';
+await handler(req, res);
+const noGain = JSON.parse(output.body);
+assert.equal(noGain.status, 'no_improvement');
+assert.equal(noGain.recommendation.accepted, false);
+assert.match(noGain.summary, /None improved/i);
+
+const configurations = buildConfigurations([
+  { path: 'exit_config.stop_atr', label: 'ATR stop', current: 1.8, proposed: 2.1 },
+  { path: 'exit_config.target_r', label: 'Profit target', current: 2, proposed: 2.2 },
+  { path: 'cooldown_minutes', label: 'Cooldown', current: 5, proposed: 3 },
+]);
+assert.ok(configurations.some((configuration) => configuration.changes.length === 2));
+assert.ok(configurations.every((configuration) => new Set(configuration.changes.map((change) => change.path)).size === configuration.changes.length));
+const compactConfigurations = buildConfigurations(Array.from({ length: 5 }, (_, index) => ({
+  path: `setting_${index}`, label: `Setting ${index}`, current: 1, proposed: 2,
+})));
+assert.equal(compactConfigurations.length, 20, 'A five-setting pool should still test twenty distinct combinations');
+assert.ok(compactConfigurations.some((configuration) => configuration.changes.length === 3));
+const paired = configurations.find((configuration) => configuration.changes.some((change) => change.path === 'exit_config.stop_atr')
+  && configuration.changes.some((change) => change.path === 'exit_config.target_r'));
+const preview = applyConfiguration({ config: { stop_atr: 1.8 }, exit_config: { stop_atr: 1.8, target_r: 2 } }, paired);
+assert.equal(preview.exit_config.stop_atr, 2.1);
+assert.equal(preview.config.stop_atr, 2.1);
+assert.equal(preview.exit_config.target_r, 2.2);
+assert.equal(comparisonDecision({ trade_count: 12, win_rate: 0.5, validation_expectancy_r: 0.1, max_drawdown_r: 2 },
+  { trade_count: 12, win_rate: 0.5, validation_expectancy_r: 0.102, max_drawdown_r: 2 }, 'profitability'), true,
+  'A small real validation improvement should still be recommended');
+assert.equal(comparisonDecision({ trade_count: 12, win_rate: 0.5, validation_expectancy_r: 0.1, max_drawdown_r: 2 },
+  { trade_count: 12, win_rate: 0.5, validation_expectancy_r: 0.1001, max_drawdown_r: 2 }, 'profitability'), true,
+  'A tiny positive validation gain should not be rejected solely for being small');
+assert.equal(comparisonDecision({ trade_count: 12, win_rate: 0.5, validation_expectancy_r: 0.1, max_drawdown_r: 2 },
+  { trade_count: 12, win_rate: 0.5, validation_expectancy_r: 0.09, max_drawdown_r: 2 }, 'profitability'), false,
+  'A worse candidate must not be described as an improvement');
+assert.equal(comparisonDecision({ trade_count: 12, validation_expectancy_r: 0.1, max_drawdown_r: 2, result: { validation: { trade_count: 1 } } },
+  { trade_count: 12, validation_expectancy_r: 0.12, max_drawdown_r: 2, result: { validation: { trade_count: 1 } } }, 'profitability'), false,
+  'A gain from a one-trade validation sample must not be recommended');
 
 console.log('Aurelia Strategy Lab API flow verified.');
